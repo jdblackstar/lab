@@ -1,0 +1,10 @@
+{
+  "choices": {
+    "agents": [
+      "cursor"
+    ],
+    "primary_agent": "cursor",
+    "use_multiple_agents": false
+  },
+  "setup_source": "prime lab setup"
+}
