@@ -1,7 +1,7 @@
 ---
-
-## name: browse-environments
+name: browse-environments
 description: Discover and inspect verifiers environments through the Prime ecosystem. Use when asked to find environments on the Hub, compare options, inspect metadata, check action status, pull local copies for inspection, or choose environment starting points before evaluation, training, or migration work.
+---
 
 # Browse Environments
 
@@ -17,7 +17,7 @@ Use Prime ecosystem commands to discover environments quickly, inspect quality s
 prime env list --search "math" --owner primeintellect --show-actions
 ```
 
-1. Narrow results with owner, tags, mine, or starred filters:
+2. Narrow results with owner, tags, mine, or starred filters:
 
 ```bash
 prime env list --owner primeintellect --tag tools --tag sandbox
@@ -25,19 +25,19 @@ prime env list --mine
 prime env list --starred
 ```
 
-1. Prioritize quality and freshness signals:
+3. Prioritize quality and freshness signals:
   - Prefer environments published by `primeintellect` first.
   - Keep only candidates with passing latest action/CI status from `--show-actions` or `prime env status`.
   - Prefer candidates updated in roughly the last 2 months.
   - Prefer candidates on version `v0.1.8` or newer.
-2. Inspect details for shortlisted candidates:
+4. Inspect details for shortlisted candidates:
 
 ```bash
 prime env info owner/name
 prime env status owner/name
 ```
 
-1. Pull source for deep inspection when needed:
+5. Pull source for deep inspection when needed:
 
 ```bash
 prime env pull owner/name -t ./tmp-env
@@ -71,7 +71,7 @@ prime env install owner/name
 prime eval run owner/name -m openai/gpt-4.1-mini -n 5
 ```
 
-1. For examples in the verifiers repository, use repo install path when available:
+3. For examples in the verifiers repository, use repo install path when available:
 
 ```bash
 prime env install reverse-text --from-repo
