@@ -37,11 +37,7 @@ _DEBUG_CONTEXT_GLOB = "debug_context/**"
 
 
 def _globs_for_list_and_search(manifest_globs: list[str]) -> list[str]:
-    """Ensure ``debug_context/`` is listable/searchable even if omitted from the corpus manifest.
-
-    Read tools already allow ``debug_context/**`` via ``_effective_read_globs``; without this,
-    ``list_files debug_context`` returns empty and models invent wrong filenames.
-    """
+    """Append ``debug_context/**`` when missing so list/search can see debug_context."""
     out = list(manifest_globs)
     norm = {g.replace("\\", "/").strip() for g in out}
     if _DEBUG_CONTEXT_GLOB not in norm and not any(
@@ -49,21 +45,6 @@ def _globs_for_list_and_search(manifest_globs: list[str]) -> list[str]:
     ):
         out.append(_DEBUG_CONTEXT_GLOB)
     return out
-
-
-def _state_list(
-    state: vf.State,
-    key: str,
-    *,
-    default: list[str] | None = None,
-) -> list[str]:
-    """Return a copied list from rollout state while preserving explicit empties."""
-    value = state.get(key)
-    if value is None:
-        return list(default or [])
-    if isinstance(value, list):
-        return list(value)
-    return list(default or [])
 
 
 class DbtDebuggerEnv(vf.StatefulToolEnv):
@@ -125,43 +106,40 @@ class DbtDebuggerEnv(vf.StatefulToolEnv):
     ) -> dict[str, Any]:
         _ = messages
         _ = kwargs
-        pr = state.get(RolloutStateKeys.PROJECT_ROOT, "")
-        globs = _state_list(
-            state,
-            RolloutStateKeys.TOOL_VISIBLE_GLOBS,
-            default=["**/*"],
-        )
-        imm = _state_list(state, RolloutStateKeys.IMMUTABLE_PATHS)
+        pr = state[RolloutStateKeys.PROJECT_ROOT]
+        globs = state[RolloutStateKeys.TOOL_VISIBLE_GLOBS]
+        imm = state[RolloutStateKeys.IMMUTABLE_PATHS]
+        assert isinstance(pr, str)
+        assert isinstance(globs, list)
+        assert isinstance(imm, list)
 
         if tool_name == "list_files":
-            tool_args["project_root"] = str(pr)
-            tool_args["tool_visible_globs"] = _globs_for_list_and_search(list(globs))
-            tool_args["immutable_paths"] = list(imm)
+            tool_args["project_root"] = pr
+            tool_args["tool_visible_globs"] = _globs_for_list_and_search(globs)
+            tool_args["immutable_paths"] = imm
             tool_args["_state"] = state
         elif tool_name == "read_file":
-            tool_args["project_root"] = str(pr)
-            tool_args["tool_visible_globs"] = list(globs)
-            tool_args["immutable_paths"] = list(imm)
+            tool_args["project_root"] = pr
+            tool_args["tool_visible_globs"] = globs
+            tool_args["immutable_paths"] = imm
             tool_args["_state"] = state
         elif tool_name == "search_project":
-            tool_args["project_root"] = str(pr)
-            tool_args["tool_visible_globs"] = _globs_for_list_and_search(list(globs))
-            tool_args["immutable_paths"] = list(imm)
+            tool_args["project_root"] = pr
+            tool_args["tool_visible_globs"] = _globs_for_list_and_search(globs)
+            tool_args["immutable_paths"] = imm
             tool_args["_state"] = state
         elif tool_name == "run_dbt_command":
-            tool_args["project_root"] = str(pr)
-            tool_args["profiles_dir"] = str(state.get(RolloutStateKeys.PROFILES_DIR, ""))
-            tool_args["duckdb_path"] = str(state.get(RolloutStateKeys.DUCKDB_PATH, ""))
+            tool_args["project_root"] = pr
+            tool_args["profiles_dir"] = state[RolloutStateKeys.PROFILES_DIR]
+            tool_args["duckdb_path"] = state[RolloutStateKeys.DUCKDB_PATH]
             tool_args["_state"] = state
         elif tool_name == "read_artifact":
-            tool_args["project_root"] = str(pr)
-            tool_args["tool_visible_globs"] = list(globs)
+            tool_args["project_root"] = pr
+            tool_args["tool_visible_globs"] = globs
             tool_args["_state"] = state
         elif tool_name == "submit_diagnosis":
-            tool_args["scenario_id"] = str(state.get(RolloutStateKeys.SCENARIO_ID, ""))
-            tool_args["valid_model_names"] = list(
-                state.get(RolloutStateKeys.VALID_MODEL_NAMES) or []
-            )
+            tool_args["scenario_id"] = state[RolloutStateKeys.SCENARIO_ID]
+            tool_args["valid_model_names"] = state[RolloutStateKeys.VALID_MODEL_NAMES]
             tool_args["rollout_state"] = state
         return tool_args
 
@@ -171,11 +149,8 @@ class DbtDebuggerEnv(vf.StatefulToolEnv):
         if not scenario_id:
             raise ValueError("Dataset row missing info.scenario_id")
 
-        try:
-            spec = await asyncio.to_thread(_load_scenario_spec, scenario_id)
-            mw = await asyncio.to_thread(materialize_scenario_workspace, spec)
-        except Exception as e:
-            raise vf.InfraError(f"dbt-debugger setup_state failed: {e}") from e
+        spec = await asyncio.to_thread(_load_scenario_spec, scenario_id)
+        mw = await asyncio.to_thread(materialize_scenario_workspace, spec)
 
         paths = build_rollout_state_paths(mw)
         for k, v in paths.items():
@@ -183,24 +158,17 @@ class DbtDebuggerEnv(vf.StatefulToolEnv):
 
         state[RolloutStateKeys.SCENARIO_ID] = scenario_id
         state[RolloutStateKeys.SCENARIO_SPEC] = as_plain_dict(spec)
-        artifact_manifest = dict(spec.get("artifact_manifest") or {})
-        manifest_globs = artifact_manifest.get("tool_visible_globs")
-        immutable_paths = artifact_manifest.get("immutable_paths")
-        state[RolloutStateKeys.ARTIFACT_MANIFEST] = artifact_manifest
-        state[RolloutStateKeys.TOOL_VISIBLE_GLOBS] = (
-            list(manifest_globs)
-            if isinstance(manifest_globs, list)
-            else ["**/*"]
-        )
-        state[RolloutStateKeys.IMMUTABLE_PATHS] = (
-            list(immutable_paths)
-            if isinstance(immutable_paths, list)
-            else []
-        )
-        dag_models = (spec.get("dag") or {}).get("models") or []
-        state[RolloutStateKeys.VALID_MODEL_NAMES] = [
-            str(m["name"]) for m in dag_models if isinstance(m, dict) and "name" in m
-        ]
+        am = spec["artifact_manifest"]
+        assert isinstance(am["tool_visible_globs"], list)
+        assert isinstance(am["immutable_paths"], list)
+        state[RolloutStateKeys.ARTIFACT_MANIFEST] = dict(am)
+        state[RolloutStateKeys.TOOL_VISIBLE_GLOBS] = list(am["tool_visible_globs"])
+        state[RolloutStateKeys.IMMUTABLE_PATHS] = list(am["immutable_paths"])
+        names: list[str] = []
+        for m in spec["dag"]["models"]:
+            assert isinstance(m, dict) and "name" in m
+            names.append(str(m["name"]))
+        state[RolloutStateKeys.VALID_MODEL_NAMES] = names
         state[RolloutStateKeys.SUBMITTED_DIAGNOSIS] = None
         state[RolloutStateKeys.VERIFICATION_RESULT] = None
         state[RolloutStateKeys.TOOL_TRACE] = []
@@ -231,14 +199,16 @@ def build_rubric() -> vf.Rubric:
     async def diagnosis_reward(state: vf.State) -> float:
         """Primary reward: 1.0 iff all deterministic checks pass."""
         sub = state.get(RolloutStateKeys.SUBMITTED_DIAGNOSIS)
-        spec = state.get(RolloutStateKeys.SCENARIO_SPEC) or {}
+        spec = state[RolloutStateKeys.SCENARIO_SPEC]
+        assert isinstance(spec, dict)
         audit = score_diagnosis(sub, spec)
         state[RolloutStateKeys.VERIFICATION_RESULT] = audit
-        return float(audit.get("strict_pass", 0.0))
+        return float(audit["strict_pass"])
 
     async def difficulty_metric(state: vf.State) -> float:
-        spec = state.get(RolloutStateKeys.SCENARIO_SPEC) or {}
-        return float(spec.get("difficulty_tier", -1))
+        spec = state[RolloutStateKeys.SCENARIO_SPEC]
+        assert isinstance(spec, dict)
+        return float(spec["difficulty_tier"])
 
     rubric = vf.Rubric(funcs=[diagnosis_reward], weights=[1.0])
     rubric.add_metric(difficulty_metric)
@@ -249,15 +219,18 @@ def build_rubric() -> vf.Rubric:
 
 
 async def _metric_strict_pass(state: vf.State) -> float:
-    vr = state.get(RolloutStateKeys.VERIFICATION_RESULT) or {}
-    return float(vr.get("strict_pass", 0.0))
+    vr = state[RolloutStateKeys.VERIFICATION_RESULT]
+    assert isinstance(vr, dict)
+    return float(vr["strict_pass"])
 
 
 async def _metric_has_bug_match(state: vf.State) -> float:
-    vr = state.get(RolloutStateKeys.VERIFICATION_RESULT) or {}
-    return 1.0 if vr.get("has_bug_match") else 0.0
+    vr = state[RolloutStateKeys.VERIFICATION_RESULT]
+    assert isinstance(vr, dict)
+    return 1.0 if vr["has_bug_match"] else 0.0
 
 
 async def _metric_root_cov(state: vf.State) -> float:
-    vr = state.get(RolloutStateKeys.VERIFICATION_RESULT) or {}
-    return float(vr.get("root_cause_coverage", 0.0))
+    vr = state[RolloutStateKeys.VERIFICATION_RESULT]
+    assert isinstance(vr, dict)
+    return float(vr["root_cause_coverage"])

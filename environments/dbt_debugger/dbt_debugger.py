@@ -8,31 +8,17 @@ from typing import Any
 
 import verifiers as vf
 from datasets import Dataset
+from dotenv import load_dotenv
 
 from runtime.env import DbtDebuggerEnv, build_rubric
 
 
 def _load_dotenv_files() -> None:
-    """Load ``.env`` files into the process environment (non-destructive).
-
-    With ``python-dotenv`` defaults, the first file that defines a key wins; keys
-    already present in the process environment are never overwritten.
-
-    Precedence (highest first): current working directory, then this package
-    directory, then lab/repo root (``.../lab/.env`` when the package lives under
-    ``environments/dbt_debugger``). Repo root therefore supplies defaults for
-    keys omitted in cwd/package files.
-    """
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-
+    """Load cwd, package, then repo-root ``.env`` without overriding existing env vars."""
     pkg_dir = Path(__file__).resolve().parent
-    repo_root = pkg_dir.parent.parent
     load_dotenv()
     load_dotenv(pkg_dir / ".env")
-    load_dotenv(repo_root / ".env")
+    load_dotenv(pkg_dir.parent.parent / ".env")
 
 
 def _gold_paths() -> list[Path]:

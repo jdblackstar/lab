@@ -116,13 +116,6 @@ def _effective_read_globs(tool_visible_globs: list[str]) -> list[str]:
     return list(tool_visible_globs) + list(_EXTRA_READ_GLOBS)
 
 
-def _visible_globs(tool_visible_globs: list[str] | None) -> list[str]:
-    """Return visible globs while preserving explicit empty allowlists."""
-    if tool_visible_globs is None:
-        return ["**/*"]
-    return list(tool_visible_globs)
-
-
 def _resolve_under_root(rel: str, project_root: Path) -> Path:
     """Resolve a project-relative path while preventing root escape."""
     rel_n = _normalize_rel_path(rel)
@@ -139,7 +132,7 @@ def _resolve_under_root(rel: str, project_root: Path) -> Path:
 
 def _is_immutable(rel_posix: str, immutable_paths: list[str]) -> bool:
     """Return whether *rel_posix* is immutable under the manifest."""
-    return rel_posix in set(immutable_paths)
+    return rel_posix in immutable_paths
 
 
 async def list_files(
@@ -152,7 +145,7 @@ async def list_files(
     _state: dict[str, Any] | None = None,
 ) -> str:
     """List files under *path* (project-relative). Hidden internal paths are never visible."""
-    globs = _visible_globs(tool_visible_globs)
+    globs = ["**/*"] if tool_visible_globs is None else list(tool_visible_globs)
     imm = immutable_paths or []
     root = Path(project_root)
     if not root.is_dir():
@@ -219,7 +212,8 @@ async def read_file(
     _state: dict[str, Any] | None = None,
 ) -> str:
     """Read a text file with line numbers (1-based inclusive range)."""
-    globs = _effective_read_globs(_visible_globs(tool_visible_globs))
+    base = ["**/*"] if tool_visible_globs is None else list(tool_visible_globs)
+    globs = _effective_read_globs(base)
     imm = immutable_paths or []
     root = Path(project_root)
 
@@ -278,7 +272,8 @@ async def search_project(
         regex = re.compile(pattern)
     except re.error as exc:
         return f"Error: invalid regex: {exc}"
-    globs = _effective_read_globs(_visible_globs(tool_visible_globs))
+    base = ["**/*"] if tool_visible_globs is None else list(tool_visible_globs)
+    globs = _effective_read_globs(base)
     root = Path(project_root)
 
     def _run() -> str:
