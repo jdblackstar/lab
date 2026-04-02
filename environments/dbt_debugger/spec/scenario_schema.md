@@ -15,13 +15,13 @@ This document defines the canonical structure for each gold scenario file under 
 |-------|------|----------|------------|-------------|
 | `schema_version` | `integer` | yes | evaluator | Must be `1`. |
 | `scenario_id` | `string` | yes | tool + evaluator | Stable slug, `[a-z0-9_]+`. |
-| `title` | `string` | yes | tool | Short human title for logs and UI. |
+| `title` | `string` | yes | evaluator | Short maintainer title; keep it neutral because it should not appear in prompts. |
 | `difficulty_tier` | `integer` | yes | tool | `1`–`4` per benchmark difficulty curve. |
 | `failure_categories` | `string[]` | yes | evaluator | One or more of: `join`, `incremental`, `source_schema`, `logic`, `macro`, `config`, `no_bug`. |
 | `has_bug` | `boolean` | yes | evaluator | `false` for false-alarm scenarios. |
 | `metadata` | `object` | yes | mixed | See [Metadata](#metadata). |
 | `symptom` | `object` | yes | tool | Stakeholder report shown to the model. |
-| `dag` | `object` | yes | tool | DAG description and model list. |
+| `dag` | `object` | yes | evaluator | DAG description and model list used by the evaluator/runtime, not the prompt. |
 | `dbt_project` | `object` | yes | tool | Files that materialize into the rollout workspace. |
 | `sample_data` | `object` | yes | tool | Tabular samples keyed by logical table/source name. |
 | `run_history` | `object` | yes | tool | Synthetic dbt run / test summary. |
@@ -125,9 +125,10 @@ Keyed by logical name (e.g. `source_stripe__payments`). Each value:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `pass_criteria` | `string[]` | yes | Bullet list of what a correct diagnosis must assert. |
-| `required_evidence` | `object[]` | yes | Each: `{ "kind", "detail" }` where `kind` is `model`, `source`, `test`, `log`, `macro`, `config`. |
-| `forbidden_claims` | `string[]` | no | Claims that should fail scoring if asserted for `no_bug` scenarios. |
+| `pass_criteria` | `string[]` | yes | Human-readable reviewer notes about what a correct diagnosis should cover. |
+| `accepted_diagnoses` | `object[]` | yes | Deterministic scoring contract. Each item declares `required_models`, `allowed_models`, `root_cause_all_of`, and `fix_variants`. `root_cause_all_of` is a list of synonym groups where at least one phrase in each group must appear. `fix_variants` is a list of alternative claim patterns, each using the same synonym-group format. |
+| `required_evidence` | `object[]` | yes | Grounded artifact requirements. Use one of: `file_span` (`path`, `all_of`), `sample_rows` (`table`, `match`, optional `min_rows`, `all_of`), or `run_history` (`record_type`, plus fields such as `contains`, `model`, `name`, `status`). |
+| `forbidden_claims` | `claim_pattern[]` | no | Negative claim patterns for `no_bug` scenarios. Each pattern is a list of synonym groups; if all groups match, scoring fails. |
 
 ---
 
@@ -165,10 +166,10 @@ Array of objects:
 
 ## Mapping to Verifiers (preview)
 
-- **Dataset row**: `question` or `prompt` built from `symptom` + instructions; `info` holds `scenario_id` and non-sensitive pointers.
+- **Dataset row**: `question` or `prompt` built from `symptom` + generic instructions only; do not expose `title`, `dag`, or exact debug-context filenames.
 - **`setup_state`**: Copy `dbt_project.files` (+ seeds/macros) into `workspace_root`; attach `ground_truth` / `rubric_hints` to state for scoring only.
 - **Tools**: See [runtime_mapping.md](runtime_mapping.md).
-- **Rubric**: Compare structured `submit_diagnosis` payload to `ground_truth` + `rubric_hints` deterministically first.
+- **Rubric**: Compare structured `submit_diagnosis` payload to `rubric_hints.accepted_diagnoses` and grounded evidence requirements deterministically first.
 
 ---
 

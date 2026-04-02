@@ -59,7 +59,7 @@ For large corpora, switch to `vf.DatasetBuilder` (lazy builder) as described in 
 | `list_files`       | `path`, `max_entries`     | `workspace_root`     | Directory listing under workspace             |
 | `read_file`        | `path`, line range        | `workspace_root`     | Read text file                                |
 | `search_project`   | `pattern`, `glob`         | `workspace_root`     | Ripgrep-like search (async-friendly)          |
-| `run_dbt_command`  | `args`, `timeout_seconds` | `workspace_root`     | Run `dbt ...` subprocess (async `to_thread`)  |
+| `run_dbt_command`  | structured subcommand + selectors | `workspace_root`     | Run a restricted `dbt` subprocess without arbitrary CLI flags |
 | `read_artifact`    | `path`                    | `workspace_root`     | Read `target/` or logs if allowed by manifest |
 | `submit_diagnosis` | structured JSON fields    | `scenario_id`        | Validates schema; sets stop flag              |
 
@@ -73,9 +73,9 @@ Register each with `add_tool(..., args_to_skip=[...])` and implement `update_too
 
 ## Rubric (deterministic first)
 
-1. Parse `submitted_diagnosis` payload (root cause, affected models, fix, evidence refs).
-2. Compare to `ground_truth` + `rubric_hints.pass_criteria` / `required_evidence`.
-3. For `has_bug: false`, assert **no** forbidden code-change claims (`rubric_hints.forbidden_claims`).
+1. Parse `submitted_diagnosis` payload (root cause, affected models, fix, structured evidence refs).
+2. Compare to `rubric_hints.accepted_diagnoses` plus grounded `required_evidence`.
+3. For `has_bug: false`, assert **no** forbidden claim patterns (`rubric_hints.forbidden_claims`).
 4. Optional later: `vf.JudgeRubric` for explanation quality, composed via `vf.RubricGroup` ([Environments — RubricGroup](https://docs.primeintellect.ai/verifiers/environments)).
 
 ## Packaging and install
@@ -86,7 +86,7 @@ Register each with `add_tool(..., args_to_skip=[...])` and implement `update_too
 
 ## Current phase (implemented)
 
-`dbt_debugger.py` exposes `load_environment()` building a `**SingleTurnEnv`** over the gold corpus with a **zero-weight placeholder rubric**. This validates packaging, dataset wiring, and `prime eval run` ergonomics before dbt execution and `StatefulToolEnv` land.
+`dbt_debugger.py` exposes `load_environment()` building a `DbtDebuggerEnv` `StatefulToolEnv` over the gold corpus. Each rollout materializes a temp dbt workspace, exposes bounded debugging tools, and scores a structured diagnosis deterministically.
 
 ## Performance hygiene
 

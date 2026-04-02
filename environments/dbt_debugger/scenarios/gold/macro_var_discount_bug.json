@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scenario_id": "macro_var_discount_bug",
-  "title": "Enterprise discount looks wrong after config change",
+  "title": "Enterprise discounts changed after the rollout",
   "difficulty_tier": 3,
   "failure_categories": ["logic", "macro", "config"],
   "has_bug": true,
@@ -97,9 +97,47 @@
       "States enterprise rate is wrong under loyalty_enabled=true in discount_rate macro.",
       "Names int_deal_discounts as where incorrect discount_amount is computed."
     ],
+    "accepted_diagnoses": [
+      {
+        "required_models": ["int_deal_discounts"],
+        "allowed_models": ["int_deal_discounts", "fct_deal_margin"],
+        "root_cause_all_of": [
+          ["int_deal_discounts"],
+          ["discount_rate", "macro"],
+          ["loyalty_rollout_enabled", "rollout flag", "var"],
+          ["enterprise", "wrong rate", "consumer rate", "0.00"]
+        ],
+        "fix_variants": [
+          [
+            ["discount_rate", "macro"],
+            ["enterprise"],
+            ["consumer"],
+            ["swap", "correct", "align"]
+          ],
+          [
+            ["loyalty_rollout_enabled", "rollout flag", "var"],
+            ["reconcile", "align", "correct"],
+            ["semantics", "default", "setting"]
+          ]
+        ]
+      }
+    ],
     "required_evidence": [
-      {"kind": "macro", "detail": "macros/discount_rate.sql case mapping under loyalty_enabled"},
-      {"kind": "config", "detail": "dbt_project.yml vars.loyalty_rollout_enabled: true"}
+      {
+        "kind": "file_span",
+        "path": "macros/discount_rate.sql",
+        "all_of": ["enterprise", "0.00", "0.10"]
+      },
+      {
+        "kind": "file_span",
+        "path": "dbt_project.yml",
+        "all_of": ["loyalty_rollout_enabled: true"]
+      },
+      {
+        "kind": "file_span",
+        "path": "models/intermediate/int_deal_discounts.sql",
+        "all_of": ["discount_rate('customer_segment', var('loyalty_rollout_enabled'))"]
+      }
     ]
   },
   "hypothesis_space": [

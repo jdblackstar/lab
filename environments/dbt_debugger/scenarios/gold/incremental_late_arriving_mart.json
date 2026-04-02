@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scenario_id": "incremental_late_arriving_mart",
-  "title": "Mart revenue missing after warehouse backfill",
+  "title": "Historical orders still missing after backfill",
   "difficulty_tier": 3,
   "failure_categories": ["incremental"],
   "has_bug": true,
@@ -96,9 +96,42 @@
       "Explains why backfilled rows with older ingested_at are excluded.",
       "Names int_orders_incremental as the primary failure point."
     ],
+    "accepted_diagnoses": [
+      {
+        "required_models": ["int_orders_incremental"],
+        "allowed_models": ["int_orders_incremental", "fct_orders_daily"],
+        "root_cause_all_of": [
+          ["int_orders_incremental"],
+          ["ingested_at >", "max(ingested_at)", "incremental predicate"],
+          ["backfill", "late-arriving", "older ingested_at"],
+          ["skipped", "excluded", "never loaded"]
+        ],
+        "fix_variants": [
+          [
+            ["order_date window", "business timestamp window", "backfill window"],
+            ["late-arriving", "backfill"]
+          ],
+          [
+            ["merge on order_id", "delete+insert", "full refresh"],
+            ["affected dates", "partitions", "backfilled dates"]
+          ]
+        ]
+      }
+    ],
     "required_evidence": [
-      {"kind": "model", "detail": "int_orders_incremental incremental filter"},
-      {"kind": "log", "detail": "second run inserted 0 rows despite new business dates in landing"}
+      {
+        "kind": "file_span",
+        "path": "models/intermediate/int_orders_incremental.sql",
+        "all_of": [
+          "is_incremental()",
+          "ingested_at > (select max(ingested_at) from {{ this }})"
+        ]
+      },
+      {
+        "kind": "run_history",
+        "record_type": "summary",
+        "contains": "subsequent run inserted 0 rows"
+      }
     ]
   },
   "hypothesis_space": [

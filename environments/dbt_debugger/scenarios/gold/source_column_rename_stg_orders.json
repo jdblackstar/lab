@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scenario_id": "source_column_rename_stg_orders",
-  "title": "Stripe staging returns null amounts after vendor column rename (charges)",
+  "title": "Stripe revenue flatlined this morning",
   "difficulty_tier": 2,
   "failure_categories": ["source_schema"],
   "has_bug": true,
@@ -48,7 +48,7 @@
   },
   "sample_data": {
     "stripe_charges": {
-      "description": "Vendor renamed amount → amount_cents; old column amount removed.",
+      "description": "Recent Stripe charges landing sample.",
       "columns": [
         {"name": "id", "type": "string"},
         {"name": "created_at", "type": "string"},
@@ -61,7 +61,7 @@
     }
   },
   "run_history": {
-    "summary": "dbt run succeeded; compile OK; warehouse returns NULL for missing column alias in some engines or fails silently in view creation depending on adapter — scenario assumes view builds with NULL amount_usd.",
+    "summary": "dbt run completed without hard failures, but downstream Stripe revenue stayed near zero after the morning load.",
     "model_results": [
       {"model": "stg_charges", "status": "success"},
       {"model": "int_charges_enriched", "status": "success"},
@@ -71,7 +71,7 @@
       {"name": "not_null_int_charges_enriched_amount_usd", "status": "passed", "message": "coalesce masks nulls — test passes incorrectly"}
     ],
     "warnings": [
-      "Warehouse logged implicit NULL for unknown column reference in legacy SQL mode (synthetic)."
+      "Warehouse emitted a staging adapter note during the morning run (synthetic)."
     ]
   },
   "ground_truth": {
@@ -95,9 +95,52 @@
       "Names stg_charges as the first broken model.",
       "Notes coalesce masking as why tests may still pass."
     ],
+    "accepted_diagnoses": [
+      {
+        "required_models": ["stg_charges"],
+        "allowed_models": [
+          "stg_charges",
+          "int_charges_enriched",
+          "fct_daily_stripe_revenue"
+        ],
+        "root_cause_all_of": [
+          ["stg_charges"],
+          ["amount_cents", "renamed column", "source schema drift", "missing amount column"],
+          ["amount as amount_usd", "old amount field", "references amount"],
+          ["coalesce", "masked to zero", "masked downstream", "zeros downstream"]
+        ],
+        "fix_variants": [
+          [
+            ["stg_charges"],
+            ["amount_cents"],
+            ["divide by 100", "convert to usd", "convert cents to usd"]
+          ],
+          [
+            ["update stg_charges", "stg_charges"],
+            ["amount_cents"],
+            ["schema test", "column test", "contract"]
+          ]
+        ]
+      }
+    ],
     "required_evidence": [
-      {"kind": "source", "detail": "Sample rows show amount_cents only"},
-      {"kind": "model", "detail": "stg_charges references amount not amount_cents"}
+      {
+        "kind": "file_span",
+        "path": "models/staging/stg_charges.sql",
+        "all_of": ["amount as amount_usd"]
+      },
+      {
+        "kind": "sample_rows",
+        "table": "stripe_charges",
+        "match": {"id": "ch_001"},
+        "min_rows": 1,
+        "all_of": ["amount_cents"]
+      },
+      {
+        "kind": "file_span",
+        "path": "models/intermediate/int_charges_enriched.sql",
+        "all_of": ["coalesce(amount_usd, 0)"]
+      }
     ]
   },
   "hypothesis_space": [

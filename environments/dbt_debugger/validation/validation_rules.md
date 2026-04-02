@@ -24,22 +24,30 @@ This document lists checks beyond JSON Schema structure. Implementations should 
 9. **Affected models subset**: Every `ground_truth.affected_models[]` must be in `dag.models[].name`.
 10. **Empty when no bug**: If `has_bug` is `false`, `ground_truth.affected_models` should be `[]`.
 
+## Rubric contract
+
+11. **Accepted diagnoses**: Every scenario must define `rubric_hints.accepted_diagnoses[]` with explicit `required_models`, `allowed_models`, `root_cause_all_of`, and `fix_variants`.
+12. **Grounded evidence**: `required_evidence` must point to resolvable artifacts (`file_span`, `sample_rows`, or `run_history`), not free-text hints.
+13. **No-bug guardrails**: `has_bug: false` scenarios should include structured `forbidden_claims`.
+
 ## Artifact manifest
 
-11. **Immutable paths exist**: Every `artifact_manifest.immutable_paths[]` must match a `dbt_project.files[].path`.
-12. **Globs**: `tool_visible_globs` entries are glob patterns; validator may skip strict existence checks.
+14. **Immutable paths exist**: Every `artifact_manifest.immutable_paths[]` must match a `dbt_project.files[].path`.
+15. **Globs**: `tool_visible_globs` entries are glob patterns; validator may skip strict existence checks.
 
 ## Corpus coverage (gold set)
 
 When validating the whole `scenarios/gold/` directory:
 
-13. **Category coverage**: At least one scenario must tag each of: `join`, `incremental`, `source_schema`, `logic`, `macro` or `config`, `no_bug`.
-14. **Tier spread**: Recommend at least one tier ≥ 3 and one `no_bug` scenario.
+16. **Category coverage**: At least one scenario must tag each of: `join`, `incremental`, `source_schema`, `logic`, `macro`, `config`, `no_bug`.
+17. **Tier targets**: The gold set should meet the `2/3/3/2` target for tiers `1/2/3/4`.
+18. **Bug balance**: The gold set should include at least 4 `no_bug` scenarios.
+19. **Pure category checks**: Include at least one pure `logic` scenario and one pure `config` scenario.
 
 ## SQL hygiene (optional linter)
 
-15. No Markdown triple-backtick fences inside JSON string fields.
-16. Prefer `\n` newlines inside SQL strings; avoid unescaped raw newlines if they break JSON (files must remain valid JSON).
+20. No Markdown triple-backtick fences inside JSON string fields.
+21. Prefer `\n` newlines inside SQL strings; avoid unescaped raw newlines if they break JSON (files must remain valid JSON).
 
 Run checks:
 

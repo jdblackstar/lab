@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "scenario_id": "order_item_grain_count_gap",
+  "title": "Merchandise dashboard order count looks high",
+  "difficulty_tier": 2,
+  "failure_categories": ["join", "no_bug"],
+  "has_bug": false,
+  "metadata": {
+    "author": "benchmark",
+    "tags": ["grain", "order_items", "false_alarm"]
+  },
+  "symptom": {
+    "channel": "slack",
+    "from_role": "merchandising",
+    "message": "The item performance dashboard shows more \"orders\" than the checkout KPI for the same week and the team is worried a recent join duplicated rows. Revenue still roughly ties out."
+  },
+  "dag": {
+    "notation": "source('commerce','orders') → stg_orders\nsource('commerce','order_items') → stg_order_items\nstg_orders + stg_order_items → fct_merch_sales",
+    "models": [
+      {
+        "name": "stg_orders",
+        "path": "models/staging/stg_orders.sql",
+        "role": "staging"
+      },
+      {
+        "name": "stg_order_items",
+        "path": "models/staging/stg_order_items.sql",
+        "role": "staging"
+      },
+      {
+        "name": "fct_merch_sales",
+        "path": "models/marts/fct_merch_sales.sql",
+        "role": "mart"
+      }
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\n\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    marts:\n      +materialized: table\n"
+      },
+      {
+        "path": "packages.yml",
+        "content": "packages: []\n"
+      },
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: commerce\n    schema: commerce\n    tables:\n      - name: orders\n      - name: order_items\n"
+      },
+      {
+        "path": "models/staging/stg_orders.sql",
+        "content": "select\n    order_id,\n    order_date,\n    customer_id\nfrom {{ source('commerce', 'orders') }}\n"
+      },
+      {
+        "path": "models/staging/stg_order_items.sql",
+        "content": "select\n    order_id,\n    sku,\n    quantity,\n    item_revenue\nfrom {{ source('commerce', 'order_items') }}\n"
+      },
+      {
+        "path": "models/marts/fct_merch_sales.sql",
+        "content": "select\n    o.order_id,\n    o.order_date,\n    i.sku,\n    i.quantity,\n    i.item_revenue\nfrom {{ ref('stg_orders') }} o\ninner join {{ ref('stg_order_items') }} i\n  on o.order_id = i.order_id\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "commerce_orders": {
+      "columns": [
+        {"name": "order_id", "type": "integer"},
+        {"name": "order_date", "type": "string"},
+        {"name": "customer_id", "type": "integer"}
+      ],
+      "rows": [
+        {"order_id": 2001, "order_date": "2026-03-28", "customer_id": 10},
+        {"order_id": 2002, "order_date": "2026-03-28", "customer_id": 11}
+      ]
+    },
+    "commerce_order_items": {
+      "columns": [
+        {"name": "order_id", "type": "integer"},
+        {"name": "sku", "type": "string"},
+        {"name": "quantity", "type": "integer"},
+        {"name": "item_revenue", "type": "numeric"}
+      ],
+      "rows": [
+        {"order_id": 2001, "sku": "SKU-RED", "quantity": 1, "item_revenue": 40.0},
+        {"order_id": 2001, "sku": "SKU-BLUE", "quantity": 2, "item_revenue": 80.0},
+        {"order_id": 2002, "sku": "SKU-GREEN", "quantity": 1, "item_revenue": 55.0}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "Merch sales mart refreshed cleanly and revenue totals still line up with item-level source extracts.",
+    "model_results": [
+      {"model": "stg_orders", "status": "success"},
+      {"model": "stg_order_items", "status": "success"},
+      {"model": "fct_merch_sales", "status": "success"}
+    ],
+    "tests": [
+      {"name": "not_null_fct_merch_sales_order_id", "status": "passed", "message": "OK"}
+    ],
+    "warnings": []
+  },
+  "ground_truth": {
+    "root_cause": "No bug — fct_merch_sales is intentionally item-grain, so counting rows or raw order_id values overstates order count whenever a single order has multiple item rows.",
+    "affected_models": [],
+    "fix": "No dbt fix needed — use count(distinct order_id) or an order-grain mart for order counts, and document the mart grain more clearly.",
+    "common_misdiagnoses": [
+      "The join duplicated rows unexpectedly (the extra rows are legitimate item-grain rows).",
+      "stg_orders has duplicate order_ids (source order table is unique).",
+      "Revenue is duplicated in the mart (item revenue still reconciles correctly)."
+    ],
+    "investigation_path": [
+      "Inspect the mart grain and identify whether it is one row per order item.",
+      "Find an order with multiple item rows in the sample data.",
+      "Compare row counts versus distinct order_id counts."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Recognizes the mart is item-grain rather than order-grain.",
+      "Explains why counting rows or non-distinct order_ids overstates orders.",
+      "Uses a concrete order with multiple item rows as evidence."
+    ],
+    "accepted_diagnoses": [
+      {
+        "required_models": [],
+        "allowed_models": [],
+        "root_cause_all_of": [
+          ["item grain", "order item grain", "one row per item"],
+          ["distinct order_id", "count distinct order_id", "row count"],
+          ["multiple items", "multiple item rows", "sku"],
+          ["same order", "order 2001", "single order"]
+        ],
+        "fix_variants": [
+          [
+            ["count distinct order_id", "distinct order_id"],
+            ["order count", "orders"]
+          ],
+          [
+            ["order-grain mart", "separate mart", "different mart"],
+            ["document", "clarify", "label"],
+            ["grain"]
+          ]
+        ]
+      }
+    ],
+    "required_evidence": [
+      {
+        "kind": "file_span",
+        "path": "models/marts/fct_merch_sales.sql",
+        "all_of": ["order_id", "sku", "item_revenue"]
+      },
+      {
+        "kind": "sample_rows",
+        "table": "commerce_order_items",
+        "match": {"order_id": 2001},
+        "min_rows": 2,
+        "all_of": ["SKU-RED", "SKU-BLUE"]
+      }
+    ],
+    "forbidden_claims": [
+      [
+        ["pipeline", "warehouse", "dbt", "join"],
+        ["broken", "duplicated", "corrupt", "fanout bug"]
+      ],
+      [
+        ["rewrite", "delete", "drop", "rebuild"],
+        ["fct_merch_sales"]
+      ]
+    ]
+  },
+  "hypothesis_space": [
+    {
+      "id": "h1",
+      "hypothesis": "The mart is item-grain and the team is counting the wrong thing.",
+      "plausible": true
+    },
+    {
+      "id": "h2",
+      "hypothesis": "A recent join duplicated order rows unexpectedly.",
+      "plausible": true
+    }
+  ],
+  "red_herrings": [],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml", "packages.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

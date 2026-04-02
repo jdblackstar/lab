@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "scenario_id": "finalized_bookings_definition_gap",
+  "title": "Finance and ops booking totals do not match",
+  "difficulty_tier": 1,
+  "failure_categories": ["logic", "no_bug"],
+  "has_bug": false,
+  "metadata": {
+    "author": "benchmark",
+    "tags": ["definitions", "bookings", "false_alarm"]
+  },
+  "symptom": {
+    "channel": "slack",
+    "from_role": "ops",
+    "message": "Ops says their daily export has more bookings than the finance dashboard for the same date and worries dbt is dropping rows. Finance says the dashboard is only supposed to include committed business."
+  },
+  "dag": {
+    "notation": "source('crm','bookings') → stg_bookings\nstg_bookings → fct_daily_bookings",
+    "models": [
+      {
+        "name": "stg_bookings",
+        "path": "models/staging/stg_bookings.sql",
+        "role": "staging"
+      },
+      {
+        "name": "fct_daily_bookings",
+        "path": "models/marts/fct_daily_bookings.sql",
+        "role": "mart"
+      }
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\n\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    marts:\n      +materialized: table\n"
+      },
+      {
+        "path": "packages.yml",
+        "content": "packages: []\n"
+      },
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: crm\n    schema: crm\n    tables:\n      - name: bookings\n"
+      },
+      {
+        "path": "models/staging/stg_bookings.sql",
+        "content": "select\n    booking_id,\n    booking_date,\n    booking_status,\n    amount_usd\nfrom {{ source('crm', 'bookings') }}\n"
+      },
+      {
+        "path": "models/marts/fct_daily_bookings.sql",
+        "content": "select\n    booking_date,\n    count(*) as finalized_bookings,\n    sum(amount_usd) as finalized_amount_usd\nfrom {{ ref('stg_bookings') }}\nwhere booking_status = 'finalized'\ngroup by 1\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "crm_bookings": {
+      "columns": [
+        {"name": "booking_id", "type": "integer"},
+        {"name": "booking_date", "type": "string"},
+        {"name": "booking_status", "type": "string"},
+        {"name": "amount_usd", "type": "numeric"}
+      ],
+      "rows": [
+        {"booking_id": 101, "booking_date": "2026-03-30", "booking_status": "finalized", "amount_usd": 900.0},
+        {"booking_id": 102, "booking_date": "2026-03-30", "booking_status": "provisional", "amount_usd": 600.0},
+        {"booking_id": 103, "booking_date": "2026-03-30", "booking_status": "finalized", "amount_usd": 500.0}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "Daily bookings mart refreshed successfully and finance totals still tie to the committed-bookings definition.",
+    "model_results": [
+      {"model": "stg_bookings", "status": "success"},
+      {"model": "fct_daily_bookings", "status": "success"}
+    ],
+    "tests": [
+      {"name": "not_null_fct_daily_bookings_finalized_bookings", "status": "passed", "message": "OK"}
+    ],
+    "warnings": []
+  },
+  "ground_truth": {
+    "root_cause": "No bug — fct_daily_bookings intentionally filters to finalized bookings, while the ops export includes provisional rows that are not part of the finance metric definition.",
+    "affected_models": [],
+    "fix": "No fix needed — align consumers on the metric definition or publish a separate provisional-bookings metric.",
+    "common_misdiagnoses": [
+      "dbt is dropping rows from stg_bookings (the missing rows are provisional by design).",
+      "Booking status is being nulled in staging (status values are present in the source sample).",
+      "The mart should include every booking regardless of downstream metric definition."
+    ],
+    "investigation_path": [
+      "Compare the finance mart filter to the source booking statuses.",
+      "Verify provisional rows exist in sample data for the affected date.",
+      "Confirm the discrepancy is metric scope, not row loss."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Concludes there is no dbt defect once the booking definition is understood.",
+      "Identifies the finalized-only filter in the mart.",
+      "Uses provisional rows as the explanation for the count gap."
+    ],
+    "accepted_diagnoses": [
+      {
+        "required_models": [],
+        "allowed_models": [],
+        "root_cause_all_of": [
+          ["finalized", "committed"],
+          ["provisional", "pending"],
+          ["definition", "metric definition", "scope"],
+          ["ops export", "finance dashboard", "same source data"]
+        ],
+        "fix_variants": [
+          [
+            ["align", "document", "clarify"],
+            ["definition", "metric"],
+            ["provisional", "finalized"]
+          ],
+          [
+            ["separate metric", "separate dashboard", "separate view"],
+            ["provisional", "bookings"]
+          ]
+        ]
+      }
+    ],
+    "required_evidence": [
+      {
+        "kind": "file_span",
+        "path": "models/marts/fct_daily_bookings.sql",
+        "all_of": ["booking_status = 'finalized'"]
+      },
+      {
+        "kind": "sample_rows",
+        "table": "crm_bookings",
+        "match": {"booking_date": "2026-03-30"},
+        "min_rows": 3,
+        "all_of": ["provisional", "finalized"]
+      }
+    ],
+    "forbidden_claims": [
+      [
+        ["pipeline", "warehouse", "dbt", "mart"],
+        ["broken", "corrupt", "dropping rows", "regressed"]
+      ],
+      [
+        ["rewrite", "delete", "drop", "rebuild"],
+        ["fct_daily_bookings"]
+      ]
+    ]
+  },
+  "hypothesis_space": [
+    {
+      "id": "h1",
+      "hypothesis": "The finance mart intentionally excludes provisional bookings.",
+      "plausible": true
+    },
+    {
+      "id": "h2",
+      "hypothesis": "dbt is dropping rows during the nightly refresh.",
+      "plausible": true
+    }
+  ],
+  "red_herrings": [],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml", "packages.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

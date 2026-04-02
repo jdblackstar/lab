@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scenario_id": "join_fanout_exec_revenue",
-  "title": "Executive revenue ~2x after promo eligibility join",
+  "title": "Executive revenue jumped after yesterday's refresh",
   "difficulty_tier": 2,
   "failure_categories": ["join"],
   "has_bug": true,
@@ -15,7 +15,7 @@
     "message": "Hey — the exec dashboard daily revenue has looked roughly 2x since yesterday afternoon. Finance says it doesn't match Stripe. Can someone triage? Nothing obvious changed in Looker filters on our side."
   },
   "dag": {
-    "notation": "source('raw','orders') → stg_orders\nsource('raw','customers') → stg_customers\nsource('raw','order_promos') → stg_order_promos\nstg_orders + stg_order_promos → int_order_lines (BUG: fanout)\nint_order_lines → fct_daily_revenue",
+    "notation": "source('raw','orders') → stg_orders\nsource('raw','customers') → stg_customers\nsource('raw','order_promos') → stg_order_promos\nstg_orders + stg_order_promos → int_order_lines\nint_order_lines → fct_daily_revenue",
     "models": [
       {"name": "stg_orders", "path": "models/staging/stg_orders.sql", "role": "staging"},
       {"name": "stg_customers", "path": "models/staging/stg_customers.sql", "role": "staging"},
@@ -129,9 +129,46 @@
       "Explains multiplicative effect on sum(amount) in fct_daily_revenue.",
       "Mentions order 1001 appearing twice with different promo_code as concrete evidence."
     ],
+    "accepted_diagnoses": [
+      {
+        "required_models": ["int_order_lines"],
+        "allowed_models": ["int_order_lines", "fct_daily_revenue"],
+        "root_cause_all_of": [
+          ["int_order_lines"],
+          ["join fanout", "fanout", "duplicate join", "row multiplication"],
+          ["stg_order_promos", "order_promos", "promo rows"],
+          ["duplicate", "double count", "inflating", "multiplies"]
+        ],
+        "fix_variants": [
+          [
+            ["dedupe", "deduplicate", "row_number", "qualify"],
+            ["promo", "order_promos"]
+          ],
+          [
+            ["aggregate", "pre-aggregate", "group by"],
+            ["promo", "order_promos"],
+            ["before join", "prior to join", "upstream of the join"]
+          ],
+          [
+            ["bridge", "mapping table"],
+            ["cardinality", "one row per order", "one promo per order"]
+          ]
+        ]
+      }
+    ],
     "required_evidence": [
-      {"kind": "model", "detail": "int_order_lines.sql inner join on order_id to promos"},
-      {"kind": "source", "detail": "raw_order_promos sample shows two rows for order_id 1001"}
+      {
+        "kind": "file_span",
+        "path": "models/intermediate/int_order_lines.sql",
+        "all_of": ["inner join", "order_id", "stg_order_promos"]
+      },
+      {
+        "kind": "sample_rows",
+        "table": "raw_order_promos",
+        "match": {"order_id": 1001},
+        "min_rows": 2,
+        "all_of": ["SPRING10", "LOYALTY5"]
+      }
     ]
   },
   "hypothesis_space": [

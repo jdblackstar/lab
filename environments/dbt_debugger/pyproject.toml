@@ -8,6 +8,16 @@ tags = ["multi-turn", "tool-use", "dbt", "analytics", "eval"]
 dependencies = [
     "verifiers>=0.1.11",
     "datasets>=3.0.0",
+    "dbt-core>=1.8.0",
+    "dbt-duckdb>=1.8.0",
+    "duckdb>=1.0.0",
+    "pyyaml>=6.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
 ]
 
 [build-system]
@@ -30,3 +40,6 @@ include = [
 [tool.verifiers.eval]
 num_examples = 5
 rollouts_per_example = 1
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

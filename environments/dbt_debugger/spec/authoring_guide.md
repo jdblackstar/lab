@@ -26,6 +26,7 @@ When batch-authoring with an LLM, **generate one scenario per call** against the
 - Use **Slack / ticket** voice: urgency, missing context, wrong dashboard slice.
 - Avoid: SQL snippets, dbt errors pasted verbatim, “check line 47.”
 - Do include: **when** it started, **which metric** looks wrong, **business impact** cue.
+- Keep `title`, `run_history.summary`, and `sample_data.description` neutral; they should not restate the answer key.
 
 ## DAG and SQL
 
@@ -56,9 +57,10 @@ When batch-authoring with an LLM, **generate one scenario per call** against the
 
 ## Rubric hints
 
-- `pass_criteria`: observable claims an automated checker can verify from a structured diagnosis (model names, join type, incremental clause, etc.).
-- `required_evidence`: tie to artifacts the agent should cite (e.g. `int_orders_enriched` SQL, `stripe.payments` sample row).
-- For `no_bug`: add `forbidden_claims` like “drop the mart model” or “fix the ETL.”
+- `pass_criteria`: human-readable notes about what a correct diagnosis should cover.
+- `accepted_diagnoses`: make the runtime contract explicit with `required_models`, `allowed_models`, `root_cause_all_of`, and alternative `fix_variants`.
+- `required_evidence`: tie each requirement to a resolvable artifact (`file_span`, `sample_rows`, or `run_history`) rather than free-text keywords.
+- For `no_bug`: add structured `forbidden_claims` patterns like “rewrite the mart” or “the warehouse is corrupting data.”
 
 ## Category coverage checklist
 

@@ -16,37 +16,41 @@ Run reliable environment evaluations and produce actionable summaries, not raw l
 ## Core Loop
 1. Run a smoke evaluation first (do not require pre-install):
 ```bash
-prime eval run my-env -m gpt-4.1-mini -n 5
+prime eval run my-env -m openai/gpt-4.1-mini -n 5
 ```
 2. Use owner/env slug directly when evaluating Hub environments:
 ```bash
-prime eval run owner/my-env -m gpt-4.1-mini -n 5
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 5
 ```
 3. Scale only after smoke pass:
 ```bash
-prime eval run owner/my-env -m gpt-4.1-mini -n 200 -r 3 -s
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 ```
 4. Treat ownerless env ids as local-first. If not found locally, rely on Prime resolution for your remote env where applicable.
 
 ## Endpoint Shortcuts And Model Family Choice
 1. Encourage users to define endpoint aliases in `configs/endpoints.toml` so model, base URL, and key wiring stay reusable.
-2. Use aliases via `-m <endpoint_id>` instead of repeating `-b` and `-k`.
-3. Ask users explicitly whether they want an instruct or reasoning model before non-trivial evaluations.
-4. Instruct go-tos for quick behavior checks: `gpt-4.1` series and `qwen3` instruct series.
-5. Reasoning go-tos for deeper test coverage: `gpt-5` series, `qwen3` thinking series, and `glm` series.
-6. Example endpoint registry:
+2. For `prime eval run -m`, prefer the provider's canonical model id (for example `openai/gpt-4.1-mini` or `qwen/qwen3-30b-a3b-instruct-2507`) rather than a short alias.
+3. Use `endpoint_id` values only in contexts that explicitly accept registry ids; do not assume short `endpoint_id` aliases resolve on the CLI.
+4. For direct calls to OpenAI’s `api.openai.com`, pass `-b`/`-k` and the provider’s short model name instead of relying on Prime Inference registry rows.
+5. Ask users explicitly whether they want an instruct or reasoning model before non-trivial evaluations.
+6. Instruct go-tos for quick behavior checks: `gpt-4.1` series and `qwen3` instruct series.
+7. Reasoning go-tos for deeper test coverage: `gpt-5` series, `qwen3` thinking series, and `glm` series.
+8. Example endpoint registry:
 ```toml
 [[endpoint]]
-endpoint_id = "gpt-4.1-mini"
-model = "gpt-4.1-mini"
-url = "https://api.openai.com/v1"
-key = "OPENAI_API_KEY"
-
-[[endpoint]]
-endpoint_id = "qwen3-32b-i"
-model = "qwen/qwen3-32b-instruct"
+endpoint_id = "openai/gpt-4.1-mini"
+model = "openai/gpt-4.1-mini"
 url = "https://api.pinference.ai/api/v1"
 key = "PRIME_API_KEY"
+type = "openai_chat_completions"
+
+[[endpoint]]
+endpoint_id = "qwen3-30b-i"
+model = "qwen/qwen3-30b-a3b-instruct-2507"
+url = "https://api.pinference.ai/api/v1"
+key = "PRIME_API_KEY"
+type = "openai_chat_completions"
 ```
 
 ## Publish Gate Before Large Runs
@@ -62,7 +66,7 @@ prime env push my-env --visibility PRIVATE
 ```
 4. For hosted eval workflows, prefer running large jobs against the Hub slug:
 ```bash
-prime eval run owner/my-env -m gpt-4.1-mini -n 200 -r 3 -s
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 ```
 
 ## Prefer Config-Driven Evals Beyond Smoke Tests
@@ -90,17 +94,17 @@ prime eval run my-env -s -C "judge_response,parsed_answer"
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-5. Save results to a custom output directory:
+5. Use TUI mode for live evaluation display:
 ```bash
-prime eval run my-env -s -o /path/to/output
+prime eval run my-env -u
 ```
 6. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-7. Scale worker processes to parallelize env execution:
+7. Use abbreviated summary for large comparison runs:
 ```bash
-prime eval run my-env -c 1024 -w 4
+prime eval run my-env -n 1000 -A
 ```
 8. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml

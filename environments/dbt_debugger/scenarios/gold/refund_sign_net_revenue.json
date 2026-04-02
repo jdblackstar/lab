@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "scenario_id": "refund_sign_net_revenue",
+  "title": "Daily net revenue looks off after a refund-heavy day",
+  "difficulty_tier": 1,
+  "failure_categories": ["logic"],
+  "has_bug": true,
+  "metadata": {
+    "author": "benchmark",
+    "tags": ["refunds", "net_revenue", "sign"]
+  },
+  "symptom": {
+    "channel": "slack",
+    "from_role": "finance",
+    "message": "Net revenue for yesterday came in much higher than finance expected after a big batch of refunds. Gross bookings still tie out to the source export, so can someone check whether the mart is handling refunds correctly?"
+  },
+  "dag": {
+    "notation": "source('billing','ledger_entries') → stg_ledger_entries\nstg_ledger_entries → fct_daily_net_revenue",
+    "models": [
+      {
+        "name": "stg_ledger_entries",
+        "path": "models/staging/stg_ledger_entries.sql",
+        "role": "staging"
+      },
+      {
+        "name": "fct_daily_net_revenue",
+        "path": "models/marts/fct_daily_net_revenue.sql",
+        "role": "mart"
+      }
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\n\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    marts:\n      +materialized: table\n"
+      },
+      {
+        "path": "packages.yml",
+        "content": "packages: []\n"
+      },
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: billing\n    schema: billing\n    tables:\n      - name: ledger_entries\n"
+      },
+      {
+        "path": "models/staging/stg_ledger_entries.sql",
+        "content": "select\n    entry_id,\n    entry_date,\n    entry_type,\n    amount_usd\nfrom {{ source('billing', 'ledger_entries') }}\n"
+      },
+      {
+        "path": "models/marts/fct_daily_net_revenue.sql",
+        "content": "select\n    entry_date as revenue_date,\n    sum(case when entry_type = 'refund' then abs(amount_usd) else amount_usd end) as net_revenue\nfrom {{ ref('stg_ledger_entries') }}\ngroup by 1\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "billing_ledger_entries": {
+      "columns": [
+        {"name": "entry_id", "type": "integer"},
+        {"name": "entry_date", "type": "string"},
+        {"name": "entry_type", "type": "string"},
+        {"name": "amount_usd", "type": "numeric"}
+      ],
+      "rows": [
+        {"entry_id": 1, "entry_date": "2026-03-30", "entry_type": "sale", "amount_usd": 120.0},
+        {"entry_id": 2, "entry_date": "2026-03-30", "entry_type": "refund", "amount_usd": -40.0},
+        {"entry_id": 3, "entry_date": "2026-03-30", "entry_type": "sale", "amount_usd": 80.0}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "Daily mart refresh completed successfully, but finance flagged an unexpectedly strong net revenue day with heavy refunds.",
+    "model_results": [
+      {"model": "stg_ledger_entries", "status": "success"},
+      {"model": "fct_daily_net_revenue", "status": "success"}
+    ],
+    "tests": [
+      {"name": "not_null_fct_daily_net_revenue_net_revenue", "status": "passed", "message": "OK"}
+    ],
+    "warnings": []
+  },
+  "ground_truth": {
+    "root_cause": "fct_daily_net_revenue applies abs(amount_usd) to refund rows before aggregation. Because refunds already arrive as negative amounts, abs() flips them positive and inflates net revenue instead of reducing it.",
+    "affected_models": ["fct_daily_net_revenue"],
+    "fix": "Remove abs() and preserve the signed source amounts, or build a signed_amount field that keeps refunds negative before summing net revenue.",
+    "common_misdiagnoses": [
+      "Refund rows were duplicated upstream in billing (row count is stable).",
+      "Gross sales are wrong in staging (gross still ties out).",
+      "Finance is looking at the wrong date (the issue reproduces on the affected day)."
+    ],
+    "investigation_path": [
+      "Inspect source rows for the affected date and verify refund signs.",
+      "Read the mart calculation for refund handling.",
+      "Compare expected signed net revenue to the mart expression."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Names fct_daily_net_revenue as the broken model.",
+      "Explains that refund rows are being forced positive before the sum.",
+      "Uses a concrete refund row as evidence."
+    ],
+    "accepted_diagnoses": [
+      {
+        "required_models": ["fct_daily_net_revenue"],
+        "allowed_models": ["fct_daily_net_revenue"],
+        "root_cause_all_of": [
+          ["fct_daily_net_revenue"],
+          ["refund"],
+          ["abs", "absolute value"],
+          ["positive", "inflates", "added instead of subtracting"]
+        ],
+        "fix_variants": [
+          [
+            ["remove abs", "drop abs", "do not abs"],
+            ["refund"]
+          ],
+          [
+            ["signed amount", "preserve sign", "negative refund"],
+            ["before summing", "before aggregation", "net revenue"]
+          ]
+        ]
+      }
+    ],
+    "required_evidence": [
+      {
+        "kind": "file_span",
+        "path": "models/marts/fct_daily_net_revenue.sql",
+        "all_of": ["entry_type = 'refund'", "abs(amount_usd)"]
+      },
+      {
+        "kind": "sample_rows",
+        "table": "billing_ledger_entries",
+        "match": {"entry_id": 2},
+        "min_rows": 1,
+        "all_of": ["refund", "-40.0"]
+      }
+    ]
+  },
+  "hypothesis_space": [
+    {
+      "id": "h1",
+      "hypothesis": "Refund rows are being treated as positive values in the mart.",
+      "plausible": true
+    },
+    {
+      "id": "h2",
+      "hypothesis": "Billing duplicated yesterday's sales rows during the refund batch.",
+      "plausible": true
+    }
+  ],
+  "red_herrings": [],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml", "packages.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

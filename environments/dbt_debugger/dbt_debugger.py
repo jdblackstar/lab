@@ -1,4 +1,4 @@
-"""DBT debugger benchmark — scenario corpus and placeholder Verifiers environment."""
+"""DBT debugger benchmark — scenario corpus and Verifiers ``StatefulToolEnv``."""
 
 from __future__ import annotations
 
@@ -9,6 +9,31 @@ from typing import Any
 import verifiers as vf
 from datasets import Dataset
 
+from runtime.env import DbtDebuggerEnv, build_rubric
+
+
+def _load_dotenv_files() -> None:
+    """Load ``.env`` files into the process environment (non-destructive).
+
+    With ``python-dotenv`` defaults, the first file that defines a key wins; keys
+    already present in the process environment are never overwritten.
+
+    Precedence (highest first): current working directory, then this package
+    directory, then lab/repo root (``.../lab/.env`` when the package lives under
+    ``environments/dbt_debugger``). Repo root therefore supplies defaults for
+    keys omitted in cwd/package files.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+
+    pkg_dir = Path(__file__).resolve().parent
+    repo_root = pkg_dir.parent.parent
+    load_dotenv()
+    load_dotenv(pkg_dir / ".env")
+    load_dotenv(repo_root / ".env")
+
 
 def _gold_paths() -> list[Path]:
     """Return sorted paths to bundled gold scenario JSON files."""
@@ -18,13 +43,16 @@ def _gold_paths() -> list[Path]:
 
 def _row_from_spec(spec: dict[str, Any]) -> dict[str, Any]:
     """Build one HF dataset row from a scenario dict (no ground truth in prompt)."""
-    title = str(spec["title"])
     message = str(spec["symptom"]["message"])
     instructions = (
-        "You are a senior analytics engineer debugging a dbt project.\n"
-        "This rollout is corpus-only: tools are not wired yet. Reason about the "
-        "likely root cause from the stakeholder report and the scenario title.\n\n"
-        f"Scenario title: {title}\n\n"
+        "You are a senior analytics engineer debugging a dbt project in a local sandbox.\n"
+        "You have tools to inspect project files, explore supporting debug context, run "
+        "bounded dbt commands, read build artifacts under target/, and submit a structured "
+        "diagnosis.\n"
+        "Start by exploring the workspace with the tools rather than assuming where the "
+        "issue lives.\n"
+        "When you are done, call submit_diagnosis exactly once with your conclusion, "
+        "affected models, fix, and grounded evidence citations.\n\n"
         f"Stakeholder report:\n{message}\n"
     )
     return {
@@ -42,23 +70,25 @@ def load_environment(
     difficulty_tier: int | None = None,
     scenario_set: str = "gold",
     max_scenarios: int = -1,
+    max_turns: int = 20,
 ) -> vf.Environment:
-    """Return a Verifiers environment over bundled gold scenarios.
+    """Return a Verifiers ``StatefulToolEnv`` over bundled gold scenarios.
 
-    Corpus phase: uses ``SingleTurnEnv`` with a zero-weight placeholder rubric so
-    ``prime eval run`` can smoke-test packaging and prompts. A future version
-    swaps in ``StatefulToolEnv`` with dbt tools and deterministic diagnosis
-    scoring (see ``spec/runtime_mapping.md``).
+    Each rollout materializes a temporary dbt + DuckDB workspace, exposes debugging tools,
+    and scores a structured ``submit_diagnosis`` against the evaluator-only rubric
+    contract in ``rubric_hints``.
 
     Args:
         scenario_id: If set, keep only this scenario stem (must match a JSON file).
         difficulty_tier: If set, filter scenarios by ``difficulty_tier``.
         scenario_set: Reserved for future splits; only ``gold`` is bundled.
         max_scenarios: Cap rows after filtering; ``-1`` means no cap.
+        max_turns: Maximum tool/model turns per rollout (passed to the environment).
 
     Returns:
-        A ``vf.SingleTurnEnv`` over the filtered dataset.
+        A :class:`DbtDebuggerEnv` over the filtered dataset.
     """
+    _load_dotenv_files()
     if scenario_set != "gold":
         raise ValueError(f"Only scenario_set='gold' is supported; got {scenario_set!r}")
 
@@ -79,24 +109,17 @@ def load_environment(
         rows.append(_row_from_spec(spec))
 
     if max_scenarios > 0:
-        rows = rows[:max_scenarios]
+        rows = rows[: max_scenarios]
 
     if not rows:
         raise ValueError("No scenarios matched the given filters")
 
     dataset = Dataset.from_list(rows)
+    rubric = build_rubric()
 
-    async def _placeholder_reward(completion: Any, info: Any) -> float:  # noqa: ARG001
-        """Always zero; corpus phase — scoring comes in StatefulToolEnv later."""
-        return 0.0
-
-    async def _difficulty_metric(completion: Any, info: Any) -> float:  # noqa: ARG001
-        """Log difficulty tier as a numeric metric for traceability."""
-        return float(info.get("difficulty_tier", -1))
-
-    rubric = vf.Rubric(funcs=[_placeholder_reward], weights=[0.0])
-    rubric.add_metric(_difficulty_metric)
-
-    # SingleTurnEnv fixes max_turns=1 internally; multi-turn/tooling will use
-    # StatefulToolEnv later (see spec/runtime_mapping.md).
-    return vf.SingleTurnEnv(dataset=dataset, eval_dataset=dataset, rubric=rubric)
+    return DbtDebuggerEnv(
+        dataset=dataset,
+        eval_dataset=dataset,
+        rubric=rubric,
+        max_turns=max_turns,
+    )
