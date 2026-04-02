@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "scenario_id": "source_column_rename_stg_orders",
+  "title": "Stripe staging returns null amounts after vendor column rename (charges)",
+  "difficulty_tier": 2,
+  "failure_categories": ["source_schema"],
+  "has_bug": true,
+  "metadata": {
+    "tags": ["stripe", "schema_drift"]
+  },
+  "symptom": {
+    "channel": "slack",
+    "from_role": "finance_analyst",
+    "message": "Stripe charges mart looks fine on volume but revenue is basically flatlined at 0 since this morning. Nothing in our release notes. Can data eng check if we're still pulling amount correctly?"
+  },
+  "dag": {
+    "notation": "source('stripe','charges') → stg_charges\nstg_charges → int_charges_enriched\nint_charges_enriched → fct_daily_stripe_revenue",
+    "models": [
+      {"name": "stg_charges", "path": "models/staging/stg_charges.sql", "role": "staging"},
+      {"name": "int_charges_enriched", "path": "models/intermediate/int_charges_enriched.sql", "role": "intermediate"},
+      {"name": "fct_daily_stripe_revenue", "path": "models/marts/fct_daily_stripe_revenue.sql", "role": "mart"}
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    intermediate:\n      +materialized: view\n    marts:\n      +materialized: table\n"
+      },
+      {"path": "packages.yml", "content": "packages: []\n"},
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: stripe\n    schema: stripe\n    tables:\n      - name: charges\n"
+      },
+      {
+        "path": "models/staging/stg_charges.sql",
+        "content": "select\n    id as charge_id,\n    created_at,\n    amount as amount_usd\nfrom {{ source('stripe', 'charges') }}\n"
+      },
+      {
+        "path": "models/intermediate/int_charges_enriched.sql",
+        "content": "select\n    charge_id,\n    created_at,\n    coalesce(amount_usd, 0) as amount_usd\nfrom {{ ref('stg_charges') }}\n"
+      },
+      {
+        "path": "models/marts/fct_daily_stripe_revenue.sql",
+        "content": "select\n    date(created_at) as revenue_date,\n    sum(amount_usd) as daily_revenue\nfrom {{ ref('int_charges_enriched') }}\ngroup by 1\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "stripe_charges": {
+      "description": "Vendor renamed amount → amount_cents; old column amount removed.",
+      "columns": [
+        {"name": "id", "type": "string"},
+        {"name": "created_at", "type": "string"},
+        {"name": "amount_cents", "type": "integer"}
+      ],
+      "rows": [
+        {"id": "ch_001", "created_at": "2026-03-30T08:00:00Z", "amount_cents": 1999},
+        {"id": "ch_002", "created_at": "2026-03-30T09:30:00Z", "amount_cents": 4500}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "dbt run succeeded; compile OK; warehouse returns NULL for missing column alias in some engines or fails silently in view creation depending on adapter — scenario assumes view builds with NULL amount_usd.",
+    "model_results": [
+      {"model": "stg_charges", "status": "success"},
+      {"model": "int_charges_enriched", "status": "success"},
+      {"model": "fct_daily_stripe_revenue", "status": "success"}
+    ],
+    "tests": [
+      {"name": "not_null_int_charges_enriched_amount_usd", "status": "passed", "message": "coalesce masks nulls — test passes incorrectly"}
+    ],
+    "warnings": [
+      "Warehouse logged implicit NULL for unknown column reference in legacy SQL mode (synthetic)."
+    ]
+  },
+  "ground_truth": {
+    "root_cause": "Upstream Stripe charges object renamed numeric field from amount to amount_cents. stg_charges still selects amount as amount_usd, which no longer exists in the source, producing NULL amounts (masked downstream by coalesce to zero).",
+    "affected_models": ["stg_charges", "int_charges_enriched", "fct_daily_stripe_revenue"],
+    "fix": "Update stg_charges to select amount_cents and convert to USD (divide by 100) as amount_usd, or adjust to vendor's documented field. Add schema tests on critical monetary columns.",
+    "common_misdiagnoses": [
+      "Stripe API pagination dropped rows (volume OK).",
+      "Timezone truncation zeroed a day (would not zero all days).",
+      "Mart join duplicated rows (no join in path)."
+    ],
+    "investigation_path": [
+      "Inspect raw/landing column list for stripe.charges.",
+      "Compare stg_charges select list to actual source columns.",
+      "Trace coalesce in int_charges_enriched masking NULLs into zeros."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Identifies missing/wrong source column amount vs amount_cents.",
+      "Names stg_charges as the first broken model.",
+      "Notes coalesce masking as why tests may still pass."
+    ],
+    "required_evidence": [
+      {"kind": "source", "detail": "Sample rows show amount_cents only"},
+      {"kind": "model", "detail": "stg_charges references amount not amount_cents"}
+    ]
+  },
+  "hypothesis_space": [
+    {"id": "h1", "hypothesis": "API key pointed at test mode with zero-dollar charges.", "plausible": true},
+    {"id": "h2", "hypothesis": "Source schema migration renamed amount to amount_cents.", "plausible": true},
+    {"id": "h3", "hypothesis": "dbt incremental bug deleted history.", "plausible": false}
+  ],
+  "red_herrings": [],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

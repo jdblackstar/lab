@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "scenario_id": "no_bug_fiscal_vs_calendar",
+  "title": "False alarm: revenue decks disagree on date window",
+  "difficulty_tier": 4,
+  "failure_categories": ["no_bug"],
+  "has_bug": false,
+  "metadata": {
+    "tags": ["false_alarm", "reporting", "looker"]
+  },
+  "symptom": {
+    "channel": "slack",
+    "from_role": "exec_assistant",
+    "message": "Leadership is asking why QTD revenue in the board deck dropped hard vs the KPI deck from last Monday. The KPI deck still shows the higher number. Can we confirm whether the mart is broken or if something regressed in the warehouse?"
+  },
+  "dag": {
+    "notation": "source('erp','invoices') → stg_invoices\nstg_invoices → int_invoices_daily\nint_invoices_daily → fct_revenue_daily\n( Board deck: Looker explore on fct_revenue_daily + fiscal QTD filter )\n( KPI deck: same explore + calendar QTD filter from last week saved view )",
+    "models": [
+      {"name": "stg_invoices", "path": "models/staging/stg_invoices.sql", "role": "staging"},
+      {"name": "int_invoices_daily", "path": "models/intermediate/int_invoices_daily.sql", "role": "intermediate"},
+      {"name": "fct_revenue_daily", "path": "models/marts/fct_revenue_daily.sql", "role": "mart"}
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\n\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    intermediate:\n      +materialized: view\n    marts:\n      +materialized: table\n"
+      },
+      {"path": "packages.yml", "content": "packages: []\n"},
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: erp\n    schema: erp\n    tables:\n      - name: invoices\n"
+      },
+      {
+        "path": "models/staging/stg_invoices.sql",
+        "content": "select\n    invoice_id,\n    invoice_date,\n    amount_usd\nfrom {{ source('erp', 'invoices') }}\n"
+      },
+      {
+        "path": "models/intermediate/int_invoices_daily.sql",
+        "content": "select\n    invoice_date as revenue_date,\n    sum(amount_usd) as daily_revenue\nfrom {{ ref('stg_invoices') }}\ngroup by 1\n"
+      },
+      {
+        "path": "models/marts/fct_revenue_daily.sql",
+        "content": "select\n    revenue_date,\n    daily_revenue\nfrom {{ ref('int_invoices_daily') }}\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "erp_invoices": {
+      "columns": [
+        {"name": "invoice_id", "type": "integer"},
+        {"name": "invoice_date", "type": "string"},
+        {"name": "amount_usd", "type": "numeric"}
+      ],
+      "rows": [
+        {"invoice_id": 1, "invoice_date": "2026-03-28", "amount_usd": 5000.0},
+        {"invoice_id": 2, "invoice_date": "2026-03-29", "amount_usd": 3200.0},
+        {"invoice_id": 3, "invoice_date": "2026-03-30", "amount_usd": 4100.0}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "All models succeeded; no test failures; no schema change alerts.",
+    "model_results": [
+      {"model": "stg_invoices", "status": "success"},
+      {"model": "int_invoices_daily", "status": "success"},
+      {"model": "fct_revenue_daily", "status": "success"}
+    ],
+    "tests": [
+      {"name": "unique_stg_invoices_invoice_id", "status": "passed", "message": "OK"}
+    ],
+    "warnings": []
+  },
+  "ground_truth": {
+    "root_cause": "No bug — both decks query the same dbt mart fct_revenue_daily but apply different QTD definitions in the BI layer (board: fiscal QTD; KPI saved view: calendar QTD as of last Monday). Warehouse logic matches source invoices.",
+    "affected_models": [],
+    "fix": "No fix needed — document and align dashboard filters; optionally publish curated explores with explicit date logic.",
+    "common_misdiagnoses": [
+      "Incremental model dropped recent invoices.",
+      "Duplicate invoices double-count revenue.",
+      "Staging join to customers removed rows."
+    ],
+    "investigation_path": [
+      "Compare row-level sums in stg_invoices to fct_revenue_daily for the same explicit date span.",
+      "Ask how each deck defines QTD (fiscal vs calendar) and whether saved views froze a different window.",
+      "Verify no dbt model applies conflicting QTD filter — daily mart is agnostic."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Concludes no dbt code defect when data reconciles under identical date windows.",
+      "Attributes discrepancy to BI filter semantics (fiscal vs calendar QTD), not warehouse regression.",
+      "Does not prescribe rewriting core marts without evidence."
+    ],
+    "required_evidence": [
+      {"kind": "model", "detail": "fct_revenue_daily is daily grain without embedded QTD logic"},
+      {"kind": "log", "detail": "dbt run/tests clean — no failed models"}
+    ],
+    "forbidden_claims": [
+      "The pipeline is definitively corrupting revenue.",
+      "Delete fct_revenue_daily without identifying filter mismatch."
+    ]
+  },
+  "hypothesis_space": [
+    {"id": "h1", "hypothesis": "Warehouse lost rows after incremental run.", "plausible": true},
+    {"id": "h2", "hypothesis": "Dashboards use different QTD definitions on the same mart.", "plausible": true},
+    {"id": "h3", "hypothesis": "Exchange rate join failed silently.", "plausible": false}
+  ],
+  "red_herrings": [
+    {
+      "id": "r1",
+      "description": "int_invoices_daily aggregates — could suspect double count.",
+      "why_wrong": "Aggregation is by revenue_date; issue is downstream filter semantics in BI, not grain loss."
+    }
+  ],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

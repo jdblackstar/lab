@@ -1,7 +1,5 @@
 # environments/AGENTS.md
 
-
-
 This file mirrors the "Environments" documentation page.
 
 ---

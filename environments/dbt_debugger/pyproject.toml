@@ -1,0 +1,32 @@
+[project]
+name = "dbt-debugger"
+description = "dbt-native pipeline debugging benchmark (scenario corpus + Verifiers environment)"
+version = "0.1.0"
+requires-python = ">=3.11"
+readme = "README.md"
+tags = ["multi-turn", "tool-use", "dbt", "analytics", "eval"]
+dependencies = [
+    "verifiers>=0.1.11",
+    "datasets>=3.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "dbt_debugger.py",
+    "pyproject.toml",
+    "README.md",
+    "spec/**/*.md",
+    "scenarios/**/*.json",
+    "validation/**/*.md",
+    "validation/**/*.json",
+    "validation/**/*.py",
+    "runtime/**/*.py",
+]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1

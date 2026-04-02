@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "scenario_id": "incremental_late_arriving_mart",
+  "title": "Mart revenue missing after warehouse backfill",
+  "difficulty_tier": 3,
+  "failure_categories": ["incremental"],
+  "has_bug": true,
+  "metadata": {
+    "tags": ["incremental", "late_arriving", "warehouse"]
+  },
+  "symptom": {
+    "channel": "jira",
+    "from_role": "analytics",
+    "message": "Ticket: Orders that were backfilled into Snowflake last night for 3/15–3/20 still don't show up in fct_orders_daily for those dates. Ops confirmed the raw landing table has the rows. Can you find why the mart is stale?"
+  },
+  "dag": {
+    "notation": "source('landing','orders_snapshot') → stg_orders_snapshot\nstg_orders_snapshot → int_orders_incremental (incremental)\nint_orders_incremental → fct_orders_daily",
+    "models": [
+      {"name": "stg_orders_snapshot", "path": "models/staging/stg_orders_snapshot.sql", "role": "staging"},
+      {"name": "int_orders_incremental", "path": "models/intermediate/int_orders_incremental.sql", "role": "intermediate"},
+      {"name": "fct_orders_daily", "path": "models/marts/fct_orders_daily.sql", "role": "mart"}
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\nmacro-paths: [\"macros\"]\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    intermediate:\n      +materialized: incremental\n      +unique_key: order_id\n    marts:\n      +materialized: table\n"
+      },
+      {"path": "packages.yml", "content": "packages: []\n"},
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: landing\n    schema: landing\n    tables:\n      - name: orders_snapshot\n"
+      },
+      {
+        "path": "models/staging/stg_orders_snapshot.sql",
+        "content": "select\n    order_id,\n    order_date,\n    amount,\n    ingested_at\nfrom {{ source('landing', 'orders_snapshot') }}\n"
+      },
+      {
+        "path": "models/intermediate/int_orders_incremental.sql",
+        "content": "{{ config(materialized='incremental', unique_key='order_id') }}\n\nselect\n    order_id,\n    order_date,\n    amount,\n    ingested_at\nfrom {{ ref('stg_orders_snapshot') }}\n{% if is_incremental() %}\nwhere ingested_at > (select max(ingested_at) from {{ this }})\n{% endif %}\n"
+      },
+      {
+        "path": "models/marts/fct_orders_daily.sql",
+        "content": "select\n    order_date,\n    sum(amount) as daily_amount,\n    count(*) as order_count\nfrom {{ ref('int_orders_incremental') }}\ngroup by 1\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "landing_orders_snapshot": {
+      "columns": [
+        {"name": "order_id", "type": "integer"},
+        {"name": "order_date", "type": "string"},
+        {"name": "amount", "type": "numeric"},
+        {"name": "ingested_at", "type": "string"}
+      ],
+      "rows": [
+        {"order_id": 5001, "order_date": "2026-03-16", "amount": 40.0, "ingested_at": "2026-03-20T10:00:00Z"},
+        {"order_id": 5002, "order_date": "2026-03-19", "amount": 55.0, "ingested_at": "2026-03-20T10:00:00Z"},
+        {"order_id": 5003, "order_date": "2026-03-18", "amount": 90.0, "ingested_at": "2026-03-30T02:15:00Z"}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "Incremental model int_orders_incremental ran successfully; 12 rows inserted on first backfill day; subsequent run inserted 0 rows.",
+    "model_results": [
+      {"model": "stg_orders_snapshot", "status": "success"},
+      {"model": "int_orders_incremental", "status": "success"},
+      {"model": "fct_orders_daily", "status": "success"}
+    ],
+    "tests": [
+      {"name": "relationships_orders_customer", "status": "passed", "message": "not configured — skipped"}
+    ],
+    "warnings": [
+      "Adapter: incremental merge strategy — duplicates prevented by unique_key order_id"
+    ]
+  },
+  "ground_truth": {
+    "root_cause": "Incremental predicate on int_orders_incremental uses ingested_at > max(ingested_at) from the incremental table. Late-arriving/backfilled historical rows can carry ingested_at values less than or equal to the current max ingested_at in the table, so they are skipped and never loaded.",
+    "affected_models": ["int_orders_incremental", "fct_orders_daily"],
+    "fix": "Replace ingestion-only incremental filter with a business-timestamp strategy (e.g. order_date window / merge on order_id with full-refresh for affected dates) or use delete+insert for impacted partitions; avoid pure max(ingested_at) predicates when backfills reuse older ingested_at.",
+    "common_misdiagnoses": [
+      "Raw landing table missing rows (rows exist per ticket).",
+      "fct_orders_daily group by bug (mart reads from incomplete incremental table).",
+      "Unique key collision causing silent merge drop (wrong — rows never inserted)."
+    ],
+    "investigation_path": [
+      "Verify row presence in stg_orders_snapshot for missing order_date.",
+      "Compare counts in stg vs int for the same filter on order_date.",
+      "Read incremental where clause and evaluate max(ingested_at) relative to backfill rows' ingested_at."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Identifies incremental where ingested_at > max(ingested_at) as the skip condition.",
+      "Explains why backfilled rows with older ingested_at are excluded.",
+      "Names int_orders_incremental as the primary failure point."
+    ],
+    "required_evidence": [
+      {"kind": "model", "detail": "int_orders_incremental incremental filter"},
+      {"kind": "log", "detail": "second run inserted 0 rows despite new business dates in landing"}
+    ]
+  },
+  "hypothesis_space": [
+    {"id": "h1", "hypothesis": "Incremental model unique_key is dropping duplicates incorrectly.", "plausible": true},
+    {"id": "h2", "hypothesis": "ingested_at incremental predicate excludes late-arriving rows with old ingestion timestamps.", "plausible": true},
+    {"id": "h3", "hypothesis": "fct_orders_daily date timezone shift hides weekends.", "plausible": false}
+  ],
+  "red_herrings": [
+    {
+      "id": "r1",
+      "description": "fct_orders_daily is the visible broken mart.",
+      "why_wrong": "It aggregates whatever int_orders_incremental contains; the filter bug lives upstream in the incremental model."
+    }
+  ],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

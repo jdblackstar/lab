@@ -14,3 +14,4 @@ wheels/
 
 # Local Prime / Verifiers eval outputs (e.g. prime eval run default save paths)
 environments/*/outputs/
+external/
