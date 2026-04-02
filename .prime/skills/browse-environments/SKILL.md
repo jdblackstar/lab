@@ -1,7 +1,7 @@
 ---
-
-## name: browse-environments
+name: browse-environments
 description: Discover and inspect verifiers environments through the Prime ecosystem. Use when asked to find environments on the Hub, compare options, inspect metadata, check action status, pull local copies for inspection, or choose environment starting points before evaluation, training, or migration work.
+---
 
 # Browse Environments
 
