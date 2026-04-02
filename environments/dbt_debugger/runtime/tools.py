@@ -424,18 +424,6 @@ async def run_dbt_command(
 
     cmd = _dbt_argv(project_root, args)
     env = {**os.environ, "DBT_PROFILES_DIR": profiles_dir}
-    _append_trace(
-        _state,
-        {
-            "tool": "run_dbt_command",
-            "subcommand": sub,
-            "select": selected,
-            "exclude": excluded,
-            "resource_types": rtypes,
-            "full_refresh": full_refresh,
-            "fail_fast": fail_fast,
-        },
-    )
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -450,7 +438,21 @@ async def run_dbt_command(
         return f"Error: dbt timed out after {timeout_seconds}s"
     text = out_bytes.decode("utf-8", errors="replace")
     status = proc.returncode if proc.returncode is not None else -1
-    return f"exit_code={status}\n{text[-40000:]}"
+    result = f"exit_code={status}\n{text[-40000:]}"
+    if status == 0:
+        _append_trace(
+            _state,
+            {
+                "tool": "run_dbt_command",
+                "subcommand": sub,
+                "select": selected,
+                "exclude": excluded,
+                "resource_types": rtypes,
+                "full_refresh": full_refresh,
+                "fail_fast": fail_fast,
+            },
+        )
+    return result
 
 
 async def read_artifact(
@@ -527,19 +529,18 @@ def _validate_evidence_ref(raw_ref: Any) -> tuple[EvidenceRef | None, str | None
             "end_line": end_line,
         }, None
     if kind == "sample_rows":
-        if len(parts) not in {3, 4}:
+        if len(parts) < 3:
             return None, (
                 "sample_rows evidence must be "
                 "sample_rows|table|match_json[|min_rows]"
             )
         raw_table = parts[1]
-        raw_match_json = parts[2]
-        min_rows = 1
-        if len(parts) == 4:
-            try:
-                min_rows = int(parts[3])
-            except ValueError:
-                return None, "sample_rows min_rows must be an integer when provided"
+        try:
+            min_rows = int(parts[-1])
+            raw_match_json = "|".join(parts[2:-1])
+        except ValueError:
+            min_rows = 1
+            raw_match_json = "|".join(parts[2:])
         if not raw_table:
             return None, "sample_rows evidence requires a non-empty table"
         match_json, match_err = _normalize_evidence_match(raw_match_json)
