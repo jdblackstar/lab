@@ -67,14 +67,23 @@ def _stem_token(token: str) -> str:
     return token
 
 
+def _stem_variants(token: str) -> set[str]:
+    """Return stem forms that align e-final bases with *-ed* / *-ing* stems (e.g. duplicate/duplicated)."""
+    stem = _stem_token(token)
+    variants = {stem}
+    if stem.endswith("e") and len(stem) > 4:
+        variants.add(stem[:-1])
+    return variants
+
+
 def _tokens(value: str) -> set[str]:
     """Return normalized token stems for lightweight semantic matching."""
     parts = re.findall(r"[a-z0-9_]+", _normalize_text(value))
-    return {
-        _stem_token(part)
-        for part in parts
-        if len(part) > 2 and part not in _STOPWORDS
-    }
+    out: set[str] = set()
+    for part in parts:
+        if len(part) > 2 and part not in _STOPWORDS:
+            out.update(_stem_variants(part))
+    return out
 
 
 def _text_contains_option(text: str, option: str) -> bool:
@@ -84,7 +93,7 @@ def _text_contains_option(text: str, option: str) -> bool:
         return False
     if any(ch in normalized_option for ch in (" ", "_", "/", ".")):
         return normalized_option in _normalize_text(text)
-    return _stem_token(normalized_option) in _tokens(text)
+    return bool(_stem_variants(normalized_option) & _tokens(text))
 
 
 def _claim_group_matches(text: str, alternatives: list[str]) -> bool:
@@ -154,8 +163,7 @@ def _file_evidence_matches(
     if start_line < 1 or end_line < start_line:
         return False
     lines = content.splitlines()
-    if end_line > len(lines):
-        return False
+    end_line = min(end_line, len(lines))
     segment = "\n".join(lines[start_line - 1 : end_line])
     return all(
         _text_contains_option(segment, anchor)
@@ -292,7 +300,10 @@ def _evaluate_variant(
 ) -> dict[str, Any]:
     """Evaluate one accepted diagnosis variant against the submission."""
     required_models = set(variant.get("required_models") or [])
-    allowed_models = set(variant.get("allowed_models") or list(required_models))
+    raw_allowed = variant.get("allowed_models")
+    allowed_models = (
+        set(raw_allowed) if raw_allowed is not None else set(required_models)
+    )
     submitted_models = set(submission.get("affected_models") or [])
     models_ok = required_models.issubset(submitted_models) and submitted_models.issubset(
         allowed_models
