@@ -78,23 +78,31 @@ def _glob_matches_segments(
     pattern_segments: tuple[str, ...],
 ) -> bool:
     """Return ``True`` when *path_segments* match *pattern_segments*."""
+    memo: dict[tuple[int, int], bool] = {}
 
-    @lru_cache(maxsize=None)
     def _match(path_idx: int, pat_idx: int) -> bool:
+        key = (path_idx, pat_idx)
+        if key in memo:
+            return memo[key]
         if pat_idx == len(pattern_segments):
-            return path_idx == len(path_segments)
-        token = pattern_segments[pat_idx]
-        if token == "**":
-            if _match(path_idx, pat_idx + 1):
-                return True
-            if path_idx < len(path_segments):
-                return _match(path_idx + 1, pat_idx)
-            return False
-        if path_idx >= len(path_segments):
-            return False
-        if fnmatchcase(path_segments[path_idx], token):
-            return _match(path_idx + 1, pat_idx + 1)
-        return False
+            result = path_idx == len(path_segments)
+        else:
+            token = pattern_segments[pat_idx]
+            if token == "**":
+                if _match(path_idx, pat_idx + 1):
+                    result = True
+                elif path_idx < len(path_segments):
+                    result = _match(path_idx + 1, pat_idx)
+                else:
+                    result = False
+            elif path_idx >= len(path_segments):
+                result = False
+            elif fnmatchcase(path_segments[path_idx], token):
+                result = _match(path_idx + 1, pat_idx + 1)
+            else:
+                result = False
+        memo[key] = result
+        return result
 
     return _match(0, 0)
 
