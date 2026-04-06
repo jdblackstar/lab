@@ -91,7 +91,7 @@ def _text_contains_option(text: str, option: str) -> bool:
     normalized_option = _normalize_text(option)
     if not normalized_option:
         return False
-    if any(ch in normalized_option for ch in (" ", "_", "/", ".")):
+    if any(ch in normalized_option for ch in (" ", "_", "/", ".", "-", "+")):
         return normalized_option in _normalize_text(text)
     return bool(_stem_variants(normalized_option) & _tokens(text))
 
