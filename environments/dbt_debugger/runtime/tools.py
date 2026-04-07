@@ -245,7 +245,15 @@ async def read_file(
         chunk = lines[start - 1 : end]
         out = [f"{i + start}| {line}" for i, line in enumerate(chunk)]
         imm_tag = " [immutable source]" if _is_immutable(rel, imm) else ""
-        header = f"# {rel}{imm_tag} (lines {start}-{min(end, start + len(chunk) - 1)})\n"
+        if not chunk:
+            n = len(lines)
+            header = (
+                f"# {rel}{imm_tag} (no lines in range; file has {n} line(s); "
+                f"requested {start}-{end})\n"
+            )
+        else:
+            last_shown = min(end, start + len(chunk) - 1)
+            header = f"# {rel}{imm_tag} (lines {start}-{last_shown})\n"
         return header + "\n".join(out), rel
 
     result, rel = await asyncio.to_thread(_run)

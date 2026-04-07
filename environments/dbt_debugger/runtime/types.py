@@ -50,13 +50,6 @@ class EvidenceRequirement(TypedDict, total=False):
     all_of: list[str]
 
 
-class ScenarioInfo(TypedDict, total=False):
-    """Subset of scenario fields safe to put in dataset ``info``."""
-
-    scenario_id: str
-    difficulty_tier: int
-
-
 class DiagnosisSubmission(TypedDict, total=False):
     """Structured payload stored after a valid ``submit_diagnosis`` call."""
 
