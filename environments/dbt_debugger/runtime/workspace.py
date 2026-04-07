@@ -261,33 +261,37 @@ def materialize_scenario_workspace(
     base = Path(
         tempfile.mkdtemp(prefix="dbt_debugger_", dir=str(parent_dir) if parent_dir else None)
     )
-    internal = base / ".internal"
-    internal.mkdir(parents=True, exist_ok=True)
-    _write_workspace_marker(base, spec)
-    project_root = base / "project"
-    project_root.mkdir(parents=True, exist_ok=True)
-    context_root = project_root / "debug_context"
-    profiles_dir = internal / "profiles"
-    duckdb_path = internal / "rollout.duckdb"
-
-    _write_project_files(project_root, spec)
-    _write_context_files(context_root, spec)
-    profile_name = _read_profile_name(project_root)
-    _write_profiles_yml(profiles_dir, duckdb_path, profile_name)
-
-    con = duckdb.connect(str(duckdb_path))
     try:
-        _load_sample_tables(con, spec)
-    finally:
-        con.close()
+        internal = base / ".internal"
+        internal.mkdir(parents=True, exist_ok=True)
+        _write_workspace_marker(base, spec)
+        project_root = base / "project"
+        project_root.mkdir(parents=True, exist_ok=True)
+        context_root = project_root / "debug_context"
+        profiles_dir = internal / "profiles"
+        duckdb_path = internal / "rollout.duckdb"
 
-    return MaterializedWorkspace(
-        workspace_root=base,
-        project_root=project_root,
-        context_root=context_root,
-        profiles_dir=profiles_dir,
-        duckdb_path=duckdb_path,
-    )
+        _write_project_files(project_root, spec)
+        _write_context_files(context_root, spec)
+        profile_name = _read_profile_name(project_root)
+        _write_profiles_yml(profiles_dir, duckdb_path, profile_name)
+
+        con = duckdb.connect(str(duckdb_path))
+        try:
+            _load_sample_tables(con, spec)
+        finally:
+            con.close()
+
+        return MaterializedWorkspace(
+            workspace_root=base,
+            project_root=project_root,
+            context_root=context_root,
+            profiles_dir=profiles_dir,
+            duckdb_path=duckdb_path,
+        )
+    except BaseException:
+        shutil.rmtree(base, ignore_errors=True)
+        raise
 
 
 def cleanup_workspace(workspace_root: Path | str | None) -> CleanupResult:
