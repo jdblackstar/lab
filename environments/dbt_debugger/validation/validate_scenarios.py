@@ -15,6 +15,9 @@ from typing import Any
 REQUIRED_CATEGORIES = frozenset(
     {"join", "incremental", "source_schema", "logic", "macro", "config", "no_bug"}
 )
+TARGET_TIER_COUNTS = {1: 2, 2: 3, 3: 3, 4: 2}
+MIN_TOTAL_SCENARIOS = 10
+MIN_NO_BUG_SCENARIOS = 4
 
 
 def _scenario_dir() -> Path:
@@ -23,6 +26,188 @@ def _scenario_dir() -> Path:
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _is_claim_group(value: Any) -> bool:
+    """Return whether *value* is a non-empty synonym group."""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, str) and item.strip() for item in value)
+    )
+
+
+def _is_claim_pattern(value: Any) -> bool:
+    """Return whether *value* is a non-empty list of claim groups."""
+    return isinstance(value, list) and bool(value) and all(
+        _is_claim_group(item) for item in value
+    )
+
+
+def _project_file_paths(data: dict[str, Any]) -> set[str]:
+    """Return all bundled project paths across files/macros/seeds."""
+    dbt_project = data.get("dbt_project", {})
+    out: set[str] = set()
+    for key in ("files", "macros", "seeds"):
+        for entry in dbt_project.get(key, []) or []:
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str):
+                out.add(entry["path"])
+    return out
+
+
+def _validate_required_evidence(
+    data: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Validate structured evidence requirements against scenario artifacts."""
+    hints = data.get("rubric_hints", {})
+    model_names = {
+        m["name"]
+        for m in data.get("dag", {}).get("models", [])
+        if isinstance(m, dict) and "name" in m
+    }
+    sample_tables = set((data.get("sample_data") or {}).keys())
+    file_paths = _project_file_paths(data)
+    requirements = hints.get("required_evidence", [])
+    if not isinstance(requirements, list) or not requirements:
+        errors.append("rubric_hints.required_evidence must be a non-empty array")
+        return
+    for idx, requirement in enumerate(requirements):
+        if not isinstance(requirement, dict):
+            errors.append(f"required_evidence[{idx}] must be an object")
+            continue
+        kind = requirement.get("kind")
+        if kind == "file_span":
+            path = requirement.get("path")
+            all_of = requirement.get("all_of")
+            if path not in file_paths:
+                errors.append(
+                    f"required_evidence[{idx}] file_span path not found in project files: {path!r}"
+                )
+            if not _is_claim_group(all_of):
+                errors.append(
+                    f"required_evidence[{idx}] file_span all_of must be a non-empty string array"
+                )
+        elif kind == "sample_rows":
+            table = requirement.get("table")
+            match = requirement.get("match")
+            all_of = requirement.get("all_of")
+            if table not in sample_tables:
+                errors.append(
+                    f"required_evidence[{idx}] sample_rows table not found in sample_data: {table!r}"
+                )
+            if not isinstance(match, dict) or not match:
+                errors.append(
+                    f"required_evidence[{idx}] sample_rows match must be a non-empty object"
+                )
+            if "min_rows" in requirement and (
+                not isinstance(requirement.get("min_rows"), int)
+                or int(requirement["min_rows"]) < 1
+            ):
+                errors.append(
+                    f"required_evidence[{idx}] sample_rows min_rows must be >= 1"
+                )
+            if not _is_claim_group(all_of):
+                errors.append(
+                    f"required_evidence[{idx}] sample_rows all_of must be a non-empty string array"
+                )
+        elif kind == "run_history":
+            record_type = requirement.get("record_type")
+            if record_type not in {"summary", "model", "test", "warning"}:
+                errors.append(
+                    f"required_evidence[{idx}] run_history record_type invalid: {record_type!r}"
+                )
+            if record_type == "model" and requirement.get("model") not in model_names:
+                errors.append(
+                    f"required_evidence[{idx}] run_history model must reference dag.models: {requirement.get('model')!r}"
+                )
+            if record_type == "test" and not str(requirement.get("name", "")).strip():
+                errors.append(
+                    f"required_evidence[{idx}] run_history test evidence requires name"
+                )
+            if record_type in {"summary", "warning"} and not str(
+                requirement.get("contains", "")
+            ).strip():
+                errors.append(
+                    f"required_evidence[{idx}] run_history {record_type} evidence requires contains"
+                )
+        else:
+            errors.append(
+                f"required_evidence[{idx}] kind must be file_span, sample_rows, or run_history"
+            )
+
+
+def _validate_rubric_contract(
+    data: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Validate accepted diagnosis variants and forbidden claim patterns."""
+    hints = data.get("rubric_hints", {})
+    model_names = {
+        m["name"]
+        for m in data.get("dag", {}).get("models", [])
+        if isinstance(m, dict) and "name" in m
+    }
+    accepted = hints.get("accepted_diagnoses", [])
+    if not isinstance(accepted, list) or not accepted:
+        errors.append("rubric_hints.accepted_diagnoses must be a non-empty array")
+    else:
+        for idx, variant in enumerate(accepted):
+            if not isinstance(variant, dict):
+                errors.append(f"accepted_diagnoses[{idx}] must be an object")
+                continue
+            required_models = variant.get("required_models", [])
+            allowed_models = variant.get("allowed_models", [])
+            if not isinstance(required_models, list) or not all(
+                isinstance(item, str) for item in required_models
+            ):
+                errors.append(
+                    f"accepted_diagnoses[{idx}].required_models must be a string array"
+                )
+                continue
+            if not isinstance(allowed_models, list) or not all(
+                isinstance(item, str) for item in allowed_models
+            ):
+                errors.append(
+                    f"accepted_diagnoses[{idx}].allowed_models must be a string array"
+                )
+                continue
+            missing_required = [item for item in required_models if item not in model_names]
+            if missing_required:
+                errors.append(
+                    f"accepted_diagnoses[{idx}] required_models reference unknown models: {missing_required!r}"
+                )
+            missing_allowed = [item for item in allowed_models if item not in model_names]
+            if missing_allowed:
+                errors.append(
+                    f"accepted_diagnoses[{idx}] allowed_models reference unknown models: {missing_allowed!r}"
+                )
+            if not set(required_models).issubset(set(allowed_models)):
+                errors.append(
+                    f"accepted_diagnoses[{idx}] required_models must be a subset of allowed_models"
+                )
+            if not _is_claim_pattern(variant.get("root_cause_all_of")):
+                errors.append(
+                    f"accepted_diagnoses[{idx}].root_cause_all_of must be a non-empty claim pattern"
+                )
+            fix_variants = variant.get("fix_variants")
+            if not isinstance(fix_variants, list) or not fix_variants:
+                errors.append(
+                    f"accepted_diagnoses[{idx}].fix_variants must be a non-empty array"
+                )
+            elif not all(_is_claim_pattern(pattern) for pattern in fix_variants):
+                errors.append(
+                    f"accepted_diagnoses[{idx}].fix_variants must contain only claim patterns"
+                )
+    forbidden_claims = hints.get("forbidden_claims", [])
+    if data.get("has_bug") is False and not forbidden_claims:
+        errors.append("no_bug scenarios should declare rubric_hints.forbidden_claims")
+    if forbidden_claims and (
+        not isinstance(forbidden_claims, list)
+        or not all(_is_claim_pattern(pattern) for pattern in forbidden_claims)
+    ):
+        errors.append("rubric_hints.forbidden_claims must contain only claim patterns")
+    _validate_required_evidence(data, errors)
 
 
 def _validate_one(path: Path, data: dict[str, Any]) -> list[str]:
@@ -54,7 +239,7 @@ def _validate_one(path: Path, data: dict[str, Any]) -> list[str]:
 
     dag_models = data.get("dag", {}).get("models", [])
     model_names = {m["name"] for m in dag_models if isinstance(m, dict) and "name" in m}
-    file_paths = {f["path"] for f in data.get("dbt_project", {}).get("files", [])}
+    file_paths = _project_file_paths(data)
 
     for m in dag_models:
         if not isinstance(m, dict):
@@ -105,33 +290,43 @@ def _validate_one(path: Path, data: dict[str, Any]) -> list[str]:
             "scenario JSON must not contain triple-backtick fences inside strings"
         )
 
+    _validate_rubric_contract(data, errors)
+
     return errors
 
 
-def _validate_corpus(paths: list[Path], payloads: list[dict[str, Any]]) -> list[str]:
+def _validate_corpus(_paths: list[Path], payloads: list[dict[str, Any]]) -> list[str]:
     errors: list[str] = []
-    covered: set[str] = set()
+    category_counts = {cat: 0 for cat in REQUIRED_CATEGORIES}
     for data in payloads:
         for c in data.get("failure_categories", []):
-            covered.add(c)
-    if "join" not in covered:
-        errors.append("corpus: no scenario tagged with join")
-    if "incremental" not in covered:
-        errors.append("corpus: no scenario tagged with incremental")
-    if "source_schema" not in covered:
-        errors.append("corpus: no scenario tagged with source_schema")
-    if "logic" not in covered:
-        errors.append("corpus: no scenario tagged with logic")
-    if not ({"macro", "config"} & covered):
-        errors.append("corpus: need at least one scenario tagged macro or config")
-    if "no_bug" not in covered:
-        errors.append("corpus: no scenario tagged with no_bug")
-
-    tiers = [d.get("difficulty_tier") for d in payloads]
-    if not any(isinstance(t, int) and t >= 3 for t in tiers):
+            if c in category_counts:
+                category_counts[c] += 1
+    if len(payloads) < MIN_TOTAL_SCENARIOS:
         errors.append(
-            "corpus: recommend at least one scenario with difficulty_tier >= 3"
+            f"corpus: need at least {MIN_TOTAL_SCENARIOS} scenarios; found {len(payloads)}"
         )
+    for category in REQUIRED_CATEGORIES:
+        if category_counts[category] < 1:
+            errors.append(f"corpus: no scenario tagged with {category}")
+    no_bug_count = sum(1 for data in payloads if data.get("has_bug") is False)
+    if no_bug_count < MIN_NO_BUG_SCENARIOS:
+        errors.append(
+            f"corpus: need at least {MIN_NO_BUG_SCENARIOS} no_bug scenarios; found {no_bug_count}"
+        )
+    tier_counts = {
+        tier: sum(1 for data in payloads if data.get("difficulty_tier") == tier)
+        for tier in TARGET_TIER_COUNTS
+    }
+    for tier, target in TARGET_TIER_COUNTS.items():
+        if tier_counts[tier] < target:
+            errors.append(
+                f"corpus: need at least {target} tier {tier} scenarios; found {tier_counts[tier]}"
+            )
+    if not any(set(data.get("failure_categories", [])) == {"logic"} for data in payloads):
+        errors.append("corpus: need at least one pure logic scenario")
+    if not any(set(data.get("failure_categories", [])) == {"config"} for data in payloads):
+        errors.append("corpus: need at least one pure config scenario")
 
     return errors
 

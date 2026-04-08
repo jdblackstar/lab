@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "scenario_id": "config_unique_key_margin_segment",
+  "title": "Daily segment margin changed after the nightly refresh",
+  "difficulty_tier": 3,
+  "failure_categories": ["config"],
+  "has_bug": true,
+  "metadata": {
+    "author": "benchmark",
+    "tags": ["incremental", "unique_key", "config"]
+  },
+  "symptom": {
+    "channel": "jira",
+    "from_role": "finance",
+    "message": "Some dates in the segment margin dashboard now show only one customer segment after the nightly refresh, even though raw order margin extracts still contain multiple segments for those dates. The issue started after a project-level config cleanup."
+  },
+  "dag": {
+    "notation": "source('erp','order_margin') → stg_order_margin\nstg_order_margin → fct_margin_by_segment",
+    "models": [
+      {
+        "name": "stg_order_margin",
+        "path": "models/staging/stg_order_margin.sql",
+        "role": "staging"
+      },
+      {
+        "name": "fct_margin_by_segment",
+        "path": "models/marts/fct_margin_by_segment.sql",
+        "role": "mart"
+      }
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\n\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    marts:\n      +materialized: incremental\n      +unique_key: margin_date\n"
+      },
+      {
+        "path": "packages.yml",
+        "content": "packages: []\n"
+      },
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: erp\n    schema: erp\n    tables:\n      - name: order_margin\n"
+      },
+      {
+        "path": "models/staging/stg_order_margin.sql",
+        "content": "select\n    order_id,\n    margin_date,\n    customer_segment,\n    margin_amount\nfrom {{ source('erp', 'order_margin') }}\n"
+      },
+      {
+        "path": "models/marts/fct_margin_by_segment.sql",
+        "content": "{{ config(materialized='incremental') }}\n\nselect\n    margin_date,\n    customer_segment,\n    sum(margin_amount) as margin_amount\nfrom {{ ref('stg_order_margin') }}\ngroup by 1, 2\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "erp_order_margin": {
+      "columns": [
+        {"name": "order_id", "type": "integer"},
+        {"name": "margin_date", "type": "string"},
+        {"name": "customer_segment", "type": "string"},
+        {"name": "margin_amount", "type": "numeric"}
+      ],
+      "rows": [
+        {"order_id": 7001, "margin_date": "2026-03-30", "customer_segment": "enterprise", "margin_amount": 400.0},
+        {"order_id": 7002, "margin_date": "2026-03-30", "customer_segment": "smb", "margin_amount": 150.0},
+        {"order_id": 7003, "margin_date": "2026-03-31", "customer_segment": "enterprise", "margin_amount": 300.0}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "Nightly incremental mart refresh finished without hard failures, but downstream reporting only retained one segment for at least one impacted date.",
+    "model_results": [
+      {"model": "stg_order_margin", "status": "success"},
+      {"model": "fct_margin_by_segment", "status": "success"}
+    ],
+    "tests": [
+      {"name": "not_null_fct_margin_by_segment_margin_amount", "status": "passed", "message": "OK"}
+    ],
+    "warnings": [
+      "Project-level marts config was recently standardized during cleanup."
+    ]
+  },
+  "ground_truth": {
+    "root_cause": "Project-level config sets marts +unique_key: margin_date, but fct_margin_by_segment is actually keyed by (margin_date, customer_segment). During incremental merges, sibling segment rows for the same date overwrite each other because the configured unique_key does not match the model grain.",
+    "affected_models": ["fct_margin_by_segment"],
+    "fix": "Override fct_margin_by_segment to use a composite unique key matching the grain, or materialize it as a full table if incremental behavior is not required.",
+    "common_misdiagnoses": [
+      "The source extract only delivered one segment for the date (sample data shows multiple segments).",
+      "The mart SQL forgot to group by customer_segment (the group by is correct in the model).",
+      "Finance filtered the dashboard to one segment accidentally (the underlying mart state is already collapsed)."
+    ],
+    "investigation_path": [
+      "Inspect the mart grain in SQL and compare it to the project-level marts config.",
+      "Verify multiple segments exist in source data for the same margin_date.",
+      "Reason about how incremental merge behavior uses the configured unique_key."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Identifies unique_key mismatch as the core issue.",
+      "Explains that the mart grain is margin_date plus customer_segment.",
+      "Links the bug to project-level config rather than the SELECT logic."
+    ],
+    "accepted_diagnoses": [
+      {
+        "required_models": ["fct_margin_by_segment"],
+        "allowed_models": ["fct_margin_by_segment"],
+        "root_cause_all_of": [
+          ["unique_key"],
+          ["margin_date"],
+          ["customer_segment"],
+          ["overwrite", "merge", "incremental", "collide"]
+        ],
+        "fix_variants": [
+          [
+            ["composite unique key", "margin_date and customer_segment", "[margin_date, customer_segment]"],
+            ["grain"]
+          ],
+          [
+            ["override config", "model-level config", "change unique_key"],
+            ["table materialization", "full table", "full refresh"]
+          ]
+        ]
+      }
+    ],
+    "required_evidence": [
+      {
+        "kind": "file_span",
+        "path": "dbt_project.yml",
+        "all_of": ["+unique_key: margin_date"]
+      },
+      {
+        "kind": "file_span",
+        "path": "models/marts/fct_margin_by_segment.sql",
+        "all_of": ["margin_date", "customer_segment", "group by 1, 2"]
+      },
+      {
+        "kind": "sample_rows",
+        "table": "erp_order_margin",
+        "match": {"margin_date": "2026-03-30"},
+        "min_rows": 2,
+        "all_of": ["enterprise", "smb"]
+      }
+    ]
+  },
+  "hypothesis_space": [
+    {
+      "id": "h1",
+      "hypothesis": "The source only provided one segment for the affected date.",
+      "plausible": true
+    },
+    {
+      "id": "h2",
+      "hypothesis": "Incremental config is collapsing sibling segment rows because unique_key does not match the grain.",
+      "plausible": true
+    },
+    {
+      "id": "h3",
+      "hypothesis": "The SELECT forgot to include customer_segment in the group by.",
+      "plausible": false
+    }
+  ],
+  "red_herrings": [],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml", "packages.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

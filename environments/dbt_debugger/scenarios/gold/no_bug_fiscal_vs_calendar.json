@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "scenario_id": "no_bug_fiscal_vs_calendar",
-  "title": "False alarm: revenue decks disagree on date window",
+  "title": "Revenue totals disagree across leadership decks",
   "difficulty_tier": 4,
   "failure_categories": ["no_bug"],
   "has_bug": false,
@@ -93,13 +93,50 @@
       "Attributes discrepancy to BI filter semantics (fiscal vs calendar QTD), not warehouse regression.",
       "Does not prescribe rewriting core marts without evidence."
     ],
+    "accepted_diagnoses": [
+      {
+        "required_models": [],
+        "allowed_models": [],
+        "root_cause_all_of": [
+          ["fiscal"],
+          ["calendar"],
+          ["dashboard", "saved view", "bi layer", "filters"],
+          ["same mart", "same dbt mart", "warehouse logic matches", "data reconciles"]
+        ],
+        "fix_variants": [
+          [
+            ["align", "standardize", "document"],
+            ["fiscal", "calendar"],
+            ["filters", "date logic", "qtd"]
+          ],
+          [
+            ["curated explore", "explicit date logic", "saved view"],
+            ["dashboard", "bi", "reporting"]
+          ]
+        ]
+      }
+    ],
     "required_evidence": [
-      {"kind": "model", "detail": "fct_revenue_daily is daily grain without embedded QTD logic"},
-      {"kind": "log", "detail": "dbt run/tests clean — no failed models"}
+      {
+        "kind": "file_span",
+        "path": "models/marts/fct_revenue_daily.sql",
+        "all_of": ["revenue_date", "daily_revenue"]
+      },
+      {
+        "kind": "run_history",
+        "record_type": "summary",
+        "contains": "All models succeeded"
+      }
     ],
     "forbidden_claims": [
-      "The pipeline is definitively corrupting revenue.",
-      "Delete fct_revenue_daily without identifying filter mismatch."
+      [
+        ["pipeline", "warehouse", "dbt", "mart"],
+        ["corrupt", "broken", "regress", "wrong"]
+      ],
+      [
+        ["delete", "drop", "rewrite", "rebuild"],
+        ["fct_revenue_daily"]
+      ]
     ]
   },
   "hypothesis_space": [
