@@ -81,5 +81,9 @@ class RolloutStateKeys:
 
 
 def as_plain_dict(spec: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of *spec* for mutation-safe storage in state."""
+    """Return a shallow copy of *spec* for state storage.
+
+    Top-level keys get a new ``dict`` container; nested mutable values are
+    shared with *spec*, so callers must not mutate nested structures in place.
+    """
     return dict(spec)

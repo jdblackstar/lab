@@ -220,17 +220,20 @@ def build_rubric() -> vf.Rubric:
 
 async def _metric_strict_pass(state: vf.State) -> float:
     vr = state[RolloutStateKeys.VERIFICATION_RESULT]
-    assert isinstance(vr, dict)
+    if not isinstance(vr, dict):
+        return 0.0
     return float(vr["strict_pass"])
 
 
 async def _metric_has_bug_match(state: vf.State) -> float:
     vr = state[RolloutStateKeys.VERIFICATION_RESULT]
-    assert isinstance(vr, dict)
+    if not isinstance(vr, dict):
+        return 0.0
     return 1.0 if vr["has_bug_match"] else 0.0
 
 
 async def _metric_root_cov(state: vf.State) -> float:
     vr = state[RolloutStateKeys.VERIFICATION_RESULT]
-    assert isinstance(vr, dict)
+    if not isinstance(vr, dict):
+        return 0.0
     return float(vr["root_cause_coverage"])
