@@ -358,7 +358,7 @@ def main() -> int:
             all_errors.append(f"{path.name}: {msg}")
 
     for msg in _validate_corpus(json_files, payloads):
-        all_errors.append(f"corpus: {msg}")
+        all_errors.append(msg)
 
     if all_errors:
         print("Validation failed:", file=sys.stderr)
