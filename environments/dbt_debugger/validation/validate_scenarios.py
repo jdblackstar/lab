@@ -8,7 +8,9 @@ Run from repo root or this directory:
 from __future__ import annotations
 
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,164 @@ REQUIRED_CATEGORIES = frozenset(
 TARGET_TIER_COUNTS = {1: 2, 2: 3, 3: 3, 4: 2}
 MIN_TOTAL_SCENARIOS = 10
 MIN_NO_BUG_SCENARIOS = 4
+_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "with",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "as",
+        "at",
+        "by",
+        "from",
+        "that",
+        "this",
+        "it",
+        "not",
+        "no",
+        "if",
+        "then",
+        "than",
+        "into",
+        "over",
+        "via",
+    }
+)
+_NEGATION_TOKENS = frozenset({"no", "not", "never", "without", "neither", "nor"})
+
+
+def _normalize_text(value: str) -> str:
+    """Lowercase, strip accents lightly, and collapse whitespace."""
+    normalized = unicodedata.normalize("NFKD", value)
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = normalized.lower()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def _stem_token(token: str) -> str:
+    """Apply a tiny suffix-stripper so simple rephrasings still match."""
+    for suffix in (
+        "ively",
+        "ingly",
+        "edly",
+        "ation",
+        "ments",
+        "ment",
+        "ings",
+        "ing",
+        "ied",
+        "ies",
+        "ed",
+        "ly",
+        "s",
+    ):
+        if len(token) > len(suffix) + 3 and token.endswith(suffix):
+            if suffix in {"ies", "ied"}:
+                return token[: -len(suffix)] + "y"
+            return token[: -len(suffix)]
+    return token
+
+
+def _stem_variants(token: str) -> set[str]:
+    """Return stem forms that align e-final bases with *-ed* / *-ing* stems."""
+    stem = _stem_token(token)
+    variants = {stem}
+    if stem.endswith("e") and len(stem) > 4:
+        variants.add(stem[:-1])
+    return variants
+
+
+def _tokens(value: str) -> set[str]:
+    """Return normalized token stems for lightweight semantic matching."""
+    parts = re.findall(r"[a-z0-9_]+", _normalize_text(value))
+    out: set[str] = set()
+    for part in parts:
+        if len(part) > 2 and part not in _STOPWORDS:
+            out.update(_stem_variants(part))
+    return out
+
+
+def _text_contains_option(text: str, option: str) -> bool:
+    """Return whether *text* contains a claim option."""
+    normalized_option = _normalize_text(option)
+    if not normalized_option:
+        return False
+    if any(ch in normalized_option for ch in (" ", "_", "/", ".", "-", "+")):
+        return normalized_option in _normalize_text(text)
+    return bool(_stem_variants(normalized_option) & _tokens(text))
+
+
+def _claim_group_matches(text: str, alternatives: list[str]) -> bool:
+    """Return whether *text* satisfies at least one alternative in a claim group."""
+    return any(_text_contains_option(text, option) for option in alternatives if option)
+
+
+def _iter_claim_pattern_options(pattern: list[list[str]]) -> list[str]:
+    """Return all non-empty options declared across a claim pattern."""
+    return [option for group in pattern for option in group if option]
+
+
+def _option_is_negated_phrase(option: str) -> bool:
+    """Return whether *option* is a multi-word phrase with explicit negation."""
+    normalized_option = _normalize_text(option)
+    if not any(ch in normalized_option for ch in (" ", "_", "/", ".", "-", "+")):
+        return False
+    option_tokens = set(re.findall(r"[a-z0-9_]+", normalized_option))
+    return bool(option_tokens & _NEGATION_TOKENS)
+
+
+def _pattern_negated_options(pattern: Any, source: str) -> list[tuple[str, str]]:
+    """Return all explicitly negated options from one claim pattern."""
+    if not _is_claim_pattern(pattern):
+        return []
+    return [
+        (source, option)
+        for option in _iter_claim_pattern_options(pattern)
+        if _option_is_negated_phrase(option)
+    ]
+
+
+def _variant_overlaps_forbidden_claim(
+    variant: dict[str, Any],
+    forbidden: list[list[str]],
+) -> list[str]:
+    """Return accepted negated phrases that can satisfy every group in *forbidden*."""
+    root_options = _pattern_negated_options(
+        variant.get("root_cause_all_of"),
+        "root_cause_all_of",
+    )
+    fix_variants = variant.get("fix_variants") or []
+    phrase_sets = [
+        root_options + _pattern_negated_options(pattern, f"fix_variants[{idx}]")
+        for idx, pattern in enumerate(fix_variants)
+    ] or [root_options]
+    for phrase_set in phrase_sets:
+        matched_descriptors: set[str] = set()
+        for group in forbidden:
+            group_matches = {
+                f"{source}: {option}"
+                for source, option in phrase_set
+                if _claim_group_matches(option, group)
+            }
+            if not group_matches:
+                break
+            matched_descriptors.update(group_matches)
+        else:
+            return sorted(matched_descriptors)
+    return []
 
 
 def _scenario_dir() -> Path:
@@ -149,6 +309,7 @@ def _validate_rubric_contract(
         if isinstance(m, dict) and "name" in m
     }
     accepted = hints.get("accepted_diagnoses", [])
+    valid_variants: list[tuple[int, dict[str, Any]]] = []
     if not isinstance(accepted, list) or not accepted:
         errors.append("rubric_hints.accepted_diagnoses must be a non-empty array")
     else:
@@ -172,41 +333,67 @@ def _validate_rubric_contract(
                     f"accepted_diagnoses[{idx}].allowed_models must be a string array"
                 )
                 continue
+            variant_valid = True
             missing_required = [item for item in required_models if item not in model_names]
             if missing_required:
                 errors.append(
                     f"accepted_diagnoses[{idx}] required_models reference unknown models: {missing_required!r}"
                 )
+                variant_valid = False
             missing_allowed = [item for item in allowed_models if item not in model_names]
             if missing_allowed:
                 errors.append(
                     f"accepted_diagnoses[{idx}] allowed_models reference unknown models: {missing_allowed!r}"
                 )
+                variant_valid = False
             if not set(required_models).issubset(set(allowed_models)):
                 errors.append(
                     f"accepted_diagnoses[{idx}] required_models must be a subset of allowed_models"
                 )
+                variant_valid = False
             if not _is_claim_pattern(variant.get("root_cause_all_of")):
                 errors.append(
                     f"accepted_diagnoses[{idx}].root_cause_all_of must be a non-empty claim pattern"
                 )
+                variant_valid = False
             fix_variants = variant.get("fix_variants")
             if not isinstance(fix_variants, list) or not fix_variants:
                 errors.append(
                     f"accepted_diagnoses[{idx}].fix_variants must be a non-empty array"
                 )
+                variant_valid = False
             elif not all(_is_claim_pattern(pattern) for pattern in fix_variants):
                 errors.append(
                     f"accepted_diagnoses[{idx}].fix_variants must contain only claim patterns"
                 )
+                variant_valid = False
+            if variant_valid:
+                valid_variants.append((idx, variant))
     forbidden_claims = hints.get("forbidden_claims", [])
     if data.get("has_bug") is False and not forbidden_claims:
         errors.append("no_bug scenarios should declare rubric_hints.forbidden_claims")
+    valid_forbidden_claims: list[tuple[int, list[list[str]]]] = []
     if forbidden_claims and (
         not isinstance(forbidden_claims, list)
         or not all(_is_claim_pattern(pattern) for pattern in forbidden_claims)
     ):
         errors.append("rubric_hints.forbidden_claims must contain only claim patterns")
+    elif isinstance(forbidden_claims, list):
+        valid_forbidden_claims = [
+            (idx, pattern)
+            for idx, pattern in enumerate(forbidden_claims)
+            if _is_claim_pattern(pattern)
+        ]
+    for accepted_idx, variant in valid_variants:
+        for forbidden_idx, forbidden in valid_forbidden_claims:
+            overlapping_phrases = _variant_overlaps_forbidden_claim(variant, forbidden)
+            if overlapping_phrases:
+                errors.append(
+                    "accepted_diagnoses"
+                    f"[{accepted_idx}] overlaps forbidden_claims[{forbidden_idx}] "
+                    "via accepted negated phrases: "
+                    f"{overlapping_phrases!r}"
+                )
     _validate_required_evidence(data, errors)
 
 

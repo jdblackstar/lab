@@ -110,7 +110,7 @@
           ["vendor replay", "replay", "backfill", "restatement"],
           ["missing source rows", "source truth changed", "late source rows"],
           ["full-refresh", "clean refresh", "downstream refresh"],
-          ["not duplicated", "no duplication", "no dbt bug", "no warehouse bug"]
+          ["warehouse behaved correctly", "dbt logic is correct", "row keys remain distinct", "rows remain distinct"]
         ],
         "fix_variants": [
           [

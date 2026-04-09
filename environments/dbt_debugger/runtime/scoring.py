@@ -45,6 +45,8 @@ _STOPWORDS = frozenset(
     }
 )
 
+_NEGATION_TOKENS = frozenset({"no", "not", "never", "without", "neither", "nor"})
+
 
 def _normalize_text(value: str) -> str:
     """Lowercase, strip accents lightly, and collapse whitespace."""
@@ -86,6 +88,39 @@ def _tokens(value: str) -> set[str]:
     return out
 
 
+def _token_spans(normalized_text: str) -> list[tuple[int, int, str]]:
+    """Return ``(start, end, token)`` spans for tokens in normalized text."""
+    return [
+        (match.start(), match.end(), match.group(0))
+        for match in re.finditer(r"[a-z0-9_]+", normalized_text)
+    ]
+
+
+def _matching_option_spans(
+    normalized_text: str,
+    option: str,
+) -> list[tuple[int, int]]:
+    """Return spans where *option* matches under the claim-matching rules."""
+    normalized_option = _normalize_text(option)
+    if not normalized_option:
+        return []
+    if any(ch in normalized_option for ch in (" ", "_", "/", ".", "-", "+")):
+        spans: list[tuple[int, int]] = []
+        start = normalized_text.find(normalized_option)
+        while start >= 0:
+            spans.append((start, start + len(normalized_option)))
+            start = normalized_text.find(normalized_option, start + 1)
+        return spans
+    option_stems = _stem_variants(normalized_option)
+    return [
+        (start, end)
+        for start, end, raw in _token_spans(normalized_text)
+        if len(raw) > 2
+        and raw not in _STOPWORDS
+        and bool(option_stems & _stem_variants(raw))
+    ]
+
+
 def _text_contains_option(text: str, option: str) -> bool:
     """Return whether *text* contains a claim option."""
     normalized_option = _normalize_text(option)
@@ -104,6 +139,88 @@ def _claim_group_matches(text: str, alternatives: list[str]) -> bool:
 def _claim_pattern_matches(text: str, pattern: ClaimPattern) -> bool:
     """Return whether *text* satisfies all claim groups in *pattern*."""
     return all(_claim_group_matches(text, group) for group in pattern)
+
+
+def _iter_claim_pattern_options(pattern: ClaimPattern) -> list[str]:
+    """Return all non-empty options declared across a claim pattern."""
+    return [option for group in pattern for option in group if option]
+
+
+def _option_is_negated_phrase(option: str) -> bool:
+    """Return whether *option* is a multi-word accepted phrase with explicit negation."""
+    normalized_option = _normalize_text(option)
+    if not any(ch in normalized_option for ch in (" ", "/", ".", "-", "+")):
+        return False
+    option_tokens = set(re.findall(r"[a-z0-9_]+", normalized_option))
+    return bool(option_tokens & _NEGATION_TOKENS)
+
+
+def _accepted_negation_spans(
+    text: str,
+    variants: list[DiagnosisVariant],
+) -> list[tuple[int, int]]:
+    """Return spans of matched accepted phrases that explicitly negate a bad claim."""
+    normalized_text = _normalize_text(text)
+    spans: set[tuple[int, int]] = set()
+    for variant in variants:
+        root_pattern = variant.get("root_cause_all_of") or []
+        for option in _iter_claim_pattern_options(root_pattern):
+            if _option_is_negated_phrase(option):
+                spans.update(_matching_option_spans(normalized_text, option))
+        for fix_pattern in variant.get("fix_variants") or []:
+            for option in _iter_claim_pattern_options(fix_pattern):
+                if _option_is_negated_phrase(option):
+                    spans.update(_matching_option_spans(normalized_text, option))
+    return sorted(spans)
+
+
+def _span_is_protected(
+    span: tuple[int, int],
+    protected_spans: list[tuple[int, int]],
+) -> bool:
+    """Return whether *span* is fully covered by one protected accepted phrase span."""
+    start, end = span
+    return any(
+        protected_start <= start and end <= protected_end
+        for protected_start, protected_end in protected_spans
+    )
+
+
+def _forbidden_option_matches_text(
+    normalized_text: str,
+    option: str,
+    protected_spans: list[tuple[int, int]],
+) -> bool:
+    """Return whether *option* matches outside accepted negated phrase spans."""
+    return any(
+        not _span_is_protected(span, protected_spans)
+        for span in _matching_option_spans(normalized_text, option)
+    )
+
+
+def _forbidden_claim_group_matches(
+    normalized_text: str,
+    alternatives: list[str],
+    protected_spans: list[tuple[int, int]],
+) -> bool:
+    """Return whether one forbidden group matches outside protected accepted phrases."""
+    return any(
+        _forbidden_option_matches_text(normalized_text, option, protected_spans)
+        for option in alternatives
+        if option
+    )
+
+
+def _forbidden_claim_pattern_matches(
+    normalized_text: str,
+    pattern: ClaimPattern,
+    protected_spans: list[tuple[int, int]],
+) -> bool:
+    """Return whether all groups in a forbidden pattern match outside protected spans."""
+    return all(
+        _forbidden_claim_group_matches(normalized_text, group, protected_spans)
+        for group in pattern
+    )
 
 
 def _claim_pattern_coverage(text: str, pattern: ClaimPattern) -> float:
@@ -399,8 +516,14 @@ def score_diagnosis(
             json.dumps(submission.get("affected_models") or []),
         ]
     )
+    normalized_diagnosis_blob = _normalize_text(diagnosis_blob)
+    protected_spans = _accepted_negation_spans(diagnosis_blob, variants)
     for forbidden in rubric_hints.get("forbidden_claims") or []:
-        if isinstance(forbidden, list) and _claim_pattern_matches(diagnosis_blob, forbidden):
+        if isinstance(forbidden, list) and _forbidden_claim_pattern_matches(
+            normalized_diagnosis_blob,
+            forbidden,
+            protected_spans,
+        ):
             out["forbidden_ok"] = False
             break
 

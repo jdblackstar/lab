@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 import os
 import subprocess
@@ -199,6 +200,91 @@ def test_forbidden_claim_pattern_still_fails_on_rewording() -> None:
     audit = score_diagnosis(submission, spec)
     assert audit["forbidden_ok"] is False
     assert audit["strict_pass"] == 0.0
+
+
+def test_negated_accepted_root_cause_phrase_does_not_fail_strict_pass() -> None:
+    """Accepted negated root-cause phrases must not trip forbidden claim patterns."""
+    spec = deepcopy(_spec("campaign_spend_replay_restatement"))
+    spec["rubric_hints"]["accepted_diagnoses"][0]["root_cause_all_of"][3] = [
+        "not duplicated",
+        "no duplication",
+        "no dbt bug",
+        "no warehouse bug",
+    ]
+    submission = {
+        "has_bug": False,
+        "root_cause": (
+            "The vendor replay backfilled missing source rows, and the downstream "
+            "full-refresh loaded them correctly. There was no dbt bug, and the "
+            "historical spend was not duplicated."
+        ),
+        "affected_models": [],
+        "fix": "No fix needed; communicate the replay restatement to stakeholders.",
+        "evidence": [
+            {
+                "kind": "run_history",
+                "record_type": "summary",
+                "contains": "vendor replay",
+            },
+            {
+                "kind": "sample_rows",
+                "table": "ads_campaign_spend",
+                "match_json": json.dumps({"load_batch": "vendor_replay_2026_03_30"}),
+                "min_rows": 2,
+            },
+            {
+                "kind": "file_span",
+                "path": "models/marts/fct_campaign_spend_daily.sql",
+                "start_line": 1,
+                "end_line": 6,
+            },
+        ],
+    }
+    audit = score_diagnosis(submission, spec)
+    assert audit["root_cause_ok"] is True
+    assert audit["forbidden_ok"] is True
+    assert audit["strict_pass"] == 1.0
+
+
+def test_negated_accepted_fix_phrase_does_not_fail_strict_pass() -> None:
+    """Accepted negated fix phrases must not trip forbidden claim patterns."""
+    spec = _spec("campaign_spend_replay_restatement")
+    submission = {
+        "has_bug": False,
+        "root_cause": (
+            "A vendor replay supplied late source rows, and a clean downstream "
+            "full-refresh loaded the updated source truth. The row keys remain "
+            "distinct and dbt logic is correct."
+        ),
+        "affected_models": [],
+        "fix": (
+            "No warehouse rewrite of fct_campaign_spend_daily is needed; communicate "
+            "the vendor replay restatement to stakeholders."
+        ),
+        "evidence": [
+            {
+                "kind": "run_history",
+                "record_type": "summary",
+                "contains": "vendor replay",
+            },
+            {
+                "kind": "sample_rows",
+                "table": "ads_campaign_spend",
+                "match_json": json.dumps({"load_batch": "vendor_replay_2026_03_30"}),
+                "min_rows": 2,
+            },
+            {
+                "kind": "file_span",
+                "path": "models/marts/fct_campaign_spend_daily.sql",
+                "start_line": 1,
+                "end_line": 6,
+            },
+        ],
+    }
+    audit = score_diagnosis(submission, spec)
+    assert audit["fix_ok"] is True
+    assert audit["forbidden_ok"] is True
+    assert audit["strict_pass"] == 1.0
 
 
 def test_submit_diagnosis_does_not_branch_on_hidden_has_bug() -> None:
