@@ -27,6 +27,7 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = [
     "dbt_debugger.py",
+    "claim_text_matching.py",
     "pyproject.toml",
     "README.md",
     "spec/**/*.md",

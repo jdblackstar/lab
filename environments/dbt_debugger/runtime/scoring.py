@@ -4,88 +4,18 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 from typing import Any
 
-from runtime.types import ClaimPattern, DiagnosisVariant, EvidenceRef, EvidenceRequirement
-
-_STOPWORDS = frozenset(
-    {
-        "the",
-        "a",
-        "an",
-        "and",
-        "or",
-        "to",
-        "of",
-        "in",
-        "on",
-        "for",
-        "with",
-        "is",
-        "are",
-        "was",
-        "were",
-        "be",
-        "as",
-        "at",
-        "by",
-        "from",
-        "that",
-        "this",
-        "it",
-        "not",
-        "no",
-        "if",
-        "then",
-        "than",
-        "into",
-        "over",
-        "via",
-    }
+from claim_text_matching import (
+    STOPWORDS,
+    claim_group_matches,
+    iter_claim_pattern_options,
+    normalize_text,
+    option_is_negated_phrase,
+    stem_variants,
+    text_contains_option,
 )
-
-_NEGATION_TOKENS = frozenset({"no", "not", "never", "without", "neither", "nor"})
-
-
-def _normalize_text(value: str) -> str:
-    """Lowercase, strip accents lightly, and collapse whitespace."""
-    normalized = unicodedata.normalize("NFKD", value)
-    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-    normalized = normalized.lower()
-    normalized = re.sub(r"\s+", " ", normalized).strip()
-    return normalized
-
-
-def _stem_token(token: str) -> str:
-    """Apply a tiny suffix-stripper so simple rephrasings still match."""
-    for suffix in ("ively", "ingly", "edly", "ation", "ments", "ment", "ings", "ing", "ied", "ies", "ed", "ly", "s"):
-        if len(token) > len(suffix) + 3 and token.endswith(suffix):
-            if suffix == "ies":
-                return token[: -len(suffix)] + "y"
-            if suffix == "ied":
-                return token[: -len(suffix)] + "y"
-            return token[: -len(suffix)]
-    return token
-
-
-def _stem_variants(token: str) -> set[str]:
-    """Return stem forms that align e-final bases with *-ed* / *-ing* stems (e.g. duplicate/duplicated)."""
-    stem = _stem_token(token)
-    variants = {stem}
-    if stem.endswith("e") and len(stem) > 4:
-        variants.add(stem[:-1])
-    return variants
-
-
-def _tokens(value: str) -> set[str]:
-    """Return normalized token stems for lightweight semantic matching."""
-    parts = re.findall(r"[a-z0-9_]+", _normalize_text(value))
-    out: set[str] = set()
-    for part in parts:
-        if len(part) > 2 and part not in _STOPWORDS:
-            out.update(_stem_variants(part))
-    return out
+from runtime.types import ClaimPattern, DiagnosisVariant, EvidenceRef, EvidenceRequirement
 
 
 def _token_spans(normalized_text: str) -> list[tuple[int, int, str]]:
@@ -101,7 +31,7 @@ def _matching_option_spans(
     option: str,
 ) -> list[tuple[int, int]]:
     """Return spans where *option* matches under the claim-matching rules."""
-    normalized_option = _normalize_text(option)
+    normalized_option = normalize_text(option)
     if not normalized_option:
         return []
     if any(ch in normalized_option for ch in (" ", "_", "/", ".", "-", "+")):
@@ -111,48 +41,19 @@ def _matching_option_spans(
             spans.append((start, start + len(normalized_option)))
             start = normalized_text.find(normalized_option, start + 1)
         return spans
-    option_stems = _stem_variants(normalized_option)
+    option_stems = stem_variants(normalized_option)
     return [
         (start, end)
         for start, end, raw in _token_spans(normalized_text)
         if len(raw) > 2
-        and raw not in _STOPWORDS
-        and bool(option_stems & _stem_variants(raw))
+        and raw not in STOPWORDS
+        and bool(option_stems & stem_variants(raw))
     ]
-
-
-def _text_contains_option(text: str, option: str) -> bool:
-    """Return whether *text* contains a claim option."""
-    normalized_option = _normalize_text(option)
-    if not normalized_option:
-        return False
-    if any(ch in normalized_option for ch in (" ", "_", "/", ".", "-", "+")):
-        return normalized_option in _normalize_text(text)
-    return bool(_stem_variants(normalized_option) & _tokens(text))
-
-
-def _claim_group_matches(text: str, alternatives: list[str]) -> bool:
-    """Return whether *text* satisfies at least one alternative in a claim group."""
-    return any(_text_contains_option(text, option) for option in alternatives if option)
 
 
 def _claim_pattern_matches(text: str, pattern: ClaimPattern) -> bool:
     """Return whether *text* satisfies all claim groups in *pattern*."""
-    return all(_claim_group_matches(text, group) for group in pattern)
-
-
-def _iter_claim_pattern_options(pattern: ClaimPattern) -> list[str]:
-    """Return all non-empty options declared across a claim pattern."""
-    return [option for group in pattern for option in group if option]
-
-
-def _option_is_negated_phrase(option: str) -> bool:
-    """Return whether *option* is a multi-word accepted phrase with explicit negation."""
-    normalized_option = _normalize_text(option)
-    if not any(ch in normalized_option for ch in (" ", "/", ".", "-", "+")):
-        return False
-    option_tokens = set(re.findall(r"[a-z0-9_]+", normalized_option))
-    return bool(option_tokens & _NEGATION_TOKENS)
+    return all(claim_group_matches(text, group) for group in pattern)
 
 
 def _accepted_negation_spans(
@@ -160,16 +61,16 @@ def _accepted_negation_spans(
     variants: list[DiagnosisVariant],
 ) -> list[tuple[int, int]]:
     """Return spans of matched accepted phrases that explicitly negate a bad claim."""
-    normalized_text = _normalize_text(text)
+    normalized_text = normalize_text(text)
     spans: set[tuple[int, int]] = set()
     for variant in variants:
         root_pattern = variant.get("root_cause_all_of") or []
-        for option in _iter_claim_pattern_options(root_pattern):
-            if _option_is_negated_phrase(option):
+        for option in iter_claim_pattern_options(root_pattern):
+            if option_is_negated_phrase(option):
                 spans.update(_matching_option_spans(normalized_text, option))
         for fix_pattern in variant.get("fix_variants") or []:
-            for option in _iter_claim_pattern_options(fix_pattern):
-                if _option_is_negated_phrase(option):
+            for option in iter_claim_pattern_options(fix_pattern):
+                if option_is_negated_phrase(option):
                     spans.update(_matching_option_spans(normalized_text, option))
     return sorted(spans)
 
@@ -227,7 +128,7 @@ def _claim_pattern_coverage(text: str, pattern: ClaimPattern) -> float:
     """Return the fraction of claim groups in *pattern* satisfied by *text*."""
     if not pattern:
         return 1.0
-    hits = sum(1 for group in pattern if _claim_group_matches(text, group))
+    hits = sum(1 for group in pattern if claim_group_matches(text, group))
     return hits / max(1, len(pattern))
 
 
@@ -283,7 +184,7 @@ def _file_evidence_matches(
     end_line = min(end_line, len(lines))
     segment = "\n".join(lines[start_line - 1 : end_line])
     return all(
-        _text_contains_option(segment, anchor)
+        text_contains_option(segment, anchor)
         for anchor in requirement.get("all_of") or []
     )
 
@@ -320,7 +221,7 @@ def _sample_evidence_matches(
         return False
     evidence_blob = json.dumps(matched_rows, sort_keys=True)
     return all(
-        _text_contains_option(evidence_blob, anchor)
+        text_contains_option(evidence_blob, anchor)
         for anchor in requirement.get("all_of") or []
     )
 
@@ -340,9 +241,9 @@ def _run_history_evidence_matches(
         summary = str(run_history.get("summary", ""))
         required_contains = str(requirement.get("contains", "")).strip()
         cited_contains = str(evidence_ref.get("contains", "")).strip()
-        if required_contains and not _text_contains_option(summary, required_contains):
+        if required_contains and not text_contains_option(summary, required_contains):
             return False
-        if cited_contains and not _text_contains_option(summary, cited_contains):
+        if cited_contains and not text_contains_option(summary, cited_contains):
             return False
         return True
     if record_type == "warning":
@@ -350,9 +251,9 @@ def _run_history_evidence_matches(
         required_contains = str(requirement.get("contains", "")).strip()
         cited_contains = str(evidence_ref.get("contains", "")).strip()
         for warning in warnings:
-            if required_contains and not _text_contains_option(warning, required_contains):
+            if required_contains and not text_contains_option(warning, required_contains):
                 continue
-            if cited_contains and not _text_contains_option(warning, cited_contains):
+            if cited_contains and not text_contains_option(warning, cited_contains):
                 continue
             return True
         return False
@@ -378,12 +279,12 @@ def _run_history_evidence_matches(
             continue
         if cited_status and record_status != cited_status:
             continue
-        if required_contains and not _text_contains_option(
+        if required_contains and not text_contains_option(
             json.dumps(record, sort_keys=True),
             required_contains,
         ):
             continue
-        if cited_contains and not _text_contains_option(
+        if cited_contains and not text_contains_option(
             json.dumps(record, sort_keys=True),
             cited_contains,
         ):
@@ -516,7 +417,7 @@ def score_diagnosis(
             json.dumps(submission.get("affected_models") or []),
         ]
     )
-    normalized_diagnosis_blob = _normalize_text(diagnosis_blob)
+    normalized_diagnosis_blob = normalize_text(diagnosis_blob)
     protected_spans = _accepted_negation_spans(diagnosis_blob, variants)
     for forbidden in rubric_hints.get("forbidden_claims") or []:
         if isinstance(forbidden, list) and _forbidden_claim_pattern_matches(
