@@ -451,6 +451,7 @@ async def run_dbt_command(
         out_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()
         return f"Error: dbt timed out after {timeout_seconds}s"
     text = out_bytes.decode("utf-8", errors="replace")
     status = proc.returncode if proc.returncode is not None else -1

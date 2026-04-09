@@ -205,7 +205,12 @@ def _validate_rubric_contract(
                 errors.append(f"accepted_diagnoses[{idx}] must be an object")
                 continue
             required_models = variant.get("required_models", [])
-            allowed_models = variant.get("allowed_models", [])
+            raw_allowed_models = variant.get("allowed_models")
+            allowed_models = (
+                list(required_models)
+                if raw_allowed_models is None
+                else raw_allowed_models
+            )
             if not isinstance(required_models, list) or not all(
                 isinstance(item, str) for item in required_models
             ):
