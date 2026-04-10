@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from claim_text_matching import (
+    NEGATION_TOKENS,
     STOPWORDS,
     claim_group_matches,
     iter_claim_pattern_options,
@@ -16,6 +17,43 @@ from claim_text_matching import (
     text_contains_option,
 )
 from runtime.types import ClaimPattern, DiagnosisVariant, EvidenceRef, EvidenceRequirement
+
+_CLAUSE_BOUNDARY_PATTERN = re.compile(r"[.;:!?]")
+_NEGATION_FILLER_TOKENS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "any",
+        "all",
+        "and",
+        "at",
+        "be",
+        "been",
+        "being",
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "do",
+        "does",
+        "did",
+        "to",
+        "of",
+        "in",
+        "on",
+        "with",
+        "for",
+        "that",
+        "this",
+        "it",
+        "or",
+        "really",
+        "very",
+    }
+)
+_NEGATION_CANCEL_TOKENS = frozenset({"just", "only"})
 
 
 def _token_spans(normalized_text: str) -> list[tuple[int, int, str]]:
@@ -49,6 +87,47 @@ def _matching_option_spans(
         and raw not in STOPWORDS
         and bool(option_stems & stem_variants(raw))
     ]
+
+
+def _span_token_indexes(
+    token_spans: list[tuple[int, int, str]],
+    span: tuple[int, int],
+) -> list[int]:
+    """Return token indexes that overlap one matched option span."""
+    start, end = span
+    return [
+        idx
+        for idx, (token_start, token_end, _) in enumerate(token_spans)
+        if token_start < end and start < token_end
+    ]
+
+
+def _span_is_locally_negated(
+    normalized_text: str,
+    span: tuple[int, int],
+    token_spans: list[tuple[int, int, str]],
+) -> bool:
+    """Return whether a matched forbidden span is locally negated in text."""
+    token_indexes = _span_token_indexes(token_spans, span)
+    if not token_indexes:
+        return False
+    first_token_index = token_indexes[0]
+    content_tokens_between = 0
+    interstitial_tokens: list[str] = []
+    for idx in range(first_token_index - 1, -1, -1):
+        _, token_end, token = token_spans[idx]
+        next_token_start = token_spans[idx + 1][0]
+        between = normalized_text[token_end:next_token_start]
+        if _CLAUSE_BOUNDARY_PATTERN.search(between):
+            break
+        if token in NEGATION_TOKENS:
+            return not bool(set(interstitial_tokens) & _NEGATION_CANCEL_TOKENS)
+        interstitial_tokens.append(token)
+        if token not in _NEGATION_FILLER_TOKENS:
+            content_tokens_between += 1
+            if content_tokens_between > 1:
+                break
+    return False
 
 
 def _claim_pattern_matches(text: str, pattern: ClaimPattern) -> bool:
@@ -92,9 +171,11 @@ def _forbidden_option_matches_text(
     option: str,
     protected_spans: list[tuple[int, int]],
 ) -> bool:
-    """Return whether *option* matches outside accepted negated phrase spans."""
+    """Return whether *option* matches outside protected or locally negated spans."""
+    token_spans = _token_spans(normalized_text)
     return any(
         not _span_is_protected(span, protected_spans)
+        and not _span_is_locally_negated(normalized_text, span, token_spans)
         for span in _matching_option_spans(normalized_text, option)
     )
 

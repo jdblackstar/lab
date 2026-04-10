@@ -202,6 +202,77 @@ def test_forbidden_claim_pattern_still_fails_on_rewording() -> None:
     assert audit["strict_pass"] == 0.0
 
 
+def test_negated_forbidden_root_cause_does_not_fail_strict_pass() -> None:
+    """Locally negated forbidden root-cause claims must not fail no-bug submissions."""
+    spec = _spec("no_bug_fiscal_vs_calendar")
+    submission = {
+        "has_bug": False,
+        "root_cause": (
+            "The warehouse is not broken. Both dashboards query the same dbt mart, "
+            "and nothing is wrong with the mart itself; the discrepancy comes from "
+            "fiscal QTD versus calendar QTD filters in the saved view."
+        ),
+        "affected_models": [],
+        "fix": (
+            "Align and document the fiscal and calendar filters in BI so the same "
+            "date logic is used."
+        ),
+        "evidence": [
+            {
+                "kind": "file_span",
+                "path": "models/marts/fct_revenue_daily.sql",
+                "start_line": 1,
+                "end_line": 4,
+            },
+            {
+                "kind": "run_history",
+                "record_type": "summary",
+                "contains": "All models succeeded",
+            },
+        ],
+    }
+    audit = score_diagnosis(submission, spec)
+    assert audit["diagnosis_variant_ok"] is True
+    assert audit["forbidden_ok"] is True
+    assert audit["strict_pass"] == 1.0
+
+
+def test_negated_forbidden_fix_does_not_fail_strict_pass() -> None:
+    """Locally negated forbidden fix claims must not fail no-bug submissions."""
+    spec = _spec("no_bug_fiscal_vs_calendar")
+    submission = {
+        "has_bug": False,
+        "root_cause": (
+            "Both dashboards are querying the same dbt mart, and the discrepancy "
+            "comes from fiscal QTD versus calendar QTD filters in BI rather than "
+            "warehouse logic."
+        ),
+        "affected_models": [],
+        "fix": (
+            "Do not rewrite or rebuild fct_revenue_daily; align and document the "
+            "fiscal and calendar filters in BI instead."
+        ),
+        "evidence": [
+            {
+                "kind": "file_span",
+                "path": "models/marts/fct_revenue_daily.sql",
+                "start_line": 1,
+                "end_line": 4,
+            },
+            {
+                "kind": "run_history",
+                "record_type": "summary",
+                "contains": "All models succeeded",
+            },
+        ],
+    }
+    audit = score_diagnosis(submission, spec)
+    assert audit["diagnosis_variant_ok"] is True
+    assert audit["fix_ok"] is True
+    assert audit["forbidden_ok"] is True
+    assert audit["strict_pass"] == 1.0
+
+
 def test_negated_accepted_root_cause_phrase_does_not_fail_strict_pass() -> None:
     """Accepted negated root-cause phrases must not trip forbidden claim patterns."""
     spec = deepcopy(_spec("campaign_spend_replay_restatement"))

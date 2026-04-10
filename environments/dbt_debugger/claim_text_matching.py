@@ -34,8 +34,6 @@ STOPWORDS = frozenset(
         "that",
         "this",
         "it",
-        "not",
-        "no",
         "if",
         "then",
         "than",
@@ -45,7 +43,21 @@ STOPWORDS = frozenset(
     }
 )
 
-NEGATION_TOKENS = frozenset({"no", "not", "never", "without", "neither", "nor"})
+NEGATION_TOKENS = frozenset(
+    {
+        "no",
+        "not",
+        "never",
+        "without",
+        "neither",
+        "nor",
+        "nothing",
+        "none",
+        "nobody",
+        "nowhere",
+        "cannot",
+    }
+)
 
 
 def normalize_text(value: str) -> str:
