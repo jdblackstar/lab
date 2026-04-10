@@ -117,6 +117,59 @@ def test_score_join_paraphrase_submission_strict_pass() -> None:
     assert audit["strict_pass"] == 1.0
 
 
+def test_missing_allowed_models_defaults_to_required_models_for_scoring() -> None:
+    """Scoring should treat omitted allowed_models as exactly the required set."""
+    spec = deepcopy(_spec("join_fanout_exec_revenue"))
+    variant = spec["rubric_hints"]["accepted_diagnoses"][0]
+    variant["required_models"] = ["int_order_lines"]
+    variant.pop("allowed_models", None)
+
+    base_submission = {
+        "has_bug": True,
+        "root_cause": (
+            "int_order_lines has a join fanout because order_promos can contribute "
+            "multiple promo rows per order, which duplicates revenue downstream."
+        ),
+        "affected_models": ["int_order_lines"],
+        "fix": (
+            "Deduplicate or pre-aggregate promos so the join is one row per order "
+            "before downstream sums run."
+        ),
+        "evidence": [
+            {
+                "kind": "file_span",
+                "path": "models/intermediate/int_order_lines.sql",
+                "start_line": 1,
+                "end_line": 14,
+            },
+            {
+                "kind": "sample_rows",
+                "table": "raw_order_promos",
+                "match_json": "{\"order_id\": 1001}",
+                "min_rows": 2,
+            },
+        ],
+    }
+
+    base_audit = score_diagnosis(base_submission, spec)
+
+    assert base_audit["affected_models_match"] is True
+    assert base_audit["diagnosis_variant_ok"] is True
+    assert base_audit["strict_pass"] == 1.0
+
+    expanded_submission = deepcopy(base_submission)
+    expanded_submission["affected_models"] = [
+        "int_order_lines",
+        "fct_daily_revenue",
+    ]
+
+    expanded_audit = score_diagnosis(expanded_submission, spec)
+
+    assert expanded_audit["affected_models_match"] is False
+    assert expanded_audit["diagnosis_variant_ok"] is False
+    assert expanded_audit["strict_pass"] == 0.0
+
+
 def test_wrong_mechanism_with_right_models_fails() -> None:
     spec = _spec("join_fanout_exec_revenue")
     submission = {

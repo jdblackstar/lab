@@ -31,6 +31,18 @@ def test_campaign_replay_scenario_passes_validation() -> None:
     assert errors == []
 
 
+def test_validator_defaults_missing_allowed_models_to_required_models() -> None:
+    """Missing allowed_models should inherit required_models during validation."""
+    spec = deepcopy(_spec("join_fanout_exec_revenue"))
+    variant = spec["rubric_hints"]["accepted_diagnoses"][0]
+    variant["required_models"] = ["int_order_lines"]
+    variant.pop("allowed_models", None)
+
+    errors = _validate_one(_scenario_path("join_fanout_exec_revenue"), spec)
+
+    assert errors == []
+
+
 def test_validator_rejects_negated_accepted_phrase_overlap() -> None:
     """Accepted negated phrases must not be able to satisfy forbidden claims."""
     spec = deepcopy(_spec("campaign_spend_replay_restatement"))
