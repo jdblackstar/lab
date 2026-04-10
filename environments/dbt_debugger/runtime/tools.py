@@ -16,7 +16,7 @@ from typing import Any
 from runtime.types import DiagnosisSubmission, EvidenceRef, RolloutStateKeys
 
 _ALLOWED_DBT_SUBCOMMANDS = frozenset(
-    {"parse", "compile", "ls", "list", "run", "test", "build"}
+    {"parse", "compile", "ls", "run", "test", "build"}
 )
 _ALLOWED_DBT_RESOURCE_TYPES = frozenset(
     {"model", "test", "source", "seed", "snapshot", "exposure"}
