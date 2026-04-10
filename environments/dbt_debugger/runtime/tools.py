@@ -594,7 +594,7 @@ def _validate_evidence_ref(raw_ref: Any) -> tuple[EvidenceRef | None, str | None
             if status:
                 out["status"] = status.lower()
             if len(parts) > 4 and parts[4]:
-                out["contains"] = parts[4]
+                out["contains"] = "|".join(parts[4:])
         elif record_type == "test":
             if len(parts) < 4:
                 return None, "run_history test evidence must be run_history|test|name|status"
@@ -606,7 +606,7 @@ def _validate_evidence_ref(raw_ref: Any) -> tuple[EvidenceRef | None, str | None
             if status:
                 out["status"] = status.lower()
             if len(parts) > 4 and parts[4]:
-                out["contains"] = parts[4]
+                out["contains"] = "|".join(parts[4:])
         elif record_type in {"summary", "warning"}:
             contains = "|".join(parts[2:])
             if not contains:
