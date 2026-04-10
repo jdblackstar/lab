@@ -195,7 +195,7 @@ def _write_project_files(project_root: Path, spec: dict[str, Any]) -> None:
             if not isinstance(entry, dict):
                 continue
             rel = str(entry.get("path", "")).strip().replace("\\", "/")
-            if not rel or ".." in rel.split("/"):
+            if not rel or rel.startswith("/") or ".." in rel.split("/"):
                 raise ValueError(f"Invalid dbt_project.{key} path: {rel!r}")
             content = entry.get("content", "")
             if not isinstance(content, str):
