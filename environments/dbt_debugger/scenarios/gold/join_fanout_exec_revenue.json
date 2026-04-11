@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "scenario_id": "join_fanout_exec_revenue",
+  "title": "Executive revenue jumped after yesterday's refresh",
+  "difficulty_tier": 2,
+  "failure_categories": ["join"],
+  "has_bug": true,
+  "metadata": {
+    "author": "benchmark",
+    "tags": ["revenue", "promo", "fanout"]
+  },
+  "symptom": {
+    "channel": "slack",
+    "from_role": "revops",
+    "message": "Hey — the exec dashboard daily revenue has looked roughly 2x since yesterday afternoon. Finance says it doesn't match Stripe. Can someone triage? Nothing obvious changed in Looker filters on our side."
+  },
+  "dag": {
+    "notation": "source('raw','orders') → stg_orders\nsource('raw','customers') → stg_customers\nsource('raw','order_promos') → stg_order_promos\nstg_orders + stg_order_promos → int_order_lines\nint_order_lines → fct_daily_revenue",
+    "models": [
+      {"name": "stg_orders", "path": "models/staging/stg_orders.sql", "role": "staging"},
+      {"name": "stg_customers", "path": "models/staging/stg_customers.sql", "role": "staging"},
+      {"name": "stg_order_promos", "path": "models/staging/stg_order_promos.sql", "role": "staging"},
+      {"name": "int_order_lines", "path": "models/intermediate/int_order_lines.sql", "role": "intermediate"},
+      {"name": "fct_daily_revenue", "path": "models/marts/fct_daily_revenue.sql", "role": "mart"}
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\n\nprofile: debug_project\n\nmodel-paths: [\"models\"]\nmacro-paths: [\"macros\"]\n\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    intermediate:\n      +materialized: view\n    marts:\n      +materialized: table\n"
+      },
+      {"path": "packages.yml", "content": "packages: []\n"},
+      {
+        "path": "models/staging/stg_orders.sql",
+        "content": "with src as (\n    select * from {{ source('raw', 'orders') }}\n)\nselect\n    order_id,\n    customer_id,\n    order_date,\n    amount\nfrom src\n"
+      },
+      {
+        "path": "models/staging/stg_customers.sql",
+        "content": "select * from {{ source('raw', 'customers') }}\n"
+      },
+      {
+        "path": "models/staging/stg_order_promos.sql",
+        "content": "select * from {{ source('raw', 'order_promos') }}\n"
+      },
+      {
+        "path": "models/intermediate/int_order_lines.sql",
+        "content": "with o as (\n    select * from {{ ref('stg_orders') }}\n),\np as (\n    select * from {{ ref('stg_order_promos') }}\n)\nselect\n    o.order_id,\n    o.customer_id,\n    o.order_date,\n    o.amount,\n    p.promo_code\nfrom o\ninner join p on o.order_id = p.order_id\n"
+      },
+      {
+        "path": "models/marts/fct_daily_revenue.sql",
+        "content": "select\n    order_date as revenue_date,\n    sum(amount) as daily_revenue\nfrom {{ ref('int_order_lines') }}\ngroup by 1\n"
+      },
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: raw\n    schema: raw\n    tables:\n      - name: orders\n      - name: customers\n      - name: order_promos\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "raw_orders": {
+      "columns": [
+        {"name": "order_id", "type": "integer"},
+        {"name": "customer_id", "type": "integer"},
+        {"name": "order_date", "type": "string"},
+        {"name": "amount", "type": "numeric"}
+      ],
+      "rows": [
+        {"order_id": 1001, "customer_id": 1, "order_date": "2026-03-30", "amount": 120.0},
+        {"order_id": 1002, "customer_id": 2, "order_date": "2026-03-30", "amount": 80.0}
+      ]
+    },
+    "raw_order_promos": {
+      "columns": [
+        {"name": "order_id", "type": "integer"},
+        {"name": "promo_code", "type": "string"}
+      ],
+      "rows": [
+        {"order_id": 1001, "promo_code": "SPRING10"},
+        {"order_id": 1001, "promo_code": "LOYALTY5"},
+        {"order_id": 1002, "promo_code": "SPRING10"}
+      ]
+    },
+    "raw_customers": {
+      "columns": [
+        {"name": "customer_id", "type": "integer"},
+        {"name": "name", "type": "string"}
+      ],
+      "rows": [
+        {"customer_id": 1, "name": "Acme"},
+        {"customer_id": 2, "name": "Globex"}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "Nightly prod run completed; mart refreshed; no compile errors.",
+    "model_results": [
+      {"model": "stg_orders", "status": "success"},
+      {"model": "stg_order_promos", "status": "success"},
+      {"model": "int_order_lines", "status": "success"},
+      {"model": "fct_daily_revenue", "status": "success"}
+    ],
+    "tests": [
+      {"name": "unique_stg_orders_order_id", "status": "passed", "message": "OK"},
+      {"name": "not_null_fct_daily_revenue_daily_revenue", "status": "passed", "message": "OK"}
+    ],
+    "warnings": [
+      "Row count for int_order_lines increased 85% vs prior run — within SLA threshold, no alert fired."
+    ]
+  },
+  "ground_truth": {
+    "root_cause": "Join fanout in int_order_lines: inner join from stg_orders to stg_order_promos on order_id duplicates orders with multiple promo rows, inflating sums in fct_daily_revenue.",
+    "affected_models": ["int_order_lines", "fct_daily_revenue"],
+    "fix": "Enforce grain: dedupe promos per order (e.g. qualify row_number() over (partition by order_id order by promo_code) = 1), aggregate promos before join, or move promo logic to a bridge with explicit cardinality rules.",
+    "common_misdiagnoses": [
+      "Stripe ingestion double-loaded payments (no evidence in raw_orders).",
+      "Looker metric definition changed (symptom predates dashboard publish).",
+      "Duplicate customers causing fanout (customers not joined at fault line)."
+    ],
+    "investigation_path": [
+      "Compare raw_orders daily sum vs fct_daily_revenue for the same date.",
+      "Inspect int_order_lines row count vs stg_orders row count by order_id.",
+      "Identify orders with multiple promo rows and verify duplicated amounts in mart."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Names int_order_lines join as the fanout source.",
+      "Explains multiplicative effect on sum(amount) in fct_daily_revenue.",
+      "Mentions order 1001 appearing twice with different promo_code as concrete evidence."
+    ],
+    "accepted_diagnoses": [
+      {
+        "required_models": ["int_order_lines"],
+        "allowed_models": ["int_order_lines", "fct_daily_revenue"],
+        "root_cause_all_of": [
+          ["int_order_lines"],
+          ["join fanout", "fanout", "duplicate join", "row multiplication"],
+          ["stg_order_promos", "order_promos", "promo rows"],
+          ["duplicate", "double count", "inflating", "multiplies"]
+        ],
+        "fix_variants": [
+          [
+            ["dedupe", "deduplicate", "row_number", "qualify"],
+            ["promo", "order_promos"]
+          ],
+          [
+            ["aggregate", "pre-aggregate", "group by"],
+            ["promo", "order_promos"],
+            ["before join", "prior to join", "upstream of the join"]
+          ],
+          [
+            ["bridge", "mapping table"],
+            ["cardinality", "one row per order", "one promo per order"]
+          ]
+        ]
+      }
+    ],
+    "required_evidence": [
+      {
+        "kind": "file_span",
+        "path": "models/intermediate/int_order_lines.sql",
+        "all_of": ["inner join", "order_id", "stg_order_promos"]
+      },
+      {
+        "kind": "sample_rows",
+        "table": "raw_order_promos",
+        "match": {"order_id": 1001},
+        "min_rows": 2,
+        "all_of": ["SPRING10", "LOYALTY5"]
+      }
+    ]
+  },
+  "hypothesis_space": [
+    {"id": "h1", "hypothesis": "Double extract from payments API duplicated raw orders.", "plausible": true},
+    {"id": "h2", "hypothesis": "Join fanout between orders and promos duplicated revenue rows.", "plausible": true},
+    {"id": "h3", "hypothesis": "Looker blended metric accidentally sums gross and net.", "plausible": false}
+  ],
+  "red_herrings": [
+    {
+      "id": "r1",
+      "description": "stg_customers exists in DAG and looks related to customer count confusion.",
+      "why_wrong": "Customers model is not joined into the revenue path; row multiplication happens at promo join."
+    }
+  ],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml", "packages.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "scenario_id": "campaign_spend_replay_restatement",
+  "title": "Historical spend moved after the ad network replay",
+  "difficulty_tier": 4,
+  "failure_categories": ["incremental", "no_bug"],
+  "has_bug": false,
+  "metadata": {
+    "author": "benchmark",
+    "tags": ["ads", "replay", "restatement", "false_alarm"]
+  },
+  "symptom": {
+    "channel": "slack",
+    "from_role": "marketing",
+    "message": "Last week's spend was restated upward after an ad network replay and the team is worried the warehouse duplicated or corrupted history. The affected dates overlap a previously acknowledged vendor outage."
+  },
+  "dag": {
+    "notation": "source('ads','campaign_spend') → stg_campaign_spend\nstg_campaign_spend → fct_campaign_spend_daily",
+    "models": [
+      {
+        "name": "stg_campaign_spend",
+        "path": "models/staging/stg_campaign_spend.sql",
+        "role": "staging"
+      },
+      {
+        "name": "fct_campaign_spend_daily",
+        "path": "models/marts/fct_campaign_spend_daily.sql",
+        "role": "mart"
+      }
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\n\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    marts:\n      +materialized: table\n"
+      },
+      {
+        "path": "packages.yml",
+        "content": "packages: []\n"
+      },
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: ads\n    schema: ads\n    tables:\n      - name: campaign_spend\n"
+      },
+      {
+        "path": "models/staging/stg_campaign_spend.sql",
+        "content": "select\n    campaign_id,\n    spend_date,\n    spend_amount,\n    load_batch\nfrom {{ source('ads', 'campaign_spend') }}\n"
+      },
+      {
+        "path": "models/marts/fct_campaign_spend_daily.sql",
+        "content": "select\n    spend_date,\n    sum(spend_amount) as total_spend\nfrom {{ ref('stg_campaign_spend') }}\ngroup by 1\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "ads_campaign_spend": {
+      "columns": [
+        {"name": "campaign_id", "type": "integer"},
+        {"name": "spend_date", "type": "string"},
+        {"name": "spend_amount", "type": "numeric"},
+        {"name": "load_batch", "type": "string"}
+      ],
+      "rows": [
+        {"campaign_id": 9001, "spend_date": "2026-03-25", "spend_amount": 110.0, "load_batch": "initial_load_2026_03_25"},
+        {"campaign_id": 9002, "spend_date": "2026-03-25", "spend_amount": 65.0, "load_batch": "vendor_replay_2026_03_30"},
+        {"campaign_id": 9003, "spend_date": "2026-03-26", "spend_amount": 80.0, "load_batch": "vendor_replay_2026_03_30"}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "A vendor replay for the outage window arrived and the team ran a clean full-refresh of downstream spend models afterward.",
+    "model_results": [
+      {"model": "stg_campaign_spend", "status": "success"},
+      {"model": "fct_campaign_spend_daily", "status": "success"}
+    ],
+    "tests": [
+      {"name": "unique_stg_campaign_spend_campaign_id_spend_date_load_batch", "status": "passed", "message": "OK"}
+    ],
+    "warnings": [
+      "Ads vendor replay covered 2026-03-25 through 2026-03-26 after the prior outage."
+    ]
+  },
+  "ground_truth": {
+    "root_cause": "No bug — the replay supplied legitimately missing source rows for the outage window, and the downstream full-refresh loaded them correctly. Historical totals moved because source truth changed, not because dbt duplicated spend.",
+    "affected_models": [],
+    "fix": "No fix needed — communicate the replay-driven restatement and annotate dashboards or runbooks when source replays can move historical periods.",
+    "common_misdiagnoses": [
+      "The mart duplicated campaign spend during replay handling (row keys remain distinct).",
+      "A dbt incremental bug re-added historical rows twice (the replay rows are legitimate late source rows).",
+      "Marketing filtered the dashboard incorrectly (the source truth actually changed)."
+    ],
+    "investigation_path": [
+      "Read the operational summary around the vendor replay and downstream refresh.",
+      "Verify replay-batch rows exist in the source sample for the affected dates.",
+      "Confirm the mart simply aggregates current source truth without suspicious fanout."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Concludes there is no dbt defect once the replay context is understood.",
+      "Explains that historical totals moved because new source rows arrived.",
+      "Avoids recommending warehouse rewrites for a legitimate source restatement."
+    ],
+    "accepted_diagnoses": [
+      {
+        "required_models": [],
+        "allowed_models": [],
+        "root_cause_all_of": [
+          ["vendor replay", "replay", "backfill", "restatement"],
+          ["missing source rows", "source truth changed", "late source rows"],
+          ["full-refresh", "clean refresh", "downstream refresh"],
+          ["warehouse behaved correctly", "dbt logic is correct", "row keys remain distinct", "rows remain distinct"]
+        ],
+        "fix_variants": [
+          [
+            ["communicate", "document", "annotate"],
+            ["replay", "restatement"],
+            ["dashboard", "runbook", "stakeholders"]
+          ],
+          [
+            ["no fix needed", "do not change dbt", "no warehouse rewrite"],
+            ["source replay", "vendor replay"]
+          ]
+        ]
+      }
+    ],
+    "required_evidence": [
+      {
+        "kind": "run_history",
+        "record_type": "summary",
+        "contains": "vendor replay"
+      },
+      {
+        "kind": "sample_rows",
+        "table": "ads_campaign_spend",
+        "match": {"load_batch": "vendor_replay_2026_03_30"},
+        "min_rows": 2,
+        "all_of": ["2026-03-25", "2026-03-26"]
+      },
+      {
+        "kind": "file_span",
+        "path": "models/marts/fct_campaign_spend_daily.sql",
+        "all_of": ["sum(spend_amount)", "group by 1"]
+      }
+    ],
+    "forbidden_claims": [
+      [
+        ["pipeline", "warehouse", "dbt", "mart"],
+        ["broken", "duplicated", "corrupt", "regressed"]
+      ],
+      [
+        ["rewrite", "delete", "drop", "rebuild"],
+        ["fct_campaign_spend_daily"]
+      ]
+    ]
+  },
+  "hypothesis_space": [
+    {
+      "id": "h1",
+      "hypothesis": "The source replay legitimately filled in missing spend for the outage window.",
+      "plausible": true
+    },
+    {
+      "id": "h2",
+      "hypothesis": "The warehouse duplicated historical rows during replay handling.",
+      "plausible": true
+    },
+    {
+      "id": "h3",
+      "hypothesis": "Marketing filtered the dashboard incorrectly.",
+      "plausible": false
+    }
+  ],
+  "red_herrings": [],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "dbt_project.yml", "packages.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "scenario_id": "macro_var_discount_bug",
+  "title": "Enterprise discounts changed after the rollout",
+  "difficulty_tier": 3,
+  "failure_categories": ["logic", "macro", "config"],
+  "has_bug": true,
+  "metadata": {
+    "tags": ["macro", "vars", "b2b"]
+  },
+  "symptom": {
+    "channel": "slack",
+    "from_role": "sales_ops",
+    "message": "Since we flipped the loyalty rollout flag in dbt prod, enterprise deals in fct_deal_margin look like they're getting consumer discount rates. Finance is asking if the pipeline is broken or if we're mis-tagging segment somewhere."
+  },
+  "dag": {
+    "notation": "source('crm','deals') → stg_deals\nstg_deals → int_deal_discounts (uses macro + var)\nint_deal_discounts → fct_deal_margin",
+    "models": [
+      {"name": "stg_deals", "path": "models/staging/stg_deals.sql", "role": "staging"},
+      {"name": "int_deal_discounts", "path": "models/intermediate/int_deal_discounts.sql", "role": "intermediate"},
+      {"name": "fct_deal_margin", "path": "models/marts/fct_deal_margin.sql", "role": "mart"}
+    ]
+  },
+  "dbt_project": {
+    "files": [
+      {
+        "path": "dbt_project.yml",
+        "content": "name: debug_project\nversion: \"1.0.0\"\nconfig-version: 2\nprofile: debug_project\nmodel-paths: [\"models\"]\nmacro-paths: [\"macros\"]\n\nvars:\n  loyalty_rollout_enabled: true\n\nmodels:\n  debug_project:\n    staging:\n      +materialized: view\n    intermediate:\n      +materialized: view\n    marts:\n      +materialized: table\n"
+      },
+      {"path": "packages.yml", "content": "packages: []\n"},
+      {
+        "path": "models/sources.yml",
+        "content": "version: 2\nsources:\n  - name: crm\n    schema: crm\n    tables:\n      - name: deals\n"
+      },
+      {
+        "path": "macros/discount_rate.sql",
+        "content": "{% macro discount_rate(segment, loyalty_enabled) %}\n  {% if loyalty_enabled %}\n    case\n      when {{ segment }} = 'enterprise' then 0.00\n      when {{ segment }} = 'smb' then 0.05\n      else 0.10\n    end\n  {% else %}\n    case\n      when {{ segment }} = 'enterprise' then 0.10\n      when {{ segment }} = 'smb' then 0.05\n      else 0.00\n    end\n  {% endif %}\n{% endmacro %}\n"
+      },
+      {
+        "path": "models/staging/stg_deals.sql",
+        "content": "select\n    deal_id,\n    customer_segment,\n    amount\nfrom {{ source('crm', 'deals') }}\n"
+      },
+      {
+        "path": "models/intermediate/int_deal_discounts.sql",
+        "content": "select\n    deal_id,\n    customer_segment,\n    amount,\n    amount * {{ discount_rate('customer_segment', var('loyalty_rollout_enabled')) }} as discount_amount\nfrom {{ ref('stg_deals') }}\n"
+      },
+      {
+        "path": "models/marts/fct_deal_margin.sql",
+        "content": "select\n    deal_id,\n    customer_segment,\n    amount - discount_amount as margin\nfrom {{ ref('int_deal_discounts') }}\n"
+      }
+    ]
+  },
+  "sample_data": {
+    "crm_deals": {
+      "columns": [
+        {"name": "deal_id", "type": "integer"},
+        {"name": "customer_segment", "type": "string"},
+        {"name": "amount", "type": "numeric"}
+      ],
+      "rows": [
+        {"deal_id": 1, "customer_segment": "enterprise", "amount": 10000.0},
+        {"deal_id": 2, "customer_segment": "smb", "amount": 2500.0},
+        {"deal_id": 3, "customer_segment": "consumer", "amount": 120.0}
+      ]
+    }
+  },
+  "run_history": {
+    "summary": "Prod var loyalty_rollout_enabled set true in dbt_project.yml for rollout; full refresh of marts.",
+    "model_results": [
+      {"model": "stg_deals", "status": "success"},
+      {"model": "int_deal_discounts", "status": "success"},
+      {"model": "fct_deal_margin", "status": "success"}
+    ],
+    "tests": [
+      {"name": "accepted_values_stg_deals_segment", "status": "passed", "message": "OK"}
+    ],
+    "warnings": []
+  },
+  "ground_truth": {
+    "root_cause": "Macro discount_rate inverts enterprise vs consumer discount bands when loyalty_rollout_enabled is true (enterprise mapped to 0.00 and consumer to 0.10). Combined with dbt_project.yml var loyalty_rollout_enabled: true, enterprise deals receive the wrong discount rate.",
+    "affected_models": ["int_deal_discounts", "fct_deal_margin"],
+    "fix": "Correct the case mapping in discount_rate for the loyalty_enabled branch (swap enterprise and consumer rates or align to business spec). Reconcile var default with intended rollout semantics.",
+    "common_misdiagnoses": [
+      "customer_segment mis-sourced in stg_deals (segment values are correct).",
+      "Margin model subtracts wrong column (subtract is fine; discount_amount wrong).",
+      "Duplicate deals causing margin dilution (no duplication in DAG)."
+    ],
+    "investigation_path": [
+      "Reproduce expected vs actual discount for one enterprise row.",
+      "Inspect int_deal_discounts compiled SQL or macro expansion for loyalty_rollout_enabled true.",
+      "Compare macro branches when var toggles."
+    ]
+  },
+  "rubric_hints": {
+    "pass_criteria": [
+      "Links loyalty_rollout_enabled var to macro branch selection.",
+      "States enterprise rate is wrong under loyalty_enabled=true in discount_rate macro.",
+      "Names int_deal_discounts as where incorrect discount_amount is computed."
+    ],
+    "accepted_diagnoses": [
+      {
+        "required_models": ["int_deal_discounts"],
+        "allowed_models": ["int_deal_discounts", "fct_deal_margin"],
+        "root_cause_all_of": [
+          ["int_deal_discounts"],
+          ["discount_rate", "macro"],
+          ["loyalty_rollout_enabled", "rollout flag", "var"],
+          ["enterprise", "wrong rate", "consumer rate", "0.00"]
+        ],
+        "fix_variants": [
+          [
+            ["discount_rate", "macro"],
+            ["enterprise"],
+            ["consumer"],
+            ["swap", "correct", "align"]
+          ],
+          [
+            ["loyalty_rollout_enabled", "rollout flag", "var"],
+            ["reconcile", "align", "correct"],
+            ["semantics", "default", "setting"]
+          ]
+        ]
+      }
+    ],
+    "required_evidence": [
+      {
+        "kind": "file_span",
+        "path": "macros/discount_rate.sql",
+        "all_of": ["enterprise", "0.00", "0.10"]
+      },
+      {
+        "kind": "file_span",
+        "path": "dbt_project.yml",
+        "all_of": ["loyalty_rollout_enabled: true"]
+      },
+      {
+        "kind": "file_span",
+        "path": "models/intermediate/int_deal_discounts.sql",
+        "all_of": ["discount_rate('customer_segment', var('loyalty_rollout_enabled'))"]
+      }
+    ]
+  },
+  "hypothesis_space": [
+    {"id": "h1", "hypothesis": "Segment labels in CRM changed and stg_deals is stale.", "plausible": true},
+    {"id": "h2", "hypothesis": "Macro branch for loyalty rollout assigns wrong rates by segment.", "plausible": true},
+    {"id": "h3", "hypothesis": "fct_deal_margin applies tax twice.", "plausible": false}
+  ],
+  "red_herrings": [
+    {
+      "id": "r1",
+      "description": "stg_deals is first model touching CRM; suspect bad extract.",
+      "why_wrong": "Amount and segment are faithful to sample data; bug is in discount_rate macro logic under the new var."
+    }
+  ],
+  "artifact_manifest": {
+    "tool_visible_globs": ["models/**", "macros/**", "dbt_project.yml"],
+    "evaluator_only_paths": [],
+    "immutable_paths": ["models/sources.yml"]
+  }
+}

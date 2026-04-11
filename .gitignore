@@ -12,5 +12,11 @@ wheels/
 # Secrets
 .env
 
+# macOS Finder metadata
+.DS_Store
+
 # Local Prime / Verifiers eval outputs (e.g. prime eval run default save paths)
 environments/*/outputs/
+external/
+
+*.log
