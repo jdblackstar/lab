@@ -25,8 +25,11 @@ _RUN_HISTORY_RECORD_TYPES = frozenset({"summary", "model", "test", "warning"})
 _EXTRA_READ_GLOBS = ("debug_context/**", "target/**", "logs/**")
 
 
-def _dbt_argv(project_root: str, dbt_args: list[str]) -> list[str]:
-    """Resolve how to invoke dbt: prefer ``dbt`` on PATH, else ``python -m dbt``."""
+def dbt_argv(project_root: str, dbt_args: list[str]) -> list[str]:
+    """Build argv for invoking dbt: prefer ``dbt`` on PATH, else ``python -m dbt``.
+
+    Used by ``run_dbt_command`` and by tests so compile smoke checks match runtime.
+    """
     exe = shutil.which("dbt")
     if exe:
         return [exe, *dbt_args, "--project-dir", project_root]
@@ -438,7 +441,7 @@ async def run_dbt_command(
     if fail_fast:
         args.append("--fail-fast")
 
-    cmd = _dbt_argv(project_root, args)
+    cmd = dbt_argv(project_root, args)
     env = {**os.environ, "DBT_PROFILES_DIR": profiles_dir}
 
     proc = await asyncio.create_subprocess_exec(
