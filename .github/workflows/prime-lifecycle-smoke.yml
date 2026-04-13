@@ -1,7 +1,8 @@
 # Smoke-test the documented Prime CLI path and the packaged artifact path.
 # The local install smoke covers ``prime env install`` from a checkout; the artifact smoke
-# covers the built wheel/sdist contents; eval smoke runs only from ``main`` when
-# PRIME_API_KEY is set so PR branch code never receives the secret.
+# covers the built wheel/sdist contents; eval smoke runs only from ``main`` so PR branch
+# code never receives the secret, and the shell script skips eval when PRIME_API_KEY is
+# unset.
 #
 # Use a project ``uv venv`` and prepend ``.venv/bin`` to PATH so ``python`` matches the
 # interpreter ``prime env install`` targets (same as local dev with an activated venv).
@@ -62,7 +63,7 @@ jobs:
     needs:
       - install-smoke
       - artifact-smoke
-    if: ${{ secrets.PRIME_API_KEY != '' && github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
