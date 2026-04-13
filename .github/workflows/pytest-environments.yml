@@ -1,0 +1,29 @@
+# Run pytest in each environments/<name>/ that has pyproject.toml and tests/.
+
+name: pytest (environments)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: environments/**/uv.lock
+
+      - name: Run environment tests
+        run: bash scripts/ci/run_environment_pytests.sh
