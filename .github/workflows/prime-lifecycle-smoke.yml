@@ -1,0 +1,78 @@
+# Smoke-test the documented Prime CLI path: ``prime env install`` then ``prime eval run``.
+# Install smoke runs on every PR; eval smoke runs only when the repo defines PRIME_API_KEY.
+#
+# Use a project ``uv venv`` and prepend ``.venv/bin`` to PATH so ``python`` matches the
+# interpreter ``prime env install`` targets (same as local dev with an activated venv).
+
+name: Prime lifecycle smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install-smoke:
+    name: prime env install + load_environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Create venv and install Prime CLI
+        run: |
+          uv venv --python 3.12
+          echo "${{ github.workspace }}/.venv/bin" >> "$GITHUB_PATH"
+          uv pip install prime
+
+      - name: prime env install dbt-debugger
+        run: prime env install dbt-debugger
+
+      - name: Verify packaging and entrypoint (import + load_environment)
+        run: python -c "import dbt_debugger; dbt_debugger.load_environment(max_scenarios=1)"
+
+  eval-smoke:
+    name: prime eval run (minimal)
+    needs: install-smoke
+    if: ${{ secrets.PRIME_API_KEY != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Create venv and install Prime CLI
+        run: |
+          uv venv --python 3.12
+          echo "${{ github.workspace }}/.venv/bin" >> "$GITHUB_PATH"
+          uv pip install prime
+
+      - name: prime env install dbt-debugger
+        run: prime env install dbt-debugger
+
+      - name: prime eval run (canonical path, one example)
+        env:
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+        run: |
+          prime eval run dbt-debugger \
+            -e configs/endpoints.toml \
+            -m openai/gpt-4.1-nano \
+            -n 1 -r 1 \
+            -a '{"max_scenarios":1}' \
+            -A
