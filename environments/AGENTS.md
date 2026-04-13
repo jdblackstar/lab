@@ -679,6 +679,12 @@ The `prime env init` command initializes a new environment project:
 prime env init my-env
 ```
 
+When adding a new environment under `environments/<env_name>/`, update Prime lifecycle
+CI coverage in the same change. Prefer shared smoke scripts or a workflow matrix over
+duplicated YAML. At minimum, cover `prime env install` plus `load_environment(...)`;
+add packaged-artifact smoke and minimal `prime eval run` smoke when the environment is
+meant to support those paths.
+
 This creates the following structure:
 
 ```
