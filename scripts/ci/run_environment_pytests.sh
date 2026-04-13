@@ -20,5 +20,6 @@ done
 shopt -u nullglob
 
 if [[ "$any" -eq 0 ]]; then
-  echo "No environments with pyproject.toml + tests/ found; nothing to run."
+  echo "No environments with pyproject.toml + tests/ found; nothing to run." >&2
+  exit 1
 fi
