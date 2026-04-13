@@ -15,7 +15,7 @@ for env_dir in environments/*/; do
   any=1
   name="$(basename "$env_dir")"
   echo "==> pytest environments/${name}"
-  (cd "$env_dir" && uv sync --extra dev && uv run pytest tests/ -q)
+  (cd "$env_dir" && uv -q sync --extra dev && uv run pytest tests/ -q)
 done
 shopt -u nullglob
 
