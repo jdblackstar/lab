@@ -1,0 +1,87 @@
+# Smoke-test the documented Prime CLI path and the packaged artifact path.
+# The local install smoke covers ``prime env install`` from a checkout; the artifact smoke
+# covers the built wheel/sdist contents; eval smoke runs only from ``main`` so PR branch
+# code never receives the secret, and the shell script skips eval when PRIME_API_KEY is
+# unset.
+#
+# Use a project ``uv venv`` and prepend ``.venv/bin`` to PATH so ``python`` matches the
+# interpreter ``prime env install`` targets (same as local dev with an activated venv).
+
+name: Prime lifecycle smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install-smoke:
+    name: prime env install + load_environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Create venv and install Prime CLI
+        run: |
+          uv venv --python 3.12
+          echo "${{ github.workspace }}/.venv/bin" >> "$GITHUB_PATH"
+          uv pip install prime
+
+      - name: Run local Prime lifecycle smoke
+        run: bash scripts/smoke_prime_lifecycle.sh
+
+  artifact-smoke:
+    name: packaged artifact import + load_environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Run packaged artifact smoke
+        run: bash scripts/smoke_prime_artifact.sh
+
+  eval-smoke:
+    name: prime eval run (minimal)
+    needs:
+      - install-smoke
+      - artifact-smoke
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Create venv and install Prime CLI
+        run: |
+          uv venv --python 3.12
+          echo "${{ github.workspace }}/.venv/bin" >> "$GITHUB_PATH"
+          uv pip install prime
+
+      - name: Run Prime lifecycle smoke with eval
+        env:
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+        run: bash scripts/smoke_prime_lifecycle.sh
