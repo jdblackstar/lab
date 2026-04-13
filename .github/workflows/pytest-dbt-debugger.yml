@@ -19,11 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.12"
-
-      - uses: astral-sh/setup-uv@v4
+          enable-cache: true
+          cache-dependency-glob: environments/dbt_debugger/uv.lock
 
       - name: Install dev deps and run tests
         working-directory: environments/dbt_debugger
