@@ -15,6 +15,7 @@ from datasets import Dataset
 
 from runtime.scoring import score_diagnosis
 from runtime.tools import (
+    dbt_argv,
     _normalize_rel_path,
     list_files,
     _path_matches_globs,
@@ -73,7 +74,7 @@ def test_materialize_scenario_and_dbt_compile(scenario_id: str) -> None:
         env = os.environ.copy()
         env["DBT_PROFILES_DIR"] = str(workspace.profiles_dir)
         result = subprocess.run(
-            ["dbt", "compile", "--project-dir", str(workspace.project_root)],
+            dbt_argv(str(workspace.project_root), ["compile"]),
             capture_output=True,
             text=True,
             env=env,
