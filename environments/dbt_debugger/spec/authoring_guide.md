@@ -51,16 +51,17 @@ When batch-authoring with an LLM, **generate one scenario per call** against the
 ## Ground truth discipline
 
 - `root_cause`: **one primary cause**; mention interactions only when tier ≥ 3.
-- `affected_models`: minimal set that must change or be understood.
+- `affected_models`: minimal set that must change for a **real** bug (`[]` for false alarms). This is the **evaluator gold list** only; agents submit the same semantics under the tool field name `buggy_models` (must be empty when `has_bug` is false).
 - `fix`: concrete—model name + change class (join key, incremental predicate, macro, var).
 - `common_misdiagnoses`: **specific** wrong theories an eager LLM would jump to.
 
 ## Rubric hints
 
 - `pass_criteria`: human-readable notes about what a correct diagnosis should cover.
-- `accepted_diagnoses`: make the runtime contract explicit with `required_models`, `allowed_models`, `root_cause_all_of`, and alternative `fix_variants`.
+- `accepted_diagnoses`: make the runtime contract explicit with `required_models`, `root_cause_all_of`, and alternative `fix_variants`. `allowed_models` may be omitted when it is exactly the same as `required_models`.
 - `required_evidence`: tie each requirement to a resolvable artifact (`file_span`, `sample_rows`, or `run_history`) rather than free-text keywords.
 - For `no_bug`: add structured `forbidden_claims` patterns like “rewrite the mart” or “the warehouse is corrupting data.”
+- Before finalizing a scenario, make sure the prose `ground_truth` answer itself satisfies at least one `accepted_diagnoses` variant so reviewer docs and runtime scoring stay aligned.
 
 ## Category coverage checklist
 

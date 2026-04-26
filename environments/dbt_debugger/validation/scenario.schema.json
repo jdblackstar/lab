@@ -222,7 +222,6 @@
             "additionalProperties": false,
             "required": [
               "required_models",
-              "allowed_models",
               "root_cause_all_of",
               "fix_variants"
             ],

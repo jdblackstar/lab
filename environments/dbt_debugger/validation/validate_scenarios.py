@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,11 @@ from claim_text_matching import (
     claim_group_matches,
     iter_claim_pattern_options,
     option_is_negated_phrase,
+    text_contains_option,
 )
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+from runtime.scoring import _evaluate_variant
 
 REQUIRED_CATEGORIES = frozenset(
     {"join", "incremental", "source_schema", "logic", "macro", "config", "no_bug"}
@@ -75,6 +80,44 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _schema_path() -> Path:
+    """Return the bundled JSON Schema path."""
+    return Path(__file__).resolve().parent / "scenario.schema.json"
+
+
+@lru_cache(maxsize=1)
+def _schema_validator() -> Draft202012Validator:
+    """Load and cache the Draft 2020-12 validator for scenario files."""
+    schema = json.loads(_schema_path().read_text(encoding="utf-8"))
+    return Draft202012Validator(schema)
+
+
+def _schema_error_sort_key(error: ValidationError) -> tuple[str, str]:
+    """Return a stable sort key for schema validation errors."""
+    location = ".".join(str(part) for part in error.absolute_path)
+    return location, error.message
+
+
+def _format_schema_error(error: ValidationError) -> str:
+    """Render one JSON Schema error as a concise validator message."""
+    location = ".".join(str(part) for part in error.absolute_path)
+    if location:
+        return f"schema {location}: {error.message}"
+    return f"schema: {error.message}"
+
+
+def _schema_errors(data: dict[str, Any]) -> list[str]:
+    """Return JSON Schema validation errors for one scenario payload."""
+    validator = _schema_validator()
+    return [
+        _format_schema_error(error)
+        for error in sorted(
+            validator.iter_errors(data),
+            key=_schema_error_sort_key,
+        )
+    ]
+
+
 def _is_claim_group(value: Any) -> bool:
     """Return whether *value* is a non-empty synonym group."""
     return (
@@ -86,8 +129,10 @@ def _is_claim_group(value: Any) -> bool:
 
 def _is_claim_pattern(value: Any) -> bool:
     """Return whether *value* is a non-empty list of claim groups."""
-    return isinstance(value, list) and bool(value) and all(
-        _is_claim_group(item) for item in value
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(_is_claim_group(item) for item in value)
     )
 
 
@@ -100,6 +145,146 @@ def _project_file_paths(data: dict[str, Any]) -> set[str]:
             if isinstance(entry, dict) and isinstance(entry.get("path"), str):
                 out.add(entry["path"])
     return out
+
+
+def _project_file_contents(data: dict[str, Any]) -> dict[str, str]:
+    """Return bundled project contents keyed by normalized project path."""
+    dbt_project = data.get("dbt_project", {})
+    out: dict[str, str] = {}
+    for key in ("files", "macros", "seeds"):
+        for entry in dbt_project.get(key, []) or []:
+            if not isinstance(entry, dict):
+                continue
+            path = entry.get("path")
+            if not isinstance(path, str):
+                continue
+            out[path] = str(entry.get("content", ""))
+    return out
+
+
+def _matching_sample_rows(
+    table_obj: dict[str, Any],
+    match: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return rows that satisfy all key/value pairs in *match*."""
+    rows = table_obj.get("rows", [])
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if all(row.get(key) == value for key, value in match.items()):
+            out.append(row)
+    return out
+
+
+def _missing_anchors(text: str, anchors: list[str]) -> list[str]:
+    """Return rubric anchors that do not appear under claim matching rules."""
+    return [anchor for anchor in anchors if not text_contains_option(text, anchor)]
+
+
+def _run_history_requirement_error(
+    idx: int,
+    requirement: dict[str, Any],
+    run_history: dict[str, Any],
+) -> str | None:
+    """Return an error string when one run-history requirement is unsatisfiable."""
+    record_type = str(requirement.get("record_type", "")).strip()
+    if record_type == "summary":
+        contains = str(requirement.get("contains", "")).strip()
+        summary = str(run_history.get("summary", ""))
+        if contains and not text_contains_option(summary, contains):
+            return (
+                f"required_evidence[{idx}] run_history summary text not found in "
+                f"run_history.summary: {contains!r}"
+            )
+        return None
+
+    if record_type == "warning":
+        contains = str(requirement.get("contains", "")).strip()
+        warnings = [
+            str(item)
+            for item in run_history.get("warnings", [])
+            if isinstance(item, str)
+        ]
+        if contains and not any(
+            text_contains_option(warning, contains) for warning in warnings
+        ):
+            return (
+                f"required_evidence[{idx}] run_history warning text not found in "
+                f"run_history.warnings: {contains!r}"
+            )
+        return None
+
+    records_key = "model_results" if record_type == "model" else "tests"
+    name_key = "model" if record_type == "model" else "name"
+    required_name = str(requirement.get(name_key, "")).strip()
+    required_status = str(requirement.get("status", "")).strip().lower()
+    required_contains = str(requirement.get("contains", "")).strip()
+    records = run_history.get(records_key, [])
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record_name = str(record.get(name_key, "")).strip()
+        if required_name and record_name != required_name:
+            continue
+        record_status = str(record.get("status", "")).strip().lower()
+        if required_status and record_status != required_status:
+            continue
+        if required_contains and not text_contains_option(
+            json.dumps(record, sort_keys=True),
+            required_contains,
+        ):
+            continue
+        return None
+
+    filters: list[str] = []
+    if required_name:
+        filters.append(f"{name_key}={required_name!r}")
+    if required_status:
+        filters.append(f"status={required_status!r}")
+    if required_contains:
+        filters.append(f"contains={required_contains!r}")
+    filter_text = ", ".join(filters) if filters else "no filters"
+    return (
+        f"required_evidence[{idx}] run_history {record_type} requirement is not "
+        f"satisfiable by {records_key}: {filter_text}"
+    )
+
+
+def _validate_ground_truth_alignment(
+    data: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Validate that the documented gold answer fits the scored diagnosis contract."""
+    ground_truth = data.get("ground_truth", {})
+    if not isinstance(ground_truth, dict):
+        return
+
+    variants = [
+        item
+        for item in (data.get("rubric_hints", {}).get("accepted_diagnoses") or [])
+        if isinstance(item, dict)
+    ]
+    if not variants:
+        return
+
+    submission = {
+        "has_bug": bool(data.get("has_bug")),
+        "root_cause": str(ground_truth.get("root_cause", "")),
+        "buggy_models": list(ground_truth.get("affected_models", []) or []),
+        "fix": str(ground_truth.get("fix", "")),
+    }
+    results = [_evaluate_variant(submission, variant) for variant in variants]
+    if not any(result["models_ok"] for result in results):
+        errors.append(
+            "ground_truth.affected_models do not satisfy any accepted_diagnoses "
+            "model contract"
+        )
+    if not any(result["variant_ok"] for result in results):
+        errors.append(
+            "ground_truth root_cause/fix/affected_models do not satisfy any "
+            "accepted_diagnoses variant"
+        )
 
 
 def _validate_required_evidence(
@@ -115,6 +300,9 @@ def _validate_required_evidence(
     }
     sample_tables = set((data.get("sample_data") or {}).keys())
     file_paths = _project_file_paths(data)
+    file_contents = _project_file_contents(data)
+    sample_data = data.get("sample_data") or {}
+    run_history = data.get("run_history") or {}
     requirements = hints.get("required_evidence", [])
     if not isinstance(requirements, list) or not requirements:
         errors.append("rubric_hints.required_evidence must be a non-empty array")
@@ -135,6 +323,15 @@ def _validate_required_evidence(
                 errors.append(
                     f"required_evidence[{idx}] file_span all_of must be a non-empty string array"
                 )
+            elif isinstance(path, str):
+                content = file_contents.get(path)
+                if content is not None:
+                    missing = _missing_anchors(content, all_of)
+                    if missing:
+                        errors.append(
+                            f"required_evidence[{idx}] file_span anchors not found in "
+                            f"{path!r}: {missing!r}"
+                        )
         elif kind == "sample_rows":
             table = requirement.get("table")
             match = requirement.get("match")
@@ -158,6 +355,32 @@ def _validate_required_evidence(
                 errors.append(
                     f"required_evidence[{idx}] sample_rows all_of must be a non-empty string array"
                 )
+            elif isinstance(table, str) and isinstance(match, dict):
+                table_obj = sample_data.get(table)
+                if isinstance(table_obj, dict):
+                    matched_rows = _matching_sample_rows(table_obj, match)
+                    if not matched_rows:
+                        errors.append(
+                            f"required_evidence[{idx}] sample_rows match selects 0 rows "
+                            f"in {table!r}: {match!r}"
+                        )
+                    else:
+                        min_rows = int(requirement.get("min_rows", 1))
+                        if len(matched_rows) < min_rows:
+                            errors.append(
+                                f"required_evidence[{idx}] sample_rows match selects "
+                                f"{len(matched_rows)} row(s) in {table!r}, fewer than "
+                                f"min_rows={min_rows}"
+                            )
+                        missing = _missing_anchors(
+                            json.dumps(matched_rows, sort_keys=True),
+                            all_of,
+                        )
+                        if missing:
+                            errors.append(
+                                f"required_evidence[{idx}] sample_rows anchors not found "
+                                f"in matched rows for {table!r}: {missing!r}"
+                            )
         elif kind == "run_history":
             record_type = requirement.get("record_type")
             if record_type not in {"summary", "model", "test", "warning"}:
@@ -172,12 +395,17 @@ def _validate_required_evidence(
                 errors.append(
                     f"required_evidence[{idx}] run_history test evidence requires name"
                 )
-            if record_type in {"summary", "warning"} and not str(
-                requirement.get("contains", "")
-            ).strip():
+            if (
+                record_type in {"summary", "warning"}
+                and not str(requirement.get("contains", "")).strip()
+            ):
                 errors.append(
                     f"required_evidence[{idx}] run_history {record_type} evidence requires contains"
                 )
+            if record_type in {"summary", "model", "test", "warning"}:
+                err = _run_history_requirement_error(idx, requirement, run_history)
+                if err is not None:
+                    errors.append(err)
         else:
             errors.append(
                 f"required_evidence[{idx}] kind must be file_span, sample_rows, or run_history"
@@ -226,13 +454,17 @@ def _validate_rubric_contract(
                 )
                 continue
             variant_valid = True
-            missing_required = [item for item in required_models if item not in model_names]
+            missing_required = [
+                item for item in required_models if item not in model_names
+            ]
             if missing_required:
                 errors.append(
                     f"accepted_diagnoses[{idx}] required_models reference unknown models: {missing_required!r}"
                 )
                 variant_valid = False
-            missing_allowed = [item for item in allowed_models if item not in model_names]
+            missing_allowed = [
+                item for item in allowed_models if item not in model_names
+            ]
             if missing_allowed:
                 errors.append(
                     f"accepted_diagnoses[{idx}] allowed_models reference unknown models: {missing_allowed!r}"
@@ -291,7 +523,10 @@ def _validate_rubric_contract(
 
 def _validate_one(path: Path, data: dict[str, Any]) -> list[str]:
     """Return a list of error strings for a single scenario file."""
-    errors: list[str] = []
+    errors = _schema_errors(data)
+    if errors:
+        return errors
+
     stem = path.stem
     sid = data.get("scenario_id")
     if sid != stem:
@@ -370,6 +605,7 @@ def _validate_one(path: Path, data: dict[str, Any]) -> list[str]:
         )
 
     _validate_rubric_contract(data, errors)
+    _validate_ground_truth_alignment(data, errors)
 
     return errors
 
@@ -402,9 +638,13 @@ def _validate_corpus(_paths: list[Path], payloads: list[dict[str, Any]]) -> list
             errors.append(
                 f"corpus: need at least {target} tier {tier} scenarios; found {tier_counts[tier]}"
             )
-    if not any(set(data.get("failure_categories", [])) == {"logic"} for data in payloads):
+    if not any(
+        set(data.get("failure_categories", [])) == {"logic"} for data in payloads
+    ):
         errors.append("corpus: need at least one pure logic scenario")
-    if not any(set(data.get("failure_categories", [])) == {"config"} for data in payloads):
+    if not any(
+        set(data.get("failure_categories", [])) == {"config"} for data in payloads
+    ):
         errors.append("corpus: need at least one pure config scenario")
 
     return errors

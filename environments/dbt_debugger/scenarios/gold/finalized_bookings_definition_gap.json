@@ -108,7 +108,7 @@
           ["finalized", "committed"],
           ["provisional", "pending"],
           ["definition", "metric definition", "scope"],
-          ["ops export", "finance dashboard", "same source data"]
+          ["intentional", "by design", "not row loss", "not dropping rows"]
         ],
         "fix_variants": [
           [

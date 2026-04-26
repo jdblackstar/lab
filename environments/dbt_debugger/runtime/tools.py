@@ -13,11 +13,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from claim_text_matching import text_contains_option
 from runtime.types import DiagnosisSubmission, EvidenceRef, RolloutStateKeys
 
-_ALLOWED_DBT_SUBCOMMANDS = frozenset(
-    {"parse", "compile", "ls", "run", "test", "build"}
-)
+_ALLOWED_DBT_SUBCOMMANDS = frozenset({"parse", "compile", "ls", "run", "test", "build"})
 _ALLOWED_DBT_RESOURCE_TYPES = frozenset(
     {"model", "test", "source", "seed", "snapshot", "exposure"}
 )
@@ -36,13 +35,65 @@ def dbt_argv(project_root: str, dbt_args: list[str]) -> list[str]:
     return [sys.executable, "-m", "dbt", *dbt_args, "--project-dir", project_root]
 
 
-def _append_trace(state_container: dict[str, Any] | None, entry: dict[str, Any]) -> None:
+def _append_trace(
+    state_container: dict[str, Any] | None, entry: dict[str, Any]
+) -> None:
     """Append a bounded tool-trace entry for evaluator inspection."""
     if state_container is None:
         return
     trace = state_container.setdefault(RolloutStateKeys.TOOL_TRACE, [])
     if isinstance(trace, list) and len(trace) < 500:
         trace.append(entry)
+
+
+def _collected_evidence_list(state_container: dict[str, Any]) -> list[EvidenceRef]:
+    """Return the rollout-local evidence list, creating it when missing."""
+    evidence = state_container.setdefault(RolloutStateKeys.COLLECTED_EVIDENCE, [])
+    if not isinstance(evidence, list):
+        evidence = []
+        state_container[RolloutStateKeys.COLLECTED_EVIDENCE] = evidence
+    return evidence
+
+
+def _append_collected_evidence(
+    state_container: dict[str, Any],
+    evidence_ref: EvidenceRef,
+) -> tuple[int, bool]:
+    """Store one normalized evidence ref unless it is already present."""
+    evidence = _collected_evidence_list(state_container)
+    encoded = json.dumps(evidence_ref, sort_keys=True)
+    for idx, existing in enumerate(evidence):
+        if isinstance(existing, dict) and json.dumps(existing, sort_keys=True) == encoded:
+            return idx, False
+    evidence.append(dict(evidence_ref))
+    return len(evidence) - 1, True
+
+
+def _tool_error(message: str) -> str:
+    """Return one normalized tool error string."""
+    return f"Error: {message}"
+
+
+def _json_tool_response(
+    *,
+    status: str,
+    message: str,
+    evidence_ref: EvidenceRef | None = None,
+    evidence_count: int | None = None,
+    added: bool | None = None,
+    extra: dict[str, Any] | None = None,
+) -> str:
+    """Render one structured tool response for evidence-collection helpers."""
+    payload: dict[str, Any] = {"status": status, "message": message}
+    if evidence_ref is not None:
+        payload["evidence"] = evidence_ref
+    if evidence_count is not None:
+        payload["evidence_count"] = evidence_count
+    if added is not None:
+        payload["added"] = added
+    if extra:
+        payload.update(extra)
+    return json.dumps(payload, indent=2, sort_keys=True)
 
 
 def _normalize_rel_path(path: str) -> str:
@@ -208,7 +259,9 @@ async def list_files(
 
     result = await asyncio.to_thread(_run)
     if not result.startswith("Error:"):
-        _append_trace(_state, {"tool": "list_files", "path": path, "max_entries": max_entries})
+        _append_trace(
+            _state, {"tool": "list_files", "path": path, "max_entries": max_entries}
+        )
     return result
 
 
@@ -302,7 +355,9 @@ async def search_project(
             if not path_obj.is_file():
                 continue
             try:
-                rel = str(path_obj.resolve().relative_to(root.resolve())).replace("\\", "/")
+                rel = str(path_obj.resolve().relative_to(root.resolve())).replace(
+                    "\\", "/"
+                )
             except ValueError:
                 continue
             if not _path_matches_globs(rel, globs):
@@ -451,7 +506,9 @@ async def run_dbt_command(
         env=env,
     )
     try:
-        out_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+        out_bytes, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_seconds
+        )
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
@@ -493,6 +550,430 @@ async def read_artifact(
         tool_visible_globs=tool_visible_globs,
         immutable_paths=[],
         _state=_state,
+    )
+
+
+def _file_evidence_guidance(rel_path: str) -> str | None:
+    """Return a remediation hint when a path is not valid ``file_span`` evidence."""
+    if rel_path == "debug_context/run_history.json":
+        return (
+            "Use add_run_history_evidence(...) for facts from "
+            "debug_context/run_history.json."
+        )
+    if rel_path == "debug_context/sample_data.json":
+        return (
+            "Use add_sample_rows_evidence(...) for facts from "
+            "debug_context/sample_data.json."
+        )
+    if rel_path.startswith("debug_context/"):
+        return (
+            "Only project files can be stored with add_file_evidence(...). "
+            "Use add_sample_rows_evidence(...) or add_run_history_evidence(...) "
+            "for debug_context facts."
+        )
+    if rel_path.startswith("target/") or rel_path.startswith("logs/"):
+        return (
+            "Artifacts under target/ or logs/ are not valid file evidence. "
+            "Cite the underlying project file, sample rows, or run history fact instead."
+        )
+    return None
+
+
+def _scalar_json_object(match_json: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse *match_json* into a non-empty scalar-valued object."""
+    normalized, err = _normalize_evidence_match(match_json)
+    if err is not None or normalized is None:
+        return None, err
+    parsed = json.loads(normalized)
+    assert isinstance(parsed, dict)
+    return parsed, None
+
+
+def _matching_sample_rows(
+    table_obj: dict[str, Any],
+    match: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Return sample-data rows matching all key/value pairs in *match*."""
+    rows = table_obj.get("rows") or []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if all(row.get(key) == value for key, value in match.items()):
+            out.append(row)
+    return out
+
+
+def _run_history_record_matches(
+    record: dict[str, Any],
+    *,
+    name_key: str,
+    expected_name: str,
+    expected_status: str,
+    expected_contains: str,
+) -> bool:
+    """Return whether one run-history record matches the requested filters."""
+    record_name = str(record.get(name_key, "")).strip()
+    if expected_name and record_name != expected_name:
+        return False
+    record_status = str(record.get("status", "")).strip().lower()
+    if expected_status and record_status != expected_status:
+        return False
+    if expected_contains and not text_contains_option(
+        json.dumps(record, sort_keys=True),
+        expected_contains,
+    ):
+        return False
+    return True
+
+
+async def add_file_evidence(
+    path: str,
+    start_line: int,
+    end_line: int,
+    *,
+    project_root: str = "",
+    rollout_state: dict[str, Any] | None = None,
+) -> str:
+    """Store one project-file citation for the final diagnosis.
+
+    Args:
+        path: Project-relative file path, such as ``models/intermediate/x.sql``.
+        start_line: 1-based start line (inclusive).
+        end_line: 1-based end line (inclusive).
+    """
+    state = rollout_state
+    if state is None:
+        return _tool_error("internal state missing")
+    if start_line < 1:
+        return _tool_error("start_line must be >= 1")
+    if end_line < start_line:
+        return _tool_error("end_line must be >= start_line")
+    root = Path(project_root)
+    if not root.is_dir():
+        return _tool_error("invalid project_root")
+
+    try:
+        target = _resolve_under_root(path, root)
+    except ValueError as exc:
+        return _tool_error(str(exc))
+    if not target.is_file():
+        return _tool_error(f"not a file: {path!r}")
+
+    rel = str(target.resolve().relative_to(root.resolve())).replace("\\", "/")
+    guidance = _file_evidence_guidance(rel)
+    if guidance is not None:
+        return _tool_error(guidance)
+
+    try:
+        line_count = len(target.read_text(encoding="utf-8").splitlines())
+    except OSError as exc:
+        return _tool_error(f"cannot read file: {exc}")
+    if line_count < 1:
+        return _tool_error(f"file is empty: {rel!r}")
+    if start_line > line_count:
+        return _tool_error(
+            f"start_line {start_line} exceeds file length ({line_count} line(s))"
+        )
+    clipped_end = min(end_line, line_count)
+    evidence_ref: EvidenceRef = {
+        "kind": "file_span",
+        "path": rel,
+        "start_line": start_line,
+        "end_line": clipped_end,
+    }
+    index, added = _append_collected_evidence(state, evidence_ref)
+    _append_trace(
+        state,
+        {
+            "tool": "add_file_evidence",
+            "path": rel,
+            "start_line": start_line,
+            "end_line": clipped_end,
+            "added": added,
+        },
+    )
+    line_note = ""
+    if clipped_end != end_line:
+        line_note = (
+            f" Requested end_line {end_line} exceeded file length, so it was "
+            f"clipped to {clipped_end}."
+        )
+    return _json_tool_response(
+        status="accepted",
+        message=(
+            f"Stored file evidence for {rel} lines {start_line}-{clipped_end}."
+            f"{line_note}"
+        ),
+        evidence_ref=evidence_ref,
+        evidence_count=index + 1 if added else len(_collected_evidence_list(state)),
+        added=added,
+    )
+
+
+async def add_sample_rows_evidence(
+    table: str,
+    match_json: str,
+    min_rows: int = 1,
+    *,
+    rollout_state: dict[str, Any] | None = None,
+) -> str:
+    """Store one sample-row citation for the final diagnosis.
+
+    Args:
+        table: Sample table key from ``debug_context/sample_data.json``.
+        match_json: JSON object selecting one or more rows, for example
+            ``{"order_id": 1001}``.
+        min_rows: Minimum number of matching rows expected.
+    """
+    state = rollout_state
+    if state is None:
+        return _tool_error("internal state missing")
+    if min_rows < 1:
+        return _tool_error("min_rows must be >= 1")
+
+    spec = state.get(RolloutStateKeys.SCENARIO_SPEC) or {}
+    sample_data = spec.get("sample_data") if isinstance(spec, dict) else None
+    if not isinstance(sample_data, dict):
+        return _tool_error("sample_data is unavailable for this rollout")
+    table_obj = sample_data.get(table)
+    if not isinstance(table_obj, dict):
+        available = sorted(str(name) for name in sample_data.keys())
+        return _tool_error(
+            f"unknown sample_data table {table!r}. Available tables: {available!r}"
+        )
+
+    match_obj, err = _scalar_json_object(match_json)
+    if err is not None or match_obj is None:
+        return _tool_error(err or "invalid match_json")
+
+    matched_rows = _matching_sample_rows(table_obj, match_obj)
+    if len(matched_rows) < min_rows:
+        return _tool_error(
+            f"sample_rows match returned {len(matched_rows)} row(s) in {table!r}; "
+            f"need at least {min_rows}"
+        )
+
+    normalized_match_json = json.dumps(match_obj, sort_keys=True)
+    evidence_ref: EvidenceRef = {
+        "kind": "sample_rows",
+        "table": table,
+        "match_json": normalized_match_json,
+        "min_rows": min_rows,
+    }
+    index, added = _append_collected_evidence(state, evidence_ref)
+    preview_rows = matched_rows[: min(3, len(matched_rows))]
+    _append_trace(
+        state,
+        {
+            "tool": "add_sample_rows_evidence",
+            "table": table,
+            "match_json": normalized_match_json,
+            "min_rows": min_rows,
+            "added": added,
+        },
+    )
+    return _json_tool_response(
+        status="accepted",
+        message=(
+            f"Stored sample_rows evidence for {table!r}; "
+            f"{len(matched_rows)} matching row(s)."
+        ),
+        evidence_ref=evidence_ref,
+        evidence_count=index + 1 if added else len(_collected_evidence_list(state)),
+        added=added,
+        extra={"matched_rows": len(matched_rows), "preview_rows": preview_rows},
+    )
+
+
+async def add_run_history_evidence(
+    record_type: str,
+    model: str = "",
+    name: str = "",
+    status: str = "",
+    contains: str = "",
+    *,
+    valid_model_names: list[str] | None = None,
+    rollout_state: dict[str, Any] | None = None,
+) -> str:
+    """Store one run-history citation for the final diagnosis.
+
+    Args:
+        record_type: One of ``summary``, ``model``, ``test``, or ``warning``.
+        model: Model name for ``record_type="model"``.
+        name: Test name for ``record_type="test"``.
+        status: Optional status filter, such as ``success`` or ``passed``.
+        contains: Optional snippet expected to appear in the matching record.
+    """
+    state = rollout_state
+    if state is None:
+        return _tool_error("internal state missing")
+
+    rtype = record_type.strip().lower()
+    if rtype not in _RUN_HISTORY_RECORD_TYPES:
+        return _tool_error(
+            f"record_type must be one of {sorted(_RUN_HISTORY_RECORD_TYPES)!r}"
+        )
+
+    spec = state.get(RolloutStateKeys.SCENARIO_SPEC) or {}
+    run_history = spec.get("run_history") if isinstance(spec, dict) else None
+    if not isinstance(run_history, dict):
+        return _tool_error("run_history is unavailable for this rollout")
+
+    normalized_status = status.strip().lower()
+    normalized_contains = contains.strip()
+    evidence_ref: EvidenceRef = {"kind": "run_history", "record_type": rtype}
+    match_summary: dict[str, Any] = {}
+
+    if rtype == "summary":
+        if not normalized_contains:
+            return _tool_error("summary evidence requires contains")
+        summary = str(run_history.get("summary", ""))
+        if not text_contains_option(summary, normalized_contains):
+            return _tool_error(
+                f"run_history.summary does not contain {normalized_contains!r}"
+            )
+        evidence_ref["contains"] = normalized_contains
+        match_summary["matched_summary"] = summary
+    elif rtype == "warning":
+        if not normalized_contains:
+            return _tool_error("warning evidence requires contains")
+        warnings = [
+            str(item)
+            for item in run_history.get("warnings", [])
+            if isinstance(item, str)
+        ]
+        matched_warning = next(
+            (
+                warning
+                for warning in warnings
+                if text_contains_option(warning, normalized_contains)
+            ),
+            None,
+        )
+        if matched_warning is None:
+            return _tool_error(
+                f"no run_history warning contains {normalized_contains!r}"
+            )
+        evidence_ref["contains"] = normalized_contains
+        match_summary["matched_warning"] = matched_warning
+    elif rtype == "model":
+        normalized_model = model.strip()
+        if not normalized_model:
+            return _tool_error("model evidence requires model")
+        valid = set(valid_model_names or [])
+        if valid and normalized_model not in valid:
+            return _tool_error(f"unknown model {normalized_model!r}")
+        records = run_history.get("model_results") or []
+        matched_record = next(
+            (
+                record
+                for record in records
+                if isinstance(record, dict)
+                and _run_history_record_matches(
+                    record,
+                    name_key="model",
+                    expected_name=normalized_model,
+                    expected_status=normalized_status,
+                    expected_contains=normalized_contains,
+                )
+            ),
+            None,
+        )
+        if matched_record is None:
+            return _tool_error(
+                f"no run_history model result matches model={normalized_model!r}, "
+                f"status={normalized_status or '*'}"
+                + (
+                    f", contains={normalized_contains!r}"
+                    if normalized_contains
+                    else ""
+                )
+            )
+        evidence_ref["model"] = normalized_model
+        if normalized_status:
+            evidence_ref["status"] = normalized_status
+        if normalized_contains:
+            evidence_ref["contains"] = normalized_contains
+        match_summary["matched_record"] = matched_record
+    else:
+        normalized_name = name.strip()
+        if not normalized_name:
+            return _tool_error("test evidence requires name")
+        records = run_history.get("tests") or []
+        matched_record = next(
+            (
+                record
+                for record in records
+                if isinstance(record, dict)
+                and _run_history_record_matches(
+                    record,
+                    name_key="name",
+                    expected_name=normalized_name,
+                    expected_status=normalized_status,
+                    expected_contains=normalized_contains,
+                )
+            ),
+            None,
+        )
+        if matched_record is None:
+            return _tool_error(
+                f"no run_history test result matches name={normalized_name!r}, "
+                f"status={normalized_status or '*'}"
+                + (
+                    f", contains={normalized_contains!r}"
+                    if normalized_contains
+                    else ""
+                )
+            )
+        evidence_ref["name"] = normalized_name
+        if normalized_status:
+            evidence_ref["status"] = normalized_status
+        if normalized_contains:
+            evidence_ref["contains"] = normalized_contains
+        match_summary["matched_record"] = matched_record
+
+    index, added = _append_collected_evidence(state, evidence_ref)
+    _append_trace(
+        state,
+        {
+            "tool": "add_run_history_evidence",
+            "record_type": rtype,
+            "added": added,
+            **{
+                key: value
+                for key, value in evidence_ref.items()
+                if key not in {"kind", "record_type"}
+            },
+        },
+    )
+    return _json_tool_response(
+        status="accepted",
+        message=f"Stored run_history evidence for record_type={rtype!r}.",
+        evidence_ref=evidence_ref,
+        evidence_count=index + 1 if added else len(_collected_evidence_list(state)),
+        added=added,
+        extra=match_summary,
+    )
+
+
+async def list_collected_evidence(
+    *,
+    rollout_state: dict[str, Any] | None = None,
+) -> str:
+    """List all evidence refs currently stored for the rollout."""
+    state = rollout_state
+    if state is None:
+        return _tool_error("internal state missing")
+    evidence = _collected_evidence_list(state)
+    return json.dumps(
+        {
+            "status": "ok",
+            "evidence_count": len(evidence),
+            "evidence": evidence,
+        },
+        indent=2,
+        sort_keys=True,
     )
 
 
@@ -551,8 +1032,7 @@ def _validate_evidence_ref(raw_ref: Any) -> tuple[EvidenceRef | None, str | None
     if kind == "sample_rows":
         if len(parts) < 3:
             return None, (
-                "sample_rows evidence must be "
-                "sample_rows|table|match_json[|min_rows]"
+                "sample_rows evidence must be sample_rows|table|match_json[|min_rows]"
             )
         raw_table = parts[1]
         try:
@@ -576,9 +1056,7 @@ def _validate_evidence_ref(raw_ref: Any) -> tuple[EvidenceRef | None, str | None
         }, None
     if kind == "run_history":
         if len(parts) < 3:
-            return None, (
-                "run_history evidence must be run_history|record_type|..."
-            )
+            return None, ("run_history evidence must be run_history|record_type|...")
         record_type = parts[1].lower()
         if record_type not in _RUN_HISTORY_RECORD_TYPES:
             return None, (
@@ -588,7 +1066,10 @@ def _validate_evidence_ref(raw_ref: Any) -> tuple[EvidenceRef | None, str | None
         out: EvidenceRef = {"kind": "run_history", "record_type": record_type}
         if record_type == "model":
             if len(parts) < 4:
-                return None, "run_history model evidence must be run_history|model|model_name|status"
+                return (
+                    None,
+                    "run_history model evidence must be run_history|model|model_name|status",
+                )
             model = parts[2]
             status = parts[3]
             if not model:
@@ -600,7 +1081,10 @@ def _validate_evidence_ref(raw_ref: Any) -> tuple[EvidenceRef | None, str | None
                 out["contains"] = "|".join(parts[4:])
         elif record_type == "test":
             if len(parts) < 4:
-                return None, "run_history test evidence must be run_history|test|name|status"
+                return (
+                    None,
+                    "run_history test evidence must be run_history|test|name|status",
+                )
             name = parts[2]
             status = parts[3]
             if not name:
@@ -622,40 +1106,47 @@ def _validate_evidence_ref(raw_ref: Any) -> tuple[EvidenceRef | None, str | None
 def _validate_diagnosis_payload(
     has_bug: bool,
     root_cause: str,
-    affected_models: list[str],
+    buggy_models: list[str],
     fix: str,
-    evidence: list[str],
+    evidence: list[EvidenceRef],
     *,
     valid_model_names: list[str],
 ) -> tuple[DiagnosisSubmission | None, str | None]:
-    """Validate diagnosis shape without consulting evaluator-only answer fields."""
+    """Validate diagnosis shape using already-collected normalized evidence refs."""
     rc = root_cause.strip()
     fx = fix.strip()
     if not rc or not fx:
         return None, "root_cause and fix must be non-empty strings"
-    if not isinstance(affected_models, list):
-        return None, "affected_models must be a list of model names"
+    if not isinstance(buggy_models, list):
+        return None, "buggy_models must be a list of model names"
     valid = set(valid_model_names)
     models: list[str] = []
-    for raw_model in affected_models:
+    for raw_model in buggy_models:
         if not isinstance(raw_model, str) or not raw_model.strip():
-            return None, "affected_models must contain non-empty strings"
+            return None, "buggy_models must contain non-empty strings"
         model = raw_model.strip()
         if model not in valid:
-            return None, f"Unknown model in affected_models: {model!r}"
+            return None, f"Unknown model in buggy_models: {model!r}"
         models.append(model)
+    if not has_bug and models:
+        return (
+            None,
+            "When has_bug is false, buggy_models must be empty (no dbt defect to fix).",
+        )
     if not isinstance(evidence, list) or not evidence:
-        return None, "evidence must be a non-empty list of structured citations"
+        return None, (
+            "no evidence collected. Use add_file_evidence(...), "
+            "add_sample_rows_evidence(...), or add_run_history_evidence(...) first."
+        )
     normalized_evidence: list[EvidenceRef] = []
     for idx, raw_ref in enumerate(evidence):
-        evidence_ref, evidence_err = _validate_evidence_ref(raw_ref)
-        if evidence_err is not None or evidence_ref is None:
-            return None, f"evidence[{idx}]: {evidence_err}"
-        normalized_evidence.append(evidence_ref)
+        if not isinstance(raw_ref, dict) or not str(raw_ref.get("kind", "")).strip():
+            return None, f"internal evidence[{idx}] is malformed"
+        normalized_evidence.append(dict(raw_ref))
     payload: DiagnosisSubmission = {
         "has_bug": bool(has_bug),
         "root_cause": rc,
-        "affected_models": sorted(set(models)),
+        "buggy_models": sorted(set(models)),
         "fix": fx,
         "evidence": normalized_evidence,
     }
@@ -665,9 +1156,8 @@ def _validate_diagnosis_payload(
 async def submit_diagnosis(
     has_bug: bool,
     root_cause: str,
-    affected_models: list[str],
+    buggy_models: list[str],
     fix: str,
-    evidence: list[str],
     *,
     scenario_id: str = "",
     valid_model_names: list[str] | None = None,
@@ -676,25 +1166,24 @@ async def submit_diagnosis(
     """Submit a structured diagnosis for evaluator-only scoring.
 
     Args:
-        has_bug: Whether the dbt project itself contains a bug.
+        has_bug: Whether the dbt project itself contains a defect requiring a code change.
         root_cause: Plain-language explanation of the primary cause.
-        affected_models: dbt models directly affected by the diagnosis.
-        fix: Plain-language remediation, or why no dbt fix is needed.
-        evidence: One or more grounded citations encoded as strings. Supported shapes:
-            ``file_span|models/x.sql|1|20``
-            ``sample_rows|raw_orders|{"order_id":1001}|2``
-            ``run_history|model|fct_orders|success``
-            ``run_history|summary|All models succeeded``
+        buggy_models: Models that must change to fix a real bug. Must be ``[]`` when
+            ``has_bug`` is false (false alarm / semantics / BI-only cases).
+        fix: Plain-language remediation, or ``No fix needed — ...`` when there is no dbt bug.
+            Evidence is collected beforehand with ``add_file_evidence(...)``,
+            ``add_sample_rows_evidence(...)``, and ``add_run_history_evidence(...)``.
     """
     state = rollout_state
     if state is None:
         return "Error: internal state missing"
     if state.get(RolloutStateKeys.SUBMITTED_DIAGNOSIS) is not None:
         return "Error: diagnosis already submitted"
+    evidence = _collected_evidence_list(state)
     payload, err = _validate_diagnosis_payload(
         has_bug,
         root_cause,
-        affected_models,
+        buggy_models,
         fix,
         evidence,
         valid_model_names=valid_model_names or [],
@@ -704,6 +1193,9 @@ async def submit_diagnosis(
     state[RolloutStateKeys.SUBMITTED_DIAGNOSIS] = dict(payload)
     _append_trace(state, {"tool": "submit_diagnosis", "scenario_id": scenario_id})
     return json.dumps(
-        {"status": "accepted", "message": "Diagnosis stored for evaluator-only scoring."},
+        {
+            "status": "accepted",
+            "message": "Diagnosis stored for evaluator-only scoring.",
+        },
         indent=2,
     )

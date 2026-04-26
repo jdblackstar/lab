@@ -55,7 +55,7 @@ class DiagnosisSubmission(TypedDict, total=False):
 
     has_bug: bool
     root_cause: str
-    affected_models: list[str]
+    buggy_models: list[str]
     fix: str
     evidence: list[EvidenceRef]
 
@@ -72,6 +72,7 @@ class RolloutStateKeys:
     ARTIFACT_MANIFEST = "artifact_manifest"
     TOOL_VISIBLE_GLOBS = "tool_visible_globs"
     IMMUTABLE_PATHS = "immutable_paths"
+    COLLECTED_EVIDENCE = "collected_evidence"
     SUBMITTED_DIAGNOSIS = "submitted_diagnosis"
     VERIFICATION_RESULT = "verification_result"
     TOOL_TRACE = "tool_trace"

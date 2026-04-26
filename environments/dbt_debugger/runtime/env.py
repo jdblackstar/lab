@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import verifiers as vf
 
 from runtime.scoring import score_diagnosis
 from runtime.tools import (
+    add_file_evidence,
+    add_run_history_evidence,
+    add_sample_rows_evidence,
     list_files,
+    list_collected_evidence,
     read_artifact,
     read_file,
     run_dbt_command,
@@ -19,7 +23,11 @@ from runtime.tools import (
     submit_diagnosis,
 )
 from runtime.types import RolloutStateKeys, as_plain_dict
-from runtime.workspace import build_rollout_state_paths, cleanup_workspace, materialize_scenario_workspace
+from runtime.workspace import (
+    build_rollout_state_paths,
+    cleanup_workspace,
+    materialize_scenario_workspace,
+)
 
 
 def _gold_dir() -> Path:
@@ -34,6 +42,18 @@ def _load_scenario_spec(scenario_id: str) -> dict[str, Any]:
 
 
 _DEBUG_CONTEXT_GLOB = "debug_context/**"
+MetricFunc = Callable[[vf.State], Awaitable[float]]
+_AUDIT_METRICS: tuple[tuple[str, bool], ...] = (
+    ("strict_pass", False),
+    ("has_bug_match", True),
+    ("buggy_models_match", True),
+    ("diagnosis_variant_ok", True),
+    ("root_cause_coverage", False),
+    ("fix_coverage", False),
+    ("required_evidence_coverage", False),
+    ("forbidden_ok", True),
+    ("no_bug_semantic_partial", False),
+)
 
 
 def _globs_for_list_and_search(manifest_globs: list[str]) -> list[str]:
@@ -45,6 +65,20 @@ def _globs_for_list_and_search(manifest_globs: list[str]) -> list[str]:
     ):
         out.append(_DEBUG_CONTEXT_GLOB)
     return out
+
+
+def _audit_metric(field: str, *, truthy: bool = False) -> MetricFunc:
+    """Return a rubric metric that mirrors one stored audit field."""
+
+    async def _metric(state: vf.State) -> float:
+        vr = state[RolloutStateKeys.VERIFICATION_RESULT]
+        if not isinstance(vr, dict):
+            return 0.0
+        value = vr.get(field, 0.0)
+        return 1.0 if truthy and value else float(value)
+
+    _metric.__name__ = field
+    return _metric
 
 
 class DbtDebuggerEnv(vf.StatefulToolEnv):
@@ -73,15 +107,30 @@ class DbtDebuggerEnv(vf.StatefulToolEnv):
         )
         self.add_tool(
             list_files,
-            args_to_skip=["project_root", "tool_visible_globs", "immutable_paths", "_state"],
+            args_to_skip=[
+                "project_root",
+                "tool_visible_globs",
+                "immutable_paths",
+                "_state",
+            ],
         )
         self.add_tool(
             read_file,
-            args_to_skip=["project_root", "tool_visible_globs", "immutable_paths", "_state"],
+            args_to_skip=[
+                "project_root",
+                "tool_visible_globs",
+                "immutable_paths",
+                "_state",
+            ],
         )
         self.add_tool(
             search_project,
-            args_to_skip=["project_root", "tool_visible_globs", "immutable_paths", "_state"],
+            args_to_skip=[
+                "project_root",
+                "tool_visible_globs",
+                "immutable_paths",
+                "_state",
+            ],
         )
         self.add_tool(
             run_dbt_command,
@@ -90,6 +139,22 @@ class DbtDebuggerEnv(vf.StatefulToolEnv):
         self.add_tool(
             read_artifact,
             args_to_skip=["project_root", "tool_visible_globs", "_state"],
+        )
+        self.add_tool(
+            add_file_evidence,
+            args_to_skip=["project_root", "rollout_state"],
+        )
+        self.add_tool(
+            add_sample_rows_evidence,
+            args_to_skip=["rollout_state"],
+        )
+        self.add_tool(
+            add_run_history_evidence,
+            args_to_skip=["valid_model_names", "rollout_state"],
+        )
+        self.add_tool(
+            list_collected_evidence,
+            args_to_skip=["rollout_state"],
         )
         self.add_tool(
             submit_diagnosis,
@@ -137,6 +202,16 @@ class DbtDebuggerEnv(vf.StatefulToolEnv):
             tool_args["project_root"] = pr
             tool_args["tool_visible_globs"] = globs
             tool_args["_state"] = state
+        elif tool_name == "add_file_evidence":
+            tool_args["project_root"] = pr
+            tool_args["rollout_state"] = state
+        elif tool_name == "add_sample_rows_evidence":
+            tool_args["rollout_state"] = state
+        elif tool_name == "add_run_history_evidence":
+            tool_args["valid_model_names"] = state[RolloutStateKeys.VALID_MODEL_NAMES]
+            tool_args["rollout_state"] = state
+        elif tool_name == "list_collected_evidence":
+            tool_args["rollout_state"] = state
         elif tool_name == "submit_diagnosis":
             tool_args["scenario_id"] = state[RolloutStateKeys.SCENARIO_ID]
             tool_args["valid_model_names"] = state[RolloutStateKeys.VALID_MODEL_NAMES]
@@ -164,11 +239,14 @@ class DbtDebuggerEnv(vf.StatefulToolEnv):
         state[RolloutStateKeys.ARTIFACT_MANIFEST] = dict(am)
         state[RolloutStateKeys.TOOL_VISIBLE_GLOBS] = list(am["tool_visible_globs"])
         state[RolloutStateKeys.IMMUTABLE_PATHS] = list(am["immutable_paths"])
-        names: list[str] = []
-        for m in spec["dag"]["models"]:
-            assert isinstance(m, dict) and "name" in m
-            names.append(str(m["name"]))
+        names = [
+            str(m["name"])
+            for m in spec["dag"]["models"]
+            if isinstance(m, dict) and "name" in m
+        ]
+        assert len(names) == len(spec["dag"]["models"])
         state[RolloutStateKeys.VALID_MODEL_NAMES] = names
+        state[RolloutStateKeys.COLLECTED_EVIDENCE] = []
         state[RolloutStateKeys.SUBMITTED_DIAGNOSIS] = None
         state[RolloutStateKeys.VERIFICATION_RESULT] = None
         state[RolloutStateKeys.TOOL_TRACE] = []
@@ -212,28 +290,6 @@ def build_rubric() -> vf.Rubric:
 
     rubric = vf.Rubric(funcs=[diagnosis_reward], weights=[1.0])
     rubric.add_metric(difficulty_metric)
-    rubric.add_metric(_metric_strict_pass)
-    rubric.add_metric(_metric_has_bug_match)
-    rubric.add_metric(_metric_root_cov)
+    for field, truthy in _AUDIT_METRICS:
+        rubric.add_metric(_audit_metric(field, truthy=truthy))
     return rubric
-
-
-async def _metric_strict_pass(state: vf.State) -> float:
-    vr = state[RolloutStateKeys.VERIFICATION_RESULT]
-    if not isinstance(vr, dict):
-        return 0.0
-    return float(vr["strict_pass"])
-
-
-async def _metric_has_bug_match(state: vf.State) -> float:
-    vr = state[RolloutStateKeys.VERIFICATION_RESULT]
-    if not isinstance(vr, dict):
-        return 0.0
-    return 1.0 if vr["has_bug_match"] else 0.0
-
-
-async def _metric_root_cov(state: vf.State) -> float:
-    vr = state[RolloutStateKeys.VERIFICATION_RESULT]
-    if not isinstance(vr, dict):
-        return 0.0
-    return float(vr["root_cause_coverage"])

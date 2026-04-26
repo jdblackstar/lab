@@ -16,7 +16,12 @@ from claim_text_matching import (
     stem_variants,
     text_contains_option,
 )
-from runtime.types import ClaimPattern, DiagnosisVariant, EvidenceRef, EvidenceRequirement
+from runtime.types import (
+    ClaimPattern,
+    DiagnosisVariant,
+    EvidenceRef,
+    EvidenceRequirement,
+)
 
 _CLAUSE_BOUNDARY_PATTERN = re.compile(r"[.;:!?]")
 _NEGATION_FILLER_TOKENS = frozenset(
@@ -249,7 +254,10 @@ def _file_evidence_matches(
     files: dict[str, str],
 ) -> bool:
     """Return whether a file-span citation grounds the required artifact fact."""
-    if evidence_ref.get("kind") != "file_span" or requirement.get("kind") != "file_span":
+    if (
+        evidence_ref.get("kind") != "file_span"
+        or requirement.get("kind") != "file_span"
+    ):
         return False
     path = str(evidence_ref.get("path", ""))
     if path != str(requirement.get("path", "")):
@@ -276,7 +284,10 @@ def _sample_evidence_matches(
     sample_data: dict[str, Any],
 ) -> bool:
     """Return whether a sample-row citation grounds the required source fact."""
-    if evidence_ref.get("kind") != "sample_rows" or requirement.get("kind") != "sample_rows":
+    if (
+        evidence_ref.get("kind") != "sample_rows"
+        or requirement.get("kind") != "sample_rows"
+    ):
         return False
     table = str(evidence_ref.get("table", ""))
     if table != str(requirement.get("table", "")):
@@ -313,7 +324,10 @@ def _run_history_evidence_matches(
     run_history: dict[str, Any],
 ) -> bool:
     """Return whether a run-history citation grounds the required operational fact."""
-    if evidence_ref.get("kind") != "run_history" or requirement.get("kind") != "run_history":
+    if (
+        evidence_ref.get("kind") != "run_history"
+        or requirement.get("kind") != "run_history"
+    ):
         return False
     record_type = str(evidence_ref.get("record_type", ""))
     if record_type != str(requirement.get("record_type", "")):
@@ -328,11 +342,17 @@ def _run_history_evidence_matches(
             return False
         return True
     if record_type == "warning":
-        warnings = [str(item) for item in run_history.get("warnings", []) if isinstance(item, str)]
+        warnings = [
+            str(item)
+            for item in run_history.get("warnings", [])
+            if isinstance(item, str)
+        ]
         required_contains = str(requirement.get("contains", "")).strip()
         cited_contains = str(evidence_ref.get("contains", "")).strip()
         for warning in warnings:
-            if required_contains and not text_contains_option(warning, required_contains):
+            if required_contains and not text_contains_option(
+                warning, required_contains
+            ):
                 continue
             if cited_contains and not text_contains_option(warning, cited_contains):
                 continue
@@ -403,10 +423,10 @@ def _evaluate_variant(
     allowed_models = (
         set(raw_allowed) if raw_allowed is not None else set(required_models)
     )
-    submitted_models = set(submission.get("affected_models") or [])
-    models_ok = required_models.issubset(submitted_models) and submitted_models.issubset(
-        allowed_models
-    )
+    submitted_models = set(submission.get("buggy_models") or [])
+    models_ok = required_models.issubset(
+        submitted_models
+    ) and submitted_models.issubset(allowed_models)
     root_cause_text = str(submission.get("root_cause", ""))
     fix_text = str(submission.get("fix", ""))
     root_pattern = variant.get("root_cause_all_of") or []
@@ -414,8 +434,12 @@ def _evaluate_variant(
     root_coverage = _claim_pattern_coverage(root_cause_text, root_pattern)
     fix_variants = variant.get("fix_variants") or []
     if fix_variants:
-        fix_ok = any(_claim_pattern_matches(fix_text, pattern) for pattern in fix_variants)
-        fix_coverage = max(_claim_pattern_coverage(fix_text, pattern) for pattern in fix_variants)
+        fix_ok = any(
+            _claim_pattern_matches(fix_text, pattern) for pattern in fix_variants
+        )
+        fix_coverage = max(
+            _claim_pattern_coverage(fix_text, pattern) for pattern in fix_variants
+        )
     else:
         fix_ok = True
         fix_coverage = 1.0
@@ -440,7 +464,7 @@ def score_diagnosis(
         "has_submission": submission is not None,
         "strict_pass": 0.0,
         "has_bug_match": False,
-        "affected_models_match": False,
+        "buggy_models_match": False,
         "root_cause_ok": False,
         "fix_ok": False,
         "required_evidence_ok": False,
@@ -449,11 +473,14 @@ def score_diagnosis(
         "diagnosis_variant_ok": False,
         "root_cause_coverage": 0.0,
         "fix_coverage": 0.0,
+        "no_bug_semantic_partial": 0.0,
     }
     if submission is None:
         return out
 
-    out["has_bug_match"] = bool(submission.get("has_bug")) == bool(scenario_spec.get("has_bug"))
+    out["has_bug_match"] = bool(submission.get("has_bug")) == bool(
+        scenario_spec.get("has_bug")
+    )
 
     variants = [
         item
@@ -461,18 +488,22 @@ def score_diagnosis(
         if isinstance(item, dict)
     ]
     if variants:
-        variant_results = [_evaluate_variant(submission, variant) for variant in variants]
-        out["affected_models_match"] = any(item["models_ok"] for item in variant_results)
+        variant_results = [
+            _evaluate_variant(submission, variant) for variant in variants
+        ]
+        out["buggy_models_match"] = any(item["models_ok"] for item in variant_results)
         out["root_cause_ok"] = any(item["root_ok"] for item in variant_results)
         out["fix_ok"] = any(item["fix_ok"] for item in variant_results)
-        out["diagnosis_variant_ok"] = any(item["variant_ok"] for item in variant_results)
-        out["root_cause_coverage"] = max(item["root_coverage"] for item in variant_results)
+        out["diagnosis_variant_ok"] = any(
+            item["variant_ok"] for item in variant_results
+        )
+        out["root_cause_coverage"] = max(
+            item["root_coverage"] for item in variant_results
+        )
         out["fix_coverage"] = max(item["fix_coverage"] for item in variant_results)
 
     evidence_refs = [
-        item
-        for item in (submission.get("evidence") or [])
-        if isinstance(item, dict)
+        item for item in (submission.get("evidence") or []) if isinstance(item, dict)
     ]
     requirements = [
         item
@@ -483,7 +514,9 @@ def score_diagnosis(
         evidence_hits = sum(
             1
             for requirement in requirements
-            if _evidence_requirement_satisfied(requirement, evidence_refs, scenario_spec)
+            if _evidence_requirement_satisfied(
+                requirement, evidence_refs, scenario_spec
+            )
         )
         out["required_evidence_coverage"] = evidence_hits / max(1, len(requirements))
         out["required_evidence_ok"] = evidence_hits == len(requirements)
@@ -495,7 +528,7 @@ def score_diagnosis(
         [
             str(submission.get("root_cause", "")),
             str(submission.get("fix", "")),
-            json.dumps(submission.get("affected_models") or []),
+            json.dumps(submission.get("buggy_models") or []),
         ]
     )
     normalized_diagnosis_blob = normalize_text(diagnosis_blob)
@@ -517,4 +550,15 @@ def score_diagnosis(
     )
     out["strict_pass"] = 1.0 if strict else 0.0
     out["expected_models"] = ground_truth.get("affected_models") or []
+    if (
+        not scenario_spec.get("has_bug")
+        and submission is not None
+        and out["has_bug_match"]
+        and out["forbidden_ok"]
+    ):
+        out["no_bug_semantic_partial"] = (
+            out["root_cause_coverage"]
+            + out["fix_coverage"]
+            + out["required_evidence_coverage"]
+        ) / 3.0
     return out

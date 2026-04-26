@@ -77,7 +77,7 @@
     "warnings": []
   },
   "ground_truth": {
-    "root_cause": "Macro discount_rate inverts enterprise vs consumer discount bands when loyalty_rollout_enabled is true (enterprise mapped to 0.00 and consumer to 0.10). Combined with dbt_project.yml var loyalty_rollout_enabled: true, enterprise deals receive the wrong discount rate.",
+    "root_cause": "In int_deal_discounts, macro discount_rate inverts enterprise vs consumer discount bands when loyalty_rollout_enabled is true (enterprise mapped to 0.00 and consumer to 0.10). Combined with dbt_project.yml var loyalty_rollout_enabled: true, enterprise deals receive the wrong discount rate.",
     "affected_models": ["int_deal_discounts", "fct_deal_margin"],
     "fix": "Correct the case mapping in discount_rate for the loyalty_enabled branch (swap enterprise and consumer rates or align to business spec). Reconcile var default with intended rollout semantics.",
     "common_misdiagnoses": [

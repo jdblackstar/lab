@@ -54,14 +54,18 @@ For large corpora, switch to `vf.DatasetBuilder` (lazy builder) as described in 
 ## Tool surface (planned)
 
 
-| Tool               | Model-visible args        | Hidden injected args | Behavior                                      |
-| ------------------ | ------------------------- | -------------------- | --------------------------------------------- |
-| `list_files`       | `path`, `max_entries`     | `workspace_root`     | Directory listing under workspace             |
-| `read_file`        | `path`, line range        | `workspace_root`     | Read text file                                |
-| `search_project`   | `pattern`, `glob`         | `workspace_root`     | Ripgrep-like search (async-friendly)          |
-| `run_dbt_command`  | structured subcommand + selectors | `workspace_root`     | Run a restricted `dbt` subprocess without arbitrary CLI flags |
-| `read_artifact`    | `path`                    | `workspace_root`     | Read `target/` or logs if allowed by manifest |
-| `submit_diagnosis` | structured JSON fields    | `scenario_id`        | Validates schema; sets stop flag              |
+| Tool                    | Model-visible args                         | Hidden injected args                | Behavior |
+| ----------------------- | ------------------------------------------ | ----------------------------------- | -------- |
+| `list_files`            | `path`, `max_entries`                      | `project_root`, rollout state       | Directory listing under workspace |
+| `read_file`             | `path`, line range                         | `project_root`, rollout state       | Read text file |
+| `search_project`        | `pattern`, `glob`                          | `project_root`, rollout state       | Ripgrep-like search (async-friendly) |
+| `run_dbt_command`       | structured subcommand + selectors          | `project_root`, `profiles_dir`, rollout state | Run a restricted `dbt` subprocess without arbitrary CLI flags |
+| `read_artifact`         | `path`                                     | `project_root`, rollout state       | Read `target/` or logs if allowed by manifest |
+| `add_file_evidence`     | `path`, `start_line`, `end_line`           | `project_root`, rollout state       | Validate/store one `file_span` citation from a project file |
+| `add_sample_rows_evidence` | `table`, `match_json`, `min_rows`       | rollout state                       | Validate/store one `sample_rows` citation from `debug_context/sample_data.json` |
+| `add_run_history_evidence` | `record_type`, optional filters         | `valid_model_names`, rollout state  | Validate/store one `run_history` citation from `debug_context/run_history.json` |
+| `list_collected_evidence` | none                                     | rollout state                       | Show the evidence currently stored for the rollout |
+| `submit_diagnosis`      | `has_bug`, `root_cause`, `buggy_models`, `fix` | `scenario_id`, `valid_model_names`, rollout state | Validates payload (`buggy_models` empty when `has_bug` is false), bundles previously collected evidence, and sets the stop flag |
 
 
 Register each with `add_tool(..., args_to_skip=[...])` and implement `update_tool_args()` to merge hidden fields from `state`.
@@ -73,7 +77,7 @@ Register each with `add_tool(..., args_to_skip=[...])` and implement `update_too
 
 ## Rubric (deterministic first)
 
-1. Parse `submitted_diagnosis` payload (root cause, affected models, fix, structured evidence refs).
+1. Parse `submitted_diagnosis` payload (root cause, `buggy_models`, fix, previously collected structured evidence refs).
 2. Compare to `rubric_hints.accepted_diagnoses` plus grounded `required_evidence`.
 3. For `has_bug: false`, assert **no** forbidden claim patterns (`rubric_hints.forbidden_claims`).
 4. Optional later: `vf.JudgeRubric` for explanation quality, composed via `vf.RubricGroup` ([Environments — RubricGroup](https://docs.primeintellect.ai/verifiers/environments)).

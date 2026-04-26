@@ -23,31 +23,33 @@ This document lists checks beyond JSON Schema structure. Implementations should 
 
 9. **Affected models subset**: Every `ground_truth.affected_models[]` must be in `dag.models[].name`.
 10. **Empty when no bug**: If `has_bug` is `false`, `ground_truth.affected_models` should be `[]`.
+11. **Runtime naming**: Agent submissions use `buggy_models` in `submit_diagnosis` (must be `[]` when `has_bug` is false). Scenario JSON continues to use `ground_truth.affected_models` for the gold answer and docs.
 
 ## Rubric contract
 
-11. **Accepted diagnoses**: Every scenario must define `rubric_hints.accepted_diagnoses[]` with explicit `required_models`, `allowed_models`, `root_cause_all_of`, and `fix_variants`.
+11. **Accepted diagnoses**: Every scenario must define `rubric_hints.accepted_diagnoses[]` with `required_models`, `root_cause_all_of`, and `fix_variants`. `allowed_models` may be omitted; validation/scoring then default it to `required_models`.
 12. **Grounded evidence**: `required_evidence` must point to resolvable artifacts (`file_span`, `sample_rows`, or `run_history`), not free-text hints.
 13. **No-bug guardrails**: `has_bug: false` scenarios should include structured `forbidden_claims`.
+14. **Gold answer alignment**: `ground_truth.root_cause` / `fix` / `affected_models` should satisfy at least one `accepted_diagnoses` variant so docs and runtime scoring do not drift.
 
 ## Artifact manifest
 
-14. **Immutable paths exist**: Every `artifact_manifest.immutable_paths[]` must match a `dbt_project.files[].path`.
-15. **Globs**: `tool_visible_globs` entries are glob patterns; validator may skip strict existence checks.
+15. **Immutable paths exist**: Every `artifact_manifest.immutable_paths[]` must match a `dbt_project.files[].path`.
+16. **Globs**: `tool_visible_globs` entries are glob patterns; validator may skip strict existence checks.
 
 ## Corpus coverage (gold set)
 
 When validating the whole `scenarios/gold/` directory:
 
-16. **Category coverage**: At least one scenario must tag each of: `join`, `incremental`, `source_schema`, `logic`, `macro`, `config`, `no_bug`.
-17. **Tier targets**: The gold set should meet the `2/3/3/2` target for tiers `1/2/3/4`.
-18. **Bug balance**: The gold set should include at least 4 `no_bug` scenarios.
-19. **Pure category checks**: Include at least one pure `logic` scenario and one pure `config` scenario.
+17. **Category coverage**: At least one scenario must tag each of: `join`, `incremental`, `source_schema`, `logic`, `macro`, `config`, `no_bug`.
+18. **Tier targets**: The gold set should meet the `2/3/3/2` target for tiers `1/2/3/4`.
+19. **Bug balance**: The gold set should include at least 4 `no_bug` scenarios.
+20. **Pure category checks**: Include at least one pure `logic` scenario and one pure `config` scenario.
 
 ## SQL hygiene (optional linter)
 
-20. No Markdown triple-backtick fences inside JSON string fields.
-21. Prefer `\n` newlines inside SQL strings; avoid unescaped raw newlines if they break JSON (files must remain valid JSON).
+21. No Markdown triple-backtick fences inside JSON string fields.
+22. Prefer `\n` newlines inside SQL strings; avoid unescaped raw newlines if they break JSON (files must remain valid JSON).
 
 Run checks:
 

@@ -114,10 +114,40 @@ Keyed by logical name (e.g. `source_stripe__payments`). Each value:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `root_cause` | `string` | yes | Precise technical cause, or `No bug — ...`. |
-| `affected_models` | `string[]` | yes | Model names from `dag.models`. |
+| `affected_models` | `string[]` | yes | **Evaluator / gold answer only:** model names from `dag.models` that must change when `has_bug` is true; must be `[]` when `has_bug` is false. This is **not** the model-facing tool field name (see `submit_diagnosis` below). |
 | `fix` | `string` | yes | Correct fix or `No fix needed — ...`. |
 | `common_misdiagnoses` | `string[]` | yes | 2–3 plausible wrong conclusions. |
 | `investigation_path` | `string[]` | yes | Ordered expert steps (for rubric alignment). |
+
+---
+
+## Model submission (`submit_diagnosis`) — runtime only
+
+Structured diagnosis returned by the agent via the final `submit_diagnosis` tool call (not stored in scenario JSON):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `has_bug` | `boolean` | yes | Whether the dbt project has a defect requiring a code change. |
+| `root_cause` | `string` | yes | Primary explanation (non-empty). |
+| `buggy_models` | `string[]` | yes | Models that must change to fix a **real** bug; must be `[]` when `has_bug` is `false`. Names must appear in `dag.models`. |
+| `fix` | `string` | yes | Remediation or `No fix needed — ...` when there is no dbt bug. |
+
+Evidence is collected interactively beforehand with dedicated runtime tools and then bundled into the stored submission when `submit_diagnosis` succeeds.
+
+Scoring compares `buggy_models` to `rubric_hints.accepted_diagnoses[].required_models` / `allowed_models`. Expected defective models for the gold answer remain in `ground_truth.affected_models` for documentation and validation only.
+
+---
+
+## Evidence collection tools — runtime only
+
+Before the final diagnosis, the agent stores grounded evidence with dedicated tools:
+
+| Tool | Purpose |
+|------|---------|
+| `add_file_evidence(path, start_line, end_line)` | Store a `file_span` citation for one project file under `dbt_project.files` / `macros` / `seeds`. |
+| `add_sample_rows_evidence(table, match_json, min_rows)` | Store a `sample_rows` citation based on rows from `debug_context/sample_data.json`. |
+| `add_run_history_evidence(record_type, ...)` | Store a `run_history` citation based on facts from `debug_context/run_history.json`. |
+| `list_collected_evidence()` | Inspect the evidence stored so far in rollout state. |
 
 ---
 
@@ -169,7 +199,7 @@ Array of objects:
 - **Dataset row**: `question` or `prompt` built from `symptom` + generic instructions only; do not expose `title`, `dag`, or exact debug-context filenames.
 - **`setup_state`**: Copy `dbt_project.files` (+ seeds/macros) into `workspace_root`; attach `ground_truth` / `rubric_hints` to state for scoring only.
 - **Tools**: See [runtime_mapping.md](runtime_mapping.md).
-- **Rubric**: Compare structured `submit_diagnosis` payload to `rubric_hints.accepted_diagnoses` and grounded evidence requirements deterministically first.
+- **Rubric**: Compare structured `submit_diagnosis` payload (`buggy_models`, etc.) to `rubric_hints.accepted_diagnoses` and grounded evidence requirements deterministically first.
 
 ---
 
