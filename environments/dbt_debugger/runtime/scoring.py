@@ -16,6 +16,7 @@ from claim_text_matching import (
     stem_variants,
     text_contains_option,
 )
+from runtime.sample_rows import matching_sample_rows
 from runtime.types import (
     ClaimPattern,
     DiagnosisVariant,
@@ -233,21 +234,6 @@ def _iter_project_files(spec: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _matching_sample_rows(
-    table_blob: dict[str, Any],
-    match: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Return sample rows matching all key/value pairs in *match*."""
-    rows = table_blob.get("rows") or []
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if all(row.get(key) == value for key, value in match.items()):
-            out.append(row)
-    return out
-
-
 def _file_evidence_matches(
     evidence_ref: EvidenceRef,
     requirement: EvidenceRequirement,
@@ -308,7 +294,7 @@ def _sample_evidence_matches(
     for key, value in required_match.items():
         if submitted_match.get(key) != value:
             return False
-    matched_rows = _matching_sample_rows(table_blob, submitted_match)
+    matched_rows = matching_sample_rows(table_blob, submitted_match)
     if len(matched_rows) < int(requirement.get("min_rows", 1)):
         return False
     evidence_blob = json.dumps(matched_rows, sort_keys=True)

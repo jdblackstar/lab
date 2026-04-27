@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from claim_text_matching import text_contains_option
+from runtime.sample_rows import matching_sample_rows
 from runtime.types import DiagnosisSubmission, EvidenceRef, RolloutStateKeys
 
 _ALLOWED_DBT_SUBCOMMANDS = frozenset({"parse", "compile", "ls", "run", "test", "build"})
@@ -589,21 +590,6 @@ def _scalar_json_object(match_json: str) -> tuple[dict[str, Any] | None, str | N
     return parsed, None
 
 
-def _matching_sample_rows(
-    table_obj: dict[str, Any],
-    match: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Return sample-data rows matching all key/value pairs in *match*."""
-    rows = table_obj.get("rows") or []
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if all(row.get(key) == value for key, value in match.items()):
-            out.append(row)
-    return out
-
-
 def _run_history_record_matches(
     record: dict[str, Any],
     *,
@@ -747,7 +733,7 @@ async def add_sample_rows_evidence(
     if err is not None or match_obj is None:
         return _tool_error(err or "invalid match_json")
 
-    matched_rows = _matching_sample_rows(table_obj, match_obj)
+    matched_rows = matching_sample_rows(table_obj, match_obj)
     if len(matched_rows) < min_rows:
         return _tool_error(
             f"sample_rows match returned {len(matched_rows)} row(s) in {table!r}; "

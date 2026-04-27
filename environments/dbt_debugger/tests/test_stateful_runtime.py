@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 from datasets import Dataset
 
+from runtime.sample_rows import matching_sample_rows
 from runtime.scoring import score_diagnosis
 from runtime.tools import (
     add_file_evidence,
@@ -199,6 +200,22 @@ def test_path_matches_globs_handles_recursive_patterns() -> None:
     assert not _path_matches_globs("secrets.env", ["models/**"])
     assert not _path_matches_globs("secrets.env", ["**/*.sql"])
     assert not _path_matches_globs("models/schema.yml", ["models/**/*.sql"])
+
+
+def test_matching_sample_rows_skips_non_dict_rows_and_matches_all_pairs() -> None:
+    """Sample-row evidence should use one shared exact-match interpretation."""
+    table = {
+        "rows": [
+            {"order_id": 1001, "status": "paid", "amount": 10},
+            ["not", "a", "row"],
+            {"order_id": 1001, "status": "pending", "amount": 12},
+            {"order_id": 1002, "status": "paid", "amount": 8},
+        ]
+    }
+
+    rows = matching_sample_rows(table, {"order_id": 1001, "status": "paid"})
+
+    assert rows == [{"order_id": 1001, "status": "paid", "amount": 10}]
 
 
 @pytest.mark.parametrize("scenario_id", _scenario_ids())

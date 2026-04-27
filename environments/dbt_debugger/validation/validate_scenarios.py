@@ -22,6 +22,7 @@ from claim_text_matching import (
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from runtime.scoring import _evaluate_variant
+from runtime.sample_rows import matching_sample_rows
 
 REQUIRED_CATEGORIES = frozenset(
     {"join", "incremental", "source_schema", "logic", "macro", "config", "no_bug"}
@@ -159,21 +160,6 @@ def _project_file_contents(data: dict[str, Any]) -> dict[str, str]:
             if not isinstance(path, str):
                 continue
             out[path] = str(entry.get("content", ""))
-    return out
-
-
-def _matching_sample_rows(
-    table_obj: dict[str, Any],
-    match: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Return rows that satisfy all key/value pairs in *match*."""
-    rows = table_obj.get("rows", [])
-    out: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if all(row.get(key) == value for key, value in match.items()):
-            out.append(row)
     return out
 
 
@@ -358,7 +344,7 @@ def _validate_required_evidence(
             elif isinstance(table, str) and isinstance(match, dict):
                 table_obj = sample_data.get(table)
                 if isinstance(table_obj, dict):
-                    matched_rows = _matching_sample_rows(table_obj, match)
+                    matched_rows = matching_sample_rows(table_obj, match)
                     if not matched_rows:
                         errors.append(
                             f"required_evidence[{idx}] sample_rows match selects 0 rows "
