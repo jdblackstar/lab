@@ -110,7 +110,9 @@ def _load_sample_tables(con: duckdb.DuckDBPyConnection, spec: dict[str, Any]) ->
     """Create schemas/tables in DuckDB from ``sample_data`` keyed by source convention."""
     sources = _parse_sources_from_spec(spec)
     if not sources:
-        raise ValueError("No sources found in dbt_project.files; cannot load sample_data")
+        raise ValueError(
+            "No sources found in dbt_project.files; cannot load sample_data"
+        )
     sample_data = spec.get("sample_data") or {}
     if not isinstance(sample_data, dict):
         raise ValueError("sample_data must be an object")
@@ -144,7 +146,9 @@ def _load_sample_tables(con: duckdb.DuckDBPyConnection, spec: dict[str, Any]) ->
             con.execute(insert_sql, values)
 
 
-def _write_profiles_yml(profiles_dir: Path, duckdb_path: Path, profile_name: str) -> None:
+def _write_profiles_yml(
+    profiles_dir: Path, duckdb_path: Path, profile_name: str
+) -> None:
     """Write a rollout-local dbt profile pointing at the DuckDB file."""
     profiles_dir.mkdir(parents=True, exist_ok=True)
     # dbt-duckdb expects path to the database file
@@ -173,36 +177,34 @@ def _write_context_files(context_root: Path, spec: dict[str, Any]) -> None:
     )
 
 
-def _write_project_files(project_root: Path, spec: dict[str, Any]) -> None:
-    """Write ``dbt_project.files`` (+ seeds/macros) under *project_root*."""
-    dbt = spec.get("dbt_project", {})
-    files = dbt.get("files", [])
-    for entry in files:
+def _write_project_entries(
+    project_root: Path, entries: list[Any], *, source_name: str
+) -> None:
+    """Write one list of dbt project entries under *project_root*."""
+    for entry in entries:
         if not isinstance(entry, dict):
             continue
         rel = str(entry.get("path", "")).strip().replace("\\", "/")
         if not rel or rel.startswith("/") or ".." in rel.split("/"):
-            raise ValueError(f"Invalid dbt_project.files path: {rel!r}")
+            raise ValueError(f"Invalid {source_name} path: {rel!r}")
         content = entry.get("content", "")
-        if not isinstance(content, str):
-            content = str(content)
         dest = project_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content, encoding="utf-8")
+        dest.write_text(str(content), encoding="utf-8")
 
+
+def _write_project_files(project_root: Path, spec: dict[str, Any]) -> None:
+    """Write ``dbt_project.files`` (+ seeds/macros) under *project_root*."""
+    dbt = spec.get("dbt_project", {})
+    _write_project_entries(
+        project_root, dbt.get("files", []), source_name="dbt_project.files"
+    )
     for key in ("macros", "seeds"):
-        for entry in dbt.get(key, []) or []:
-            if not isinstance(entry, dict):
-                continue
-            rel = str(entry.get("path", "")).strip().replace("\\", "/")
-            if not rel or rel.startswith("/") or ".." in rel.split("/"):
-                raise ValueError(f"Invalid dbt_project.{key} path: {rel!r}")
-            content = entry.get("content", "")
-            if not isinstance(content, str):
-                content = str(content)
-            dest = project_root / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
+        _write_project_entries(
+            project_root,
+            dbt.get(key, []) or [],
+            source_name=f"dbt_project.{key}",
+        )
 
 
 def _read_profile_name(project_root: Path) -> str:
@@ -259,7 +261,9 @@ def materialize_scenario_workspace(
         ValueError: If the spec cannot be materialized or sample_data cannot be mapped.
     """
     base = Path(
-        tempfile.mkdtemp(prefix="dbt_debugger_", dir=str(parent_dir) if parent_dir else None)
+        tempfile.mkdtemp(
+            prefix="dbt_debugger_", dir=str(parent_dir) if parent_dir else None
+        )
     )
     try:
         internal = base / ".internal"

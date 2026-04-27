@@ -109,8 +109,8 @@
         "root_cause_all_of": [
           ["vendor replay", "replay", "backfill", "restatement"],
           ["missing source rows", "source truth changed", "late source rows"],
-          ["full-refresh", "clean refresh", "downstream refresh"],
-          ["warehouse behaved correctly", "dbt logic is correct", "row keys remain distinct", "rows remain distinct"]
+          ["no bug", "no dbt bug", "warehouse behaved correctly", "dbt logic is correct"],
+          ["historical totals moved", "history moved", "totals changed", "restated upward"]
         ],
         "fix_variants": [
           [

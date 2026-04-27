@@ -37,8 +37,18 @@ def _row_from_spec(spec: dict[str, Any]) -> dict[str, Any]:
         "diagnosis.\n"
         "Start by exploring the workspace with the tools rather than assuming where the "
         "issue lives.\n"
-        "When you are done, call submit_diagnosis exactly once with your conclusion, "
-        "affected models, fix, and grounded evidence citations.\n\n"
+        "As you investigate, store evidence with the dedicated evidence tools:\n"
+        "- add_file_evidence(path, start_line, end_line) for project SQL/YAML files\n"
+        "- add_sample_rows_evidence(table, match_json, min_rows) for facts from "
+        "debug_context/sample_data.json\n"
+        "- add_run_history_evidence(...) for facts from debug_context/run_history.json\n"
+        "- list_collected_evidence() if you want to review what is stored so far\n"
+        "When you are ready, call submit_diagnosis with: has_bug (whether the dbt project "
+        "has a defect), root_cause, buggy_models (models that must change to fix a real bug; "
+        'use an empty list when has_bug is false), and fix (or "No fix needed — ..." when '
+        "there is no dbt bug). submit_diagnosis uses the evidence you already collected.\n"
+        "If an evidence tool or submit_diagnosis returns an error, correct the payload and "
+        "try again.\n\n"
         f"Stakeholder report:\n{message}\n"
     )
     return {
@@ -95,7 +105,7 @@ def load_environment(
         rows.append(_row_from_spec(spec))
 
     if max_scenarios > 0:
-        rows = rows[: max_scenarios]
+        rows = rows[:max_scenarios]
 
     if not rows:
         raise ValueError("No scenarios matched the given filters")

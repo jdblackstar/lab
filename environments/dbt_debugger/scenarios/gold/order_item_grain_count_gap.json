@@ -126,10 +126,10 @@
         "required_models": [],
         "allowed_models": [],
         "root_cause_all_of": [
-          ["item grain", "order item grain", "one row per item"],
-          ["distinct order_id", "count distinct order_id", "row count"],
+          ["item grain", "item-grain", "order item grain", "one row per item"],
+          ["distinct order_id", "count distinct order_id", "row count", "counting rows", "raw order_id"],
           ["multiple items", "multiple item rows", "sku"],
-          ["same order", "order 2001", "single order"]
+          ["same order", "single order", "one order"]
         ],
         "fix_variants": [
           [
