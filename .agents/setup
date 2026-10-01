@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+run_step() {
+  local description="$1"
+  shift
+  local start=$SECONDS
+  echo "==> ${description}"
+  "$@"
+  echo "    completed in $((SECONDS - start))s"
+}
+
+if ! command -v uv >/dev/null 2>&1; then
+  run_step "Install uv" bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  # The installer cannot update the environment of this running setup process.
+  # shellcheck disable=SC1091
+  source "$HOME/.local/bin/env"
+fi
+
+run_step "Install pinned Python $(cat .python-version)" uv python install "$(cat .python-version)"
+run_step "Sync root workspace from uv.lock" uv sync --locked --all-groups
+run_step "Sync dbt-debugger environment from uv.lock" bash -c 'cd environments/dbt_debugger && uv sync --locked --extra dev'
+
+if ! command -v prime >/dev/null 2>&1; then
+  run_step "Install Prime CLI" uv tool install prime
+else
+  echo "==> Prime CLI already available at $(command -v prime); leaving it unchanged"
+fi
+
+echo "==> Orb setup complete"

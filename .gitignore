@@ -19,4 +19,7 @@ wheels/
 environments/*/outputs/
 external/
 
+# Amp portal metadata is generated per orb.
+.amp/portals/*
+
 *.log
