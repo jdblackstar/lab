@@ -24,10 +24,28 @@ run_step "Install pinned Python $(cat .python-version)" uv python install "$(cat
 run_step "Sync root workspace from uv.lock" uv sync --locked --all-groups
 run_step "Sync dbt-debugger environment from uv.lock" bash -c 'cd environments/dbt_debugger && uv sync --locked --extra dev'
 
+# Bash reads only the first existing login profile. Update that file rather than
+# creating a .bash_profile that would hide the user's existing .profile.
+tool_bin="$(uv tool dir --bin)"
+login_profile="$HOME/.profile"
+for candidate in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+  if [[ -f "$candidate" ]]; then
+    login_profile="$candidate"
+    break
+  fi
+done
+path_export="$(printf 'export PATH=%q:"$PATH"' "$tool_bin")"
+if ! grep -Fqx -- "$path_export" "$login_profile" 2>/dev/null; then
+  printf '\n# uv tool executables for non-interactive login shells\n%s\n' "$path_export" >> "$login_profile"
+fi
+# Also expose already-installed tools to this setup process before checking Prime.
+export PATH="$tool_bin:$PATH"
+
 if ! command -v prime >/dev/null 2>&1; then
   run_step "Install Prime CLI" uv tool install prime
 else
   echo "==> Prime CLI already available at $(command -v prime); leaving it unchanged"
 fi
 
+run_step "Verify Prime CLI" prime --version
 echo "==> Orb setup complete"

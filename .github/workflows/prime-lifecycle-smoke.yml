@@ -20,6 +20,18 @@ permissions:
   contents: read
 
 jobs:
+  orb-setup-smoke:
+    name: orb setup + later login shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Test fresh setup and warm reruns without tool bin on PATH
+        run: bash scripts/ci/smoke_orb_setup.sh
+
   install-smoke:
     name: prime env install + load_environment
     runs-on: ubuntu-latest
@@ -61,6 +73,7 @@ jobs:
   eval-smoke:
     name: prime eval run (minimal)
     needs:
+      - orb-setup-smoke
       - install-smoke
       - artifact-smoke
     if: ${{ github.ref == 'refs/heads/main' }}
