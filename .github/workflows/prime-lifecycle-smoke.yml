@@ -73,7 +73,6 @@ jobs:
   eval-smoke:
     name: prime eval run (minimal)
     needs:
-      - orb-setup-smoke
       - install-smoke
       - artifact-smoke
     if: ${{ github.ref == 'refs/heads/main' }}
