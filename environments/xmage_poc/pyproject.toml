@@ -1,0 +1,34 @@
+[project]
+name = "xmage-poc"
+description = "Fixture-limited XMage pilot protocol and private-state recording proof of concept"
+readme = "README.md"
+tags = ["mtg", "xmage", "eval"]
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "verifiers>=0.2.0,<0.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[project.scripts]
+xmage-poc = "xmage_poc.transport:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+artifacts = ["xmage_poc/runtime/*.jar", "xmage_poc/runtime/build.json"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["xmage_poc"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/xmage_poc", "/bridge/pom.xml", "/bridge/src", "/examples", "/README.md", "/pyproject.toml"]
+exclude = ["/outputs/**", "/bridge/target/**", "/dist/**", "**/__pycache__/**"]
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1

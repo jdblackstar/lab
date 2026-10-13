@@ -203,6 +203,14 @@ url = "https://api.pinference.ai/api/v1"
 key = "PRIME_API_KEY"
 type = "openai_chat_completions"
 
+# Local protocol smoke only; scripts/smoke_xmage_poc_eval.py supplies a dynamic port.
+[[endpoint]]
+endpoint_id = "xmage-scripted-local"
+model = "xmage-scripted-local"
+url = "http://127.0.0.1:8769/v1"
+key = "XMAGE_LOCAL_API_KEY"
+type = "openai_chat_completions"
+
 [[endpoint]]
 endpoint_id = "openai/gpt-4.1-mini"
 model = "openai/gpt-4.1-mini"

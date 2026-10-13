@@ -1,0 +1,7 @@
+# Deliberately simple 60-card fixture; no claim of current Standard legality.
+40 Plains
+4 Savannah Lions
+4 Youthful Knight
+4 Healer's Hawk
+4 Silvercoat Lion
+4 Pillarfield Ox

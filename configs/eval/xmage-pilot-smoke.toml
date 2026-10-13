@@ -1,0 +1,19 @@
+# Choose a configured model with: prime eval run configs/eval/xmage-pilot-smoke.toml -e configs/endpoints.toml -m <endpoint_id>
+# Two games alternate the model's deck/seat; this is a behavior smoke, not a win-rate estimate.
+[[eval]]
+env_id = "xmage-poc"
+num_examples = 2
+rollouts_per_example = 1
+max_concurrent = 1
+max_tokens = 64
+timeout = 300
+state_columns = ["pilot_seat", "game_result", "recording_audit", "recording_path", "auto_passed_priority"]
+
+[eval.env_args]
+num_games = 2
+seed = 7
+opponent = "scripted"
+pilot_seat = "alternate"
+max_turns = 4000
+history_decisions = 4
+auto_pass_priority = true

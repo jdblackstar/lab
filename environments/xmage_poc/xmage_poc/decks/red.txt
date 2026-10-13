@@ -1,0 +1,7 @@
+# Deliberately simple 60-card fixture; no claim of current Standard legality.
+40 Mountain
+4 Raging Goblin
+4 Goblin Piker
+4 Hill Giant
+4 Fire Elemental
+4 Shock

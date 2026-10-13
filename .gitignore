@@ -23,3 +23,9 @@ external/
 .amp/portals/*
 
 *.log
+.pytest_cache/
+.ruff_cache/
+environments/xmage_poc/bridge/target/
+environments/xmage_poc/xmage_poc/runtime/*.jar
+environments/xmage_poc/xmage_poc/runtime/build.json
+environments/xmage_poc/xmage_poc/runtime/*.pending
