@@ -140,6 +140,8 @@ The last command is a protocol integration test, not a platform evaluation. Its 
 
 The [seed-17 pilot walkthrough](examples/pilot-walkthrough.md) shows the actual 22-turn match, combat outcomes, life totals, and all 587 recorded responses. It is a portable rendering of the local recording, with the historical controller policy documented. Raw logs and checkpoints stay under the ignored `outputs/` directory.
 
+See [recorded experiments and validation](examples/README.md) for the measured outcomes, their controller policies, and the difference between historical demonstrations and subsequent protocol checks.
+
 ## Coverage and limits
 
 The runtime bundles the full card module and accepts custom 60-card decklists. The bundled decks are deliberately simple and land-heavy, not current Standard decks. Individual attackers and blockers, removal of combat selections, and XMage's follow-up defender/attacker target prompts are exposed. An attack-all shortcut is also available. Multi-amount prompts expose indexed allocations obeying XMage's individual and total bounds, with its valid default allocation first; enumeration is limited to 16 dimensions, ranges spanning at most 100 per dimension, and 4,096 choices. Ordinary combat is covered for these fixtures; unusual attack/block costs, multi-block abilities, special damage mechanics, sideboarding, search/reveal effects, multiplayer, and independent model opponents still need dedicated adapter/audit tests. Unsupported hidden-card queries fail closed. The recorder's JSON/privacy audits remain tailored to these simple duel fixtures, so introducing tokens, extra zones, or reveal/search effects will also require audit updates. XMage supplies the underlying card/rules engine.
