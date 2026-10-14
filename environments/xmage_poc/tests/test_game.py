@@ -155,8 +155,8 @@ def test_benchmark_audits_every_decision_and_replays_seeded_game(tmp_path):
             lambda m: ids.get(m[0], "generated-id"),
             json.dumps(value),
         )
-        # GameLog appends the first three UUID digits to HTML card log names.
-        encoded = re.sub(r"(</font>) \[[0-9a-f]{3}\]", r"\1 [short-id]", encoded)
+        # GameLog log names and target hints append the first three UUID digits.
+        encoded = re.sub(r"(</font>|\w) \[[0-9a-f]{3}\]", r"\1 [short-id]", encoded)
         return json.loads(encoded)
 
     assert gameplay(original) == gameplay(replay.output)
