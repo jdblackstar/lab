@@ -23,6 +23,7 @@ def load_environment(
     pilot_seat: str = "alternate",
     auto_pass_priority: bool = True,
     recording_mode: str = "full_audit",
+    max_action_attempts: int = 3,
 ) -> vf.Environment:
     # Keep the standalone game/audit CLIs independent of Verifiers startup.
     from .environment import load_environment as load
@@ -40,4 +41,5 @@ def load_environment(
         pilot_seat=pilot_seat,
         auto_pass_priority=auto_pass_priority,
         recording_mode=recording_mode,
+        max_action_attempts=max_action_attempts,
     )

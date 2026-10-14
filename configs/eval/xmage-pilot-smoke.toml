@@ -5,8 +5,10 @@ env_id = "xmage-poc"
 num_examples = 2
 rollouts_per_example = 1
 max_concurrent = 1
-max_tokens = 64
-timeout = 300
+# OpenAI chat includes hidden reasoning in this per-decision completion budget.
+max_tokens = 4096
+# Wall-clock timeout per complete game, not per model request (seconds).
+timeout = 7200
 state_columns = ["pilot_seat", "game_result", "recording_audit", "recording_path", "auto_passed_priority"]
 
 [eval.env_args]
