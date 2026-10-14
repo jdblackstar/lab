@@ -1,7 +1,14 @@
-# Deliberately simple 60-card fixture; no claim of current Standard legality.
-40 Mountain
-4 Raging Goblin
-4 Goblin Piker
-4 Hill Giant
+# Red spells: weigh burn as removal/reach, combat pumps, and when to refill.
+# 24 lands / 20 creatures / 16 other spells; no format-legality claim.
+# Prowess and bloodthirst reward sequencing; discard uses only your own hand.
+# Dangerous Wager discards on resolution, avoiding unpayable discard-cost casts.
+24 Mountain
+4 Monastery Swiftspear
+4 Viashino Pyromancer
+4 Blood Ogre
+4 Keldon Raider
 4 Fire Elemental
 4 Shock
+4 Lightning Strike
+4 Brute Strength
+4 Dangerous Wager

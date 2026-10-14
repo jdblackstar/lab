@@ -31,11 +31,18 @@ def main():
         "--observation-format", choices=["json", "text"], default="text"
     )
     parser.add_argument(
-        "--opponent", choices=["self_play", "scripted"], default="self_play"
+        "--recording-mode", choices=["full_audit", "benchmark"], default="full_audit"
+    )
+    parser.add_argument(
+        "--opponent",
+        choices=["self_play", "scripted", "scripted_v1", "random", "xmage_mad"],
+        default="self_play",
     )
     parser.add_argument(
         "--pilot-seat", choices=["player_a", "player_b"], default="player_a"
     )
+    parser.add_argument("--pilot-deck", choices=["deck_a", "deck_b"], default="deck_a")
+    parser.add_argument("--pilot-play-order", choices=["play", "draw"], default="play")
     parser.add_argument(
         "--no-auto-pass-priority",
         action="store_true",
@@ -46,12 +53,20 @@ def main():
         action="store_true",
         help="Test the adapter/HTTP boundary locally; not a Prime evaluation",
     )
+    parser.add_argument(
+        "--inject-invalid-replies",
+        action="store_true",
+        help="Exercise parse recovery, index recovery, and exhausted-attempt fallback",
+    )
     args = parser.parse_args()
+    other_seat = "player_b" if args.pilot_seat == "player_a" else "player_a"
+    starter = args.pilot_seat if args.pilot_play_order == "play" else other_seat
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     requests = []
     http_messages = []
     request_contexts = []
+    attempts = {}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -63,6 +78,8 @@ def main():
                 payload = json.loads(
                     self.rfile.read(int(self.headers["Content-Length"]))
                 )
+                assert payload["max_completion_tokens"] == 4096
+                assert "max_tokens" not in payload
                 observations = []
                 for message in payload["messages"]:
                     if message["role"] != "user":
@@ -70,8 +87,17 @@ def main():
                     content = message["content"]
                     if isinstance(content, list):
                         content = "".join(p.get("text", "") for p in content)
+                    try:
+                        value = json.loads(content)
+                    except ValueError:
+                        value = None
+                    if isinstance(value, dict) and "error" in value:
+                        # Corrections must refer only to the preceding private
+                        # observation, never to the other seat's pending choice.
+                        assert value["decision"] == observations[-1]["decision"]
+                        continue
                     if args.observation_format == "json":
-                        obs = json.loads(content)
+                        obs = value
                     else:
                         # The scripted endpoint isn't an LLM/parser benchmark.
                         # Resolve the decision to its public player transcript,
@@ -86,7 +112,11 @@ def main():
                             for o in read_lines(game / "players" / f"{seat}.jsonl")
                             if o["decision"] == int(number)
                         )
-                        assert content == render_observation(obs)
+                        assert content == render_observation(
+                            obs,
+                            pilot_play_order="play" if seat == starter else "draw",
+                            starting_player=starter,
+                        )
                     observations.append(obs)
                 http_messages.append(
                     [
@@ -111,7 +141,28 @@ def main():
                 )
                 assert len(observations) <= 4
                 requests.append(observations)
-                completion = json.dumps({"action": advance_action(observations[-1])})
+                action_json = json.dumps({"action": advance_action(observations[-1])})
+                # Exercise instruct, hidden-reasoning, and visible-reasoning replies.
+                completion = (
+                    action_json,
+                    f"```json\n{action_json}\n```",
+                    f"I will advance the game.\n<answer>{action_json}</answer>",
+                    (
+                        f"<think>I will advance the game.</think>\n"
+                        f"<answer>```json\n{action_json}\n```</answer>"
+                    ),
+                )[(len(requests) - 1) % 4]
+                decision = observations[-1]["decision"]
+                attempts[decision] = attempts.get(decision, 0) + 1
+                if args.inject_invalid_replies:
+                    number = list(attempts).index(decision)
+                    attempt = attempts[decision]
+                    if number == 0 and attempt == 1:
+                        completion = "not-json"
+                    elif (number == 1 and attempt == 1) or number == 2:
+                        completion = json.dumps(
+                            {"action": len(observations[-1]["actions"])}
+                        )
                 body = json.dumps(
                     {
                         "id": f"local-{len(requests)}",
@@ -121,7 +172,11 @@ def main():
                         "choices": [
                             {
                                 "index": 0,
-                                "message": {"role": "assistant", "content": completion},
+                                "message": {
+                                    "role": "assistant",
+                                    "content": completion,
+                                    "reasoning_content": "Choose the scripted action.",
+                                },
                                 "finish_reason": "stop",
                             }
                         ],
@@ -148,8 +203,11 @@ def main():
         "seed": args.seed,
         "opponent": args.opponent,
         "pilot_seat": args.pilot_seat,
+        "pilot_deck": args.pilot_deck,
+        "pilot_play_order": args.pilot_play_order,
         "auto_pass_priority": not args.no_auto_pass_priority,
         "observation_format": args.observation_format,
+        "recording_mode": args.recording_mode,
     }
     if args.java_bin:
         env_args["java_bin"] = args.java_bin
@@ -167,11 +225,29 @@ def main():
                     environment.dataset[0],
                     client,
                     "xmage-scripted-local",
-                    {"max_tokens": 32},
+                    {"max_tokens": 4096},
                 )
                 assert state.get("error") is None, state.get("error")
                 assert state.get("recording_audit", {}).get("privacy_passed")
+                assert state["pilot_deck"] == args.pilot_deck
+                assert state["pilot_play_order"] == args.pilot_play_order
+                assert (state["starting_player"] == args.pilot_seat) == (
+                    args.pilot_play_order == "play"
+                )
+                assert (
+                    state["game_result"]["starting_player"] == state["starting_player"]
+                )
                 await environment.rubric.score_rollout(state)
+                assert state["invalid_action_count"] == (
+                    5 if args.inject_invalid_replies else 0
+                )
+                assert state["unparseable_reply_count"] == int(
+                    args.inject_invalid_replies
+                )
+                assert state["fallback_action_count"] == int(
+                    args.inject_invalid_replies
+                )
+                assert state["model_action_attempts"] == len(requests)
                 if args.opponent == "self_play":
                     assert state["reward"] == 1.0
                 else:
@@ -207,7 +283,7 @@ def main():
                     "-c",
                     "1",
                     "-t",
-                    "32",
+                    "4096",
                     "-a",
                     json.dumps(env_args),
                     "-o",
@@ -233,7 +309,7 @@ def main():
         p["messages"] for p in read_lines(games[0] / "model-prompts.jsonl")
     ], "Recorded prompts differ from actual HTTP model inputs"
     decisions = read_lines(games[0] / "internal/decisions.jsonl")
-    if args.opponent == "scripted":
+    if args.opponent != "self_play":
         decisions = [
             d for d in decisions if d["observation"]["player"] == args.pilot_seat
         ]
@@ -256,27 +332,50 @@ def main():
         decisions = [
             d for d in decisions if not is_pass_only_priority(d["observation"])
         ]
-    assert len(requests) == len(decisions), "CLI did not drive every model decision"
+    assert len(requests) == len(decisions) + (4 if args.inject_invalid_replies else 0)
+    by_decision = {}
+    for request, context in zip(requests, request_contexts, strict=True):
+        by_decision.setdefault(request[-1]["decision"], []).append((request, context))
+    assert list(by_decision) == [d["decision"] for d in decisions], (
+        "CLI did not drive every model decision in the same game"
+    )
+    if args.inject_invalid_replies:
+        assert list(attempts.values())[:3] == [2, 2, 3]
+        obs = decisions[2]["observation"]
+        expected = next(
+            (
+                a["index"]
+                for kind in ("pass", "no", "cancel")
+                for a in obs["actions"]
+                if a["kind"] == kind
+            ),
+            obs["actions"][0]["index"],
+        )
+        assert decisions[2]["response"]["action"] == expected
     histories = {}
-    for request, decision in zip(requests, decisions, strict=True):
+    for decision in decisions:
         obs = decision["observation"]
         history = histories.setdefault(obs["player_id"], [])
         history.append(obs)
-        assert request == history[-4:], (
-            "HTTP inputs differ from their seat's engine observations"
-        )
-    for context, decision in zip(request_contexts, decisions, strict=True):
-        seat = decision["observation"]["player"]
-        assert context == json.loads(
-            (games[0] / "players" / f"{seat}.context.json").read_text()
-        ), "Endpoint received a different seat's deck or a modified deck context"
+        for request, context in by_decision[obs["decision"]]:
+            assert request == history[-4:], (
+                "HTTP inputs differ from their seat's engine observations"
+            )
+            seat = obs["player"]
+            assert context == json.loads(
+                (games[0] / "players" / f"{seat}.context.json").read_text()
+            ), "Endpoint received a different seat's deck or a modified deck context"
     audit["endpoint_requests"] = len(requests)
     audit["auto_passed_priority"] = len(automatic)
     audit["model_history_isolation_passed"] = True
     audit["own_deck_context_passed"] = True
+    if args.inject_invalid_replies:
+        audit["invalid_reply_recovery_passed"] = True
     audit["driver"] = "protocol_test" if args.protocol_only else "prime_eval"
     audit["opponent"] = args.opponent
-    audit["pilot_seat"] = args.pilot_seat if args.opponent == "scripted" else None
+    audit["pilot_seat"] = args.pilot_seat if args.opponent != "self_play" else None
+    audit["pilot_deck"] = args.pilot_deck
+    audit["pilot_play_order"] = args.pilot_play_order
     (output / "audit.json").write_text(json.dumps(audit, indent=2) + "\n")
     print(json.dumps(audit, indent=2))
 

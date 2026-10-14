@@ -84,8 +84,36 @@ def audit_observation(obs: dict, state: dict) -> None:
     )
 
 
+# Corrections are fixed controller strings; nothing from the game state but
+# the decision number and an offered fallback index may appear in them.
+CORRECTION_TEXT = {
+    "error": {
+        "Your reply could not be parsed. Follow the response format in the system message.",
+        "The selected action is not offered for this decision.",
+    },
+    "instruction": {
+        "Choose an offered index from the unchanged observation above.",
+        "Attempt limit reached; the fallback action was submitted.",
+    },
+}
+
+
+def correction(content: str) -> dict | None:
+    """Return a controller correction, or None for an observation message."""
+    try:
+        value = json.loads(content)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) and "error" in value else None
+
+
 def audit_model_prompts(output: Path, decisions: list[dict], controller: dict) -> int:
     """Reconstruct full inference inputs from audited seat observations.
+
+    Every inference (including invalid-reply retries) is recorded. User messages
+    must be this seat's own rendered observations, in order, or fixed-schema
+    corrections for a decision shown in that prompt. Assistant messages are the
+    model's own replies and are not reconstructed.
 
     Public play/draw metadata is the only extra input; restrict it to the player
     roster and play/draw enum. No free-form state strings may enter the prompt.
@@ -97,7 +125,7 @@ def audit_model_prompts(output: Path, decisions: list[dict], controller: dict) -
         d
         for d in decisions
         if (
-            controller["opponent"] != "scripted"
+            controller["opponent"] == "self_play"
             or d["observation"]["player"] == controller["pilot_seat"]
         )
         and not (
@@ -105,14 +133,23 @@ def audit_model_prompts(output: Path, decisions: list[dict], controller: dict) -
         )
     ]
     prompts = read_lines(output / "model-prompts.jsonl")
+    covered = [
+        p["decision"]
+        for i, p in enumerate(prompts)
+        if i == 0 or p["decision"] != prompts[i - 1]["decision"]
+    ]
     require(
-        [p["decision"] for p in prompts] == [d["decision"] for d in expected],
+        covered == [d["decision"] for d in expected],
         "Model prompt coverage differs from model decisions",
     )
-    histories = {}
+    by_decision = {d["decision"]: d for d in expected}
+    seen = {}
     glossaries = {}
-    for prompt, decision in zip(prompts, expected, strict=True):
+    rendered = {}
+    for prompt in prompts:
+        decision = by_decision[prompt["decision"]]
         obs = decision["observation"]
+        require(prompt["player"] == obs["player"], "Prompt sent to the wrong seat")
         order, starter = prompt["pilot_play_order"], prompt["starting_player"]
         roster = {p["playerId"]: p["name"] for p in obs["view"]["players"]}
         require(order in {None, "play", "draw"}, "Invalid public play/draw factor")
@@ -125,50 +162,76 @@ def audit_model_prompts(output: Path, decisions: list[dict], controller: dict) -
             require(
                 order == ("play" if own else "draw"), "Inconsistent play/draw factors"
             )
-        history = histories.setdefault(obs["player_id"], [])
-        system = SYSTEM
-        if controller["observation_format"] == "text":
-            glossary = glossaries.setdefault(obs["player_id"], {})
-            glossary.update(public_card_rules(obs))
-            system += TEXT_INSTRUCTIONS + glossary_text(glossary)
-            rendered = render_observation(
-                obs, pilot_play_order=order, starting_player=starter
-            )
-        else:
-            require(
-                controller["observation_format"] == "json", "Unknown observation format"
-            )
-            rendered = json.dumps(obs)
-        context = json.loads(
-            (output / "players" / f"{obs['player']}.context.json").read_text()
-        )
-        system += DECK_CONTEXT_MARKER + json.dumps(context)
-        history.append({"role": "user", "content": rendered})
-        actual = prompt["messages"]
-        normalized = []
-        for message in actual:
-            if message["role"] == "assistant":
-                answer = json.loads(message["content"])
-                require(
-                    set(answer) == {"action"} and type(answer["action"]) is int,
-                    "Invalid model history answer",
+        history = seen.setdefault(obs["player_id"], [])
+        if not history or history[-1]["decision"] != obs["decision"]:
+            history.append(obs)
+            system = SYSTEM
+            if controller["observation_format"] == "text":
+                glossary = glossaries.setdefault(obs["player_id"], {})
+                glossary.update(public_card_rules(obs))
+                system += TEXT_INSTRUCTIONS + glossary_text(glossary)
+                text = render_observation(
+                    obs, pilot_play_order=order, starting_player=starter
                 )
-                normalized.append({"role": "assistant", "content": json.dumps(answer)})
             else:
-                normalized.append(message)
+                require(
+                    controller["observation_format"] == "json",
+                    "Unknown observation format",
+                )
+                text = json.dumps(obs)
+            context = json.loads(
+                (output / "players" / f"{obs['player']}.context.json").read_text()
+            )
+            system += DECK_CONTEXT_MARKER + json.dumps(context)
+            rendered[obs["decision"]] = (system, text)
+        system, _ = rendered[obs["decision"]]
+        messages = prompt["messages"]
         require(
-            normalized
-            == [
-                {"role": "system", "content": system},
-                *history[-(2 * controller["history_decisions"] - 1) :],
-            ],
-            "Rendered model prompt differs from audited observation/history",
+            messages[0] == {"role": "system", "content": system},
+            "Rendered system prompt differs from audited seat context",
         )
-        history.append(
-            {
-                "role": "assistant",
-                "content": json.dumps({"action": decision["response"]["action"]}),
-            }
+        window = [o["decision"] for o in history[-controller["history_decisions"] :]]
+        shown = []
+        for message in messages[1:]:
+            role, content = message["role"], message["content"]
+            if role == "assistant":
+                require(isinstance(content, str), "Invalid model history reply")
+                continue
+            require(role == "user", "Unexpected prompt message role")
+            fix = correction(content)
+            if fix is not None:
+                offered = (
+                    {
+                        a["index"]
+                        for a in by_decision[shown[-1]]["observation"]["actions"]
+                    }
+                    if shown
+                    else set()
+                )
+                require(
+                    bool(shown)
+                    and fix["decision"] == shown[-1]
+                    and set(fix) - {"fallback_action"}
+                    == {"error", "decision", "attempts_remaining", "instruction"}
+                    and all(fix[k] in v for k, v in CORRECTION_TEXT.items())
+                    and type(fix["attempts_remaining"]) is int
+                    and fix.get("fallback_action", next(iter(offered), None))
+                    in offered,
+                    "Correction is not a fixed notice for the preceding observation",
+                )
+                continue
+            require(
+                len(shown) < len(window) and content == rendered[window[len(shown)]][1],
+                "Rendered model prompt differs from audited observation/history",
+            )
+            shown.append(window[len(shown)])
+        require(
+            shown == window,
+            "Model prompt history differs from its seat's recent decisions",
+        )
+        require(
+            messages[-1]["role"] == "user",
+            "Model prompt does not end with an observation or correction",
         )
     return len(prompts)
 
@@ -178,6 +241,8 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
     decisions = read_lines(output / "internal/decisions.jsonl")
     require(states and decisions, "No recorded gameplay")
     manifest = json.loads((output / "internal/manifest.json").read_text())
+    mode = manifest.get("recording_mode", "full_audit")
+    require(mode in {"full_audit", "benchmark"}, "Unknown recording mode")
     # Older recordings predate static deck contexts. Audit the added files when
     # present, while retaining support for those historical native transcripts.
     for seat, key in (("player_a", "deck_a"), ("player_b", "deck_b")):
@@ -190,16 +255,40 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
             )
     by_sequence = {s["sequence"]: s for s in states}
     require(len(by_sequence) == len(states), "Duplicate state sequence")
+    if "starting_player" in manifest:
+        # Benchmark recordings omit event snapshots such as BEGIN_TURN; every
+        # snapshot in turn 1 with an active player names the starting player.
+        first_turn = next(
+            (s for s in states if s["turn"] == 1 and s["active_player"]), None
+        )
+        require(first_turn is not None or not require_finished, "No turn began")
+        if first_turn is not None:
+            actual = next(
+                p["name"]
+                for p in first_turn["players"]
+                if p["id"] == first_turn["active_player"]
+            )
+            require(actual == manifest["starting_player"], "Starting player differs")
     require(
         [s["sequence"] for s in states] == list(range(1, len(states) + 1)),
         "Recording invariant failed",
     )
     for state in states:
-        checkpoint = output / "internal" / state["checkpoint"]
-        require(
-            hashlib.sha256(checkpoint.read_bytes()).hexdigest() == state["sha256"],
-            "Checkpoint corrupt",
-        )
+        if mode == "full_audit":
+            checkpoint = output / "internal" / state["checkpoint"]
+            require(
+                hashlib.sha256(checkpoint.read_bytes()).hexdigest() == state["sha256"],
+                "Checkpoint corrupt",
+            )
+        else:
+            require(
+                "checkpoint" not in state and "sha256" not in state,
+                "Benchmark projections must not claim engine checkpoints",
+            )
+            require(
+                state["reason"] in {"start", "decision", "end"},
+                "Unexpected benchmark projection",
+            )
         require(len(state["players"]) == 2, "Recording invariant failed")
         ids = [
             c["id"]
@@ -253,7 +342,15 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
                 for z in ("hand", "library", "graveyard")
             ) + len(state["battlefield"])
             require(total == 120, f"Card conservation failed: {total}")
-    require(len(observed_players) == 2, "Both controllers must receive decisions")
+    # Native AI acts inside XMage, without the pipe's prompts or responses. Older
+    # manifests imply two bridge seats; never drop the pilot's audit coverage.
+    bridge_players = set(manifest.get("bridge_players", manifest["players"]))
+    require(
+        bridge_players
+        and bridge_players <= set(manifest["players"])
+        and observed_players == bridge_players,
+        "Every controller seat must receive decisions",
+    )
     for name, expected in actual_by_player.items():
         require(
             read_lines(output / "players" / f"{name}.jsonl") == expected,
@@ -272,16 +369,27 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
         require(result["snapshots"] == len(states), "Recording invariant failed")
         require(states[-1]["reason"] == "end", "Recording invariant failed")
         require(any(s["turn"] > 1 for s in states), "No turns were played")
+        events = (
+            read_lines(output / "internal/events.jsonl")
+            if mode == "benchmark"
+            else [s["event"] for s in states]
+        )
         require(
-            any(s["event"].get("type") == "LAND_PLAYED" for s in states),
+            any(e.get("type") == "LAND_PLAYED" for e in events),
             "No land play recorded",
         )
         require(
-            any("DAMAGE" in s["event"].get("type", "") for s in states),
+            any("DAMAGE" in e.get("type", "") for e in events),
             "No damage recorded",
         )
     audit = {
         "privacy_passed": True,
+        "recording_mode": mode,
+        "privacy_scope": "all delivered observations/actions vs paired decision projections; fixture-limited",
+        "checkpoint_hashes_checked": len(states) if mode == "full_audit" else 0,
+        # Python verifies projections/hashes; the separate Java verify command
+        # performs restoration and hidden-state counterfactual checks.
+        "checkpoint_restoration_checked": False,
         "decisions": len(decisions),
         "snapshots": len(states),
         "players": len(observed_players),

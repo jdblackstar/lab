@@ -31,6 +31,11 @@
     </dependency>
     <dependency>
       <groupId>org.mage</groupId>
+      <artifactId>mage-player-ai-mad</artifactId>
+      <version>1.4.62</version>
+    </dependency>
+    <dependency>
+      <groupId>org.mage</groupId>
       <artifactId>mage-game-twoplayerduel</artifactId>
       <version>1.4.62</version>
     </dependency>

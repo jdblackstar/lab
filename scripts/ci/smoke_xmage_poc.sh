@@ -10,7 +10,10 @@ prime env install xmage-poc --no-upgrade --plain
 python -c "import xmage_poc; xmage_poc.load_environment()"
 XMAGE_INTEGRATION=1 python -m pytest environments/xmage_poc/tests -q
 python scripts/smoke_xmage_poc_eval.py --protocol-only --output "environments/xmage_poc/outputs/ci-protocol"
-python scripts/smoke_xmage_poc_eval.py --protocol-only --opponent scripted --pilot-seat player_b --output "environments/xmage_poc/outputs/ci-pilot-protocol"
+python scripts/smoke_xmage_poc_eval.py --protocol-only --opponent scripted --pilot-seat player_b --recording-mode benchmark --inject-invalid-replies --output "environments/xmage_poc/outputs/ci-pilot-protocol"
+for opponent in random xmage_mad; do
+  python scripts/smoke_xmage_poc_eval.py --protocol-only --opponent "$opponent" --pilot-seat player_b --output "environments/xmage_poc/outputs/ci-$opponent-protocol"
+done
 
 uv build environments/xmage_poc --out-dir environments/xmage_poc/dist
 # Check both distribution formats, then load the wheel outside the checkout.
@@ -28,6 +31,7 @@ with zipfile.ZipFile(next(dist.glob('*.whl'))) as archive:
     with zipfile.ZipFile(BytesIO(archive.read('xmage_poc/runtime/xmage-poc.jar'))) as engine:
         assert 'mage/cards/l/LightningBolt.class' in engine.namelist()
         assert 'mage/cards/f/FireIce.class' in engine.namelist()
+        assert 'mage/player/ai/ComputerPlayer7.class' in engine.namelist()
     assert json.loads(archive.read('xmage_poc/runtime/build.json'))['catalog_names'] > 30_000
 with tarfile.open(next(dist.glob('*.tar.gz'))) as archive:
     assert any(n.endswith('/xmage_poc/runtime/xmage-poc.jar') for n in archive.getnames())
