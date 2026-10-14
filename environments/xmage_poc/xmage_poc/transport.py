@@ -62,7 +62,7 @@ class GameSession:
                 str(self.output),
                 str(seed),
                 *(str(path) for path in deck_paths),
-                recording_mode,
+                f"--recording-mode={recording_mode}",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
