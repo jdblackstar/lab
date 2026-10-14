@@ -15,6 +15,7 @@ from pathlib import Path
 import verifiers as vf
 from xmage_poc import load_environment
 from xmage_poc.environment import DECK_CONTEXT_MARKER
+from xmage_poc.render import render_observation
 from xmage_poc.transport import advance_action, is_pass_only_priority
 from xmage_poc.verify import read_lines, verify
 
@@ -26,6 +27,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--java-bin", default=os.environ.get("XMAGE_JAVA_BIN"))
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--observation-format", choices=["json", "text"], default="text"
+    )
     parser.add_argument(
         "--opponent", choices=["self_play", "scripted"], default="self_play"
     )
@@ -46,6 +50,7 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     requests = []
+    http_messages = []
     request_contexts = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -65,7 +70,30 @@ def main():
                     content = message["content"]
                     if isinstance(content, list):
                         content = "".join(p.get("text", "") for p in content)
-                    observations.append(json.loads(content))
+                    if args.observation_format == "json":
+                        obs = json.loads(content)
+                    else:
+                        # The scripted endpoint isn't an LLM/parser benchmark.
+                        # Resolve the decision to its public player transcript,
+                        # then verify the actual HTTP text before choosing.
+                        header = content.splitlines()[0]
+                        number, seat = header.removeprefix("Decision ").split(
+                            " | You: "
+                        )
+                        game = next((output / "games").iterdir())
+                        obs = next(
+                            o
+                            for o in read_lines(game / "players" / f"{seat}.jsonl")
+                            if o["decision"] == int(number)
+                        )
+                        assert content == render_observation(obs)
+                    observations.append(obs)
+                http_messages.append(
+                    [
+                        {"role": m["role"], "content": m["content"]}
+                        for m in payload["messages"]
+                    ]
+                )
                 actor = observations[-1]["player_id"]
                 systems = [m for m in payload["messages"] if m["role"] == "system"]
                 assert len(systems) == 1
@@ -121,6 +149,7 @@ def main():
         "opponent": args.opponent,
         "pilot_seat": args.pilot_seat,
         "auto_pass_priority": not args.no_auto_pass_priority,
+        "observation_format": args.observation_format,
     }
     if args.java_bin:
         env_args["java_bin"] = args.java_bin
@@ -200,6 +229,9 @@ def main():
     games = list((output / "games").iterdir())
     assert len(games) == 1
     audit = verify(games[0])
+    assert http_messages == [
+        p["messages"] for p in read_lines(games[0] / "model-prompts.jsonl")
+    ], "Recorded prompts differ from actual HTTP model inputs"
     decisions = read_lines(games[0] / "internal/decisions.jsonl")
     if args.opponent == "scripted":
         decisions = [

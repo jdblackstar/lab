@@ -90,6 +90,7 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
         auto_pass_priority=auto_pass_priority,
         java_bin="/bin/false",
         history_decisions=1,
+        observation_format="json",
     )
     session = Session()
     state = {
