@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import uuid
+from itertools import product
 from pathlib import Path
 
 import verifiers as vf
@@ -89,9 +90,18 @@ class XMageEnvironment(vf.MultiTurnEnv):
         self.auto_pass_priority = auto_pass_priority
         super().__init__(**kwargs)
 
+    def decks_for(self, info):
+        """Matchup deck identities stay fixed even when their seats change."""
+        decks = {
+            "deck_a": self.deck_a or ROOT / "decks/white.txt",
+            "deck_b": self.deck_b or ROOT / "decks/red.txt",
+        }
+        pair = (decks[info["pilot_deck"]], decks[info["opponent_deck"]])
+        return pair if info["pilot_seat"] == "player_a" else pair[::-1]
+
     async def setup_state(self, state):
         path = self.output_dir / uuid.uuid4().hex
-        state["pilot_seat"] = state["info"]["pilot_seat"]
+        state.update(state["info"])
         state["auto_passed_priority"] = 0
         try:
             session_class = PilotSession if self.opponent == "scripted" else GameSession
@@ -105,8 +115,8 @@ class XMageEnvironment(vf.MultiTurnEnv):
                 path,
                 state["info"]["seed"],
                 self.java_bin,
-                self.deck_a,
-                self.deck_b,
+                *self.decks_for(state["info"]),
+                starting_player=state["starting_player"],
                 **extra,
             )
             state["_session"] = session
@@ -115,8 +125,8 @@ class XMageEnvironment(vf.MultiTurnEnv):
                 (path / "model-controller.json").write_text,
                 json.dumps(
                     {
+                        **state["info"],
                         "opponent": self.opponent,
-                        "pilot_seat": state["pilot_seat"],
                         "auto_pass_priority": self.auto_pass_priority,
                     },
                     indent=2,
@@ -236,8 +246,17 @@ def load_environment(
     opponent: str = "self_play",
     pilot_seat: str = "alternate",
     auto_pass_priority: bool = True,
+    pilot_deck: str = "balanced",
+    pilot_play_order: str = "balanced",
 ) -> vf.Environment:
-    """Use self_play for protocol checks or scripted for a pilot-win baseline."""
+    """Cross seat × matchup deck × play/draw within each seed block.
+
+    num_games is the total row count, not the seed count. With all factors varying,
+    use multiples of eight for balance (short prefixes are only behavior smokes).
+    Fix any factor independently for ablations. deck_a/deck_b name matchup lists
+    (default White/Red), not permanent seat assignments. self_play controls both
+    seats; only scripted measures the designated pilot against scripted_v1.
+    """
     if num_games < 1 or max_turns < 1 or history_decisions < 1:
         raise ValueError("num_games, max_turns and history_decisions must be positive")
     if opponent not in {"self_play", "scripted"}:
@@ -246,6 +265,10 @@ def load_environment(
         raise ValueError("auto_pass_priority must be a boolean")
     if pilot_seat not in {"alternate", "player_a", "player_b"}:
         raise ValueError("pilot_seat must be alternate, player_a, or player_b")
+    if pilot_deck not in {"balanced", "deck_a", "deck_b"}:
+        raise ValueError("pilot_deck must be balanced, deck_a, or deck_b")
+    if pilot_play_order not in {"balanced", "play", "draw"}:
+        raise ValueError("pilot_play_order must be balanced, play, or draw")
     java = java_bin or os.environ.get("XMAGE_JAVA_BIN") or shutil.which("java")
     if not java or not (ROOT / "runtime/xmage-poc.jar").is_file():
         raise RuntimeError(
@@ -254,20 +277,31 @@ def load_environment(
     for path in (deck_a, deck_b):
         if path is not None and not Path(path).is_file():
             raise ValueError(f"Decklist does not exist: {path}")
-    dataset = Dataset.from_list(
-        [
+    conditions = list(
+        product(
+            ("deck_a", "deck_b") if pilot_deck == "balanced" else (pilot_deck,),
+            ("play", "draw") if pilot_play_order == "balanced" else (pilot_play_order,),
+            ("player_a", "player_b") if pilot_seat == "alternate" else (pilot_seat,),
+        )
+    )
+    rows = []
+    for i in range(num_games):
+        deck, order, seat = conditions[i % len(conditions)]
+        other_seat = "player_b" if seat == "player_a" else "player_a"
+        rows.append(
             {
                 "question": "Play the next offered action in your seat's MTG game.",
                 "info": {
-                    "seed": seed + i,
-                    "pilot_seat": ("player_a" if i % 2 == 0 else "player_b")
-                    if pilot_seat == "alternate"
-                    else pilot_seat,
+                    "seed": seed + i // len(conditions),
+                    "pilot_seat": seat,
+                    "pilot_deck": deck,
+                    "opponent_deck": "deck_b" if deck == "deck_a" else "deck_a",
+                    "pilot_play_order": order,
+                    "starting_player": seat if order == "play" else other_seat,
                 },
             }
-            for i in range(num_games)
-        ]
-    )
+        )
+    dataset = Dataset.from_list(rows)
     return XMageEnvironment(
         dataset=dataset,
         output_dir=Path(output_dir or "environments/xmage_poc/outputs/games").resolve(),

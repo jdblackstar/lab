@@ -95,6 +95,18 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
             )
     by_sequence = {s["sequence"]: s for s in states}
     require(len(by_sequence) == len(states), "Duplicate state sequence")
+    if "starting_player" in manifest:
+        first_turn = next(
+            (s for s in states if s["event"].get("type") == "BEGIN_TURN"), None
+        )
+        require(first_turn is not None or not require_finished, "No turn began")
+        if first_turn is not None:
+            actual = next(
+                p["name"]
+                for p in first_turn["players"]
+                if p["id"] == first_turn["active_player"]
+            )
+            require(actual == manifest["starting_player"], "Starting player differs")
     require(
         [s["sequence"] for s in states] == list(range(1, len(states) + 1)),
         "Recording invariant failed",

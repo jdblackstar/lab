@@ -22,6 +22,8 @@ def load_environment(
     opponent: str = "self_play",
     pilot_seat: str = "alternate",
     auto_pass_priority: bool = True,
+    pilot_deck: str = "balanced",
+    pilot_play_order: str = "balanced",
 ) -> vf.Environment:
     # Keep the standalone game/audit CLIs independent of Verifiers startup.
     from .environment import load_environment as load
@@ -38,4 +40,6 @@ def load_environment(
         opponent=opponent,
         pilot_seat=pilot_seat,
         auto_pass_priority=auto_pass_priority,
+        pilot_deck=pilot_deck,
+        pilot_play_order=pilot_play_order,
     )
