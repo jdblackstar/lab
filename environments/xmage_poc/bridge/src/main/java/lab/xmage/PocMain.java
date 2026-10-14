@@ -16,6 +16,7 @@ import mage.game.mulligan.MulliganType;
 import mage.game.match.MatchOptions;
 import mage.game.match.MatchPlayer;
 import mage.game.permanent.Permanent;
+import mage.player.ai.ComputerPlayer7;
 import mage.player.human.HumanPlayer;
 import mage.player.human.PlayerResponse;
 import mage.players.Player;
@@ -478,6 +479,11 @@ public final class PocMain {
     static void verifyCheckpoints(Path output) throws Exception {
         int count = 0;
         Path internal = output.resolve("internal");
+        JsonObject manifest = JsonParser.parseString(new String(Files.readAllBytes(internal.resolve("manifest.json")), StandardCharsets.UTF_8)).getAsJsonObject();
+        Set<UUID> bridgePlayers = new HashSet<>();
+        for (JsonElement id : manifest.getAsJsonArray(manifest.has("bridge_players") ? "bridge_players" : "players")) {
+            bridgePlayers.add(UUID.fromString(id.getAsString()));
+        }
         try (BufferedReader input = Files.newBufferedReader(internal.resolve("states.jsonl"), StandardCharsets.UTF_8)) {
             String line;
             while ((line = input.readLine()) != null) {
@@ -510,7 +516,7 @@ public final class PocMain {
                 tested.add(actor);
             }
         }
-        if (tested.size() != 2) throw new IllegalStateException("Counterfactual test must cover both seats");
+        if (bridgePlayers.isEmpty() || !tested.equals(bridgePlayers)) throw new IllegalStateException("Counterfactual test must cover every controller seat");
         System.out.println(JSON.toJson(object("checkpoints_restored", count, "counterfactual_seats", tested.size())));
     }
 
@@ -540,7 +546,14 @@ public final class PocMain {
         GameOptions options = new GameOptions();
         options.rollbackTurnsAllowed = false;
         game.setGameOptions(options);
-        BridgePlayer a = new BridgePlayer("player_a", channel), b = new BridgePlayer("player_b", channel);
+        String aiSeat = args.length > 4 ? args[4] : "none";
+        if (!Arrays.asList("none", "player_a", "player_b").contains(aiSeat)) throw new IllegalArgumentException("Invalid AI seat: " + aiSeat);
+        // The server uses ComputerPlayerControllableProxy, a ComputerPlayer7 subclass
+        // that adds human takeover support. A headless opponent needs only the AI.
+        Player a = aiSeat.equals("player_a") ? new ComputerPlayer7("player_a", RangeOfInfluence.ALL, 4) : new BridgePlayer("player_a", channel);
+        Player b = aiSeat.equals("player_b") ? new ComputerPlayer7("player_b", RangeOfInfluence.ALL, 4) : new BridgePlayer("player_b", channel);
+        List<UUID> bridgePlayers = new ArrayList<>();
+        for (Player p : Arrays.asList(a, b)) if (p instanceof BridgePlayer) bridgePlayers.add(p.getId());
         Deck deckA = deck(Paths.get(args[2]), a), deckB = deck(Paths.get(args[3]), b);
         MatchOptions matchOptions = new MatchOptions("POC", "Two Player Duel", false);
         matchOptions.setWinsNeeded(1);
@@ -560,6 +573,10 @@ public final class PocMain {
             Files.write(output.resolve("internal/manifest.json"), JSON.toJson(object("schema_version", 1,
                 "xmage_revision", REVISION, "seed", seed, "deck_a", Files.readAllLines(Paths.get(args[2])),
                 "deck_b", Files.readAllLines(Paths.get(args[3])), "players", Arrays.asList(a.getId(), b.getId()),
+                "bridge_players", bridgePlayers, "engine_ai", aiSeat.equals("none") ? null : object("seat", aiSeat,
+                    "class", ComputerPlayer7.class.getName(), "skill", 4, "max_depth", 4, "max_think_seconds", 12,
+                    "information", "perfect: searches the full copied game, including the pilot's real hand and exact library order",
+                    "budget", "wall-clock 12s per search on a shared 5-thread pool; hardware/load dependent and non-deterministic"),
                 "checkpoint_format", "gzip Java serialization of complete Game graph; transport fields are transient",
                 "card_module", "org.mage:mage-sets:1.4.62", "catalog_names", CardCatalog.DEFINITIONS.size(),
                 "coverage", "two 60-card decks; limited query adapter; snapshots at game events, updates, decisions, start and end")).getBytes(StandardCharsets.UTF_8));

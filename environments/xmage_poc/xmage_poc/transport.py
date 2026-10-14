@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import selectors
 import shutil
 import subprocess
@@ -22,7 +23,10 @@ class GameSession:
         java_bin: str | None = None,
         deck_a: Path | None = None,
         deck_b: Path | None = None,
+        engine_ai_seat: str | None = None,
     ):
+        if engine_ai_seat not in {None, "player_a", "player_b"}:
+            raise ValueError("engine_ai_seat must be player_a, player_b, or None")
         self.output = output.resolve()
         self.output.mkdir(parents=True, exist_ok=False)
         java = java_bin or os.environ.get("XMAGE_JAVA_BIN") or shutil.which("java")
@@ -59,6 +63,7 @@ class GameSession:
                 str(self.output),
                 str(seed),
                 *(str(path) for path in deck_paths),
+                engine_ai_seat or "none",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -151,7 +156,7 @@ def advance_action(observation: dict) -> int:
 
 
 class PilotSession:
-    """Expose one seat; the fixed opponent consumes only its own observations."""
+    """Expose one seat, with a local observation-only policy or engine-native AI."""
 
     def __init__(
         self,
@@ -162,21 +167,36 @@ class PilotSession:
         deck_b: Path | None = None,
         pilot_seat: str = "player_a",
         auto_forced: bool = False,
+        opponent: str = "scripted_v1",
     ):
         if pilot_seat not in {"player_a", "player_b"}:
             raise ValueError("pilot_seat must be player_a or player_b")
-        self.game = GameSession(output, seed, java_bin, deck_a, deck_b)
+        if opponent == "scripted":
+            opponent = "scripted_v1"
+        if opponent not in {"random", "scripted_v1", "xmage_mad"}:
+            raise ValueError("opponent must be random, scripted_v1, or xmage_mad")
+        opponent_seat = "player_b" if pilot_seat == "player_a" else "player_a"
+        self.game = GameSession(
+            output,
+            seed,
+            java_bin,
+            deck_a,
+            deck_b,
+            engine_ai_seat=opponent_seat if opponent == "xmage_mad" else None,
+        )
         self.output = self.game.output
         self.deck_contexts = self.game.deck_contexts
         self.pilot_seat = pilot_seat
         self.auto_forced = auto_forced
+        self.opponent = opponent
+        self.random = random.Random(seed)
         self.opponent_decisions = 0
         self.forced_pilot_decisions = 0
         (self.output / "controllers.json").write_text(
             json.dumps(
                 {
                     "pilot_seat": pilot_seat,
-                    "opponent": "scripted_v1",
+                    "opponent": opponent,
                     "auto_forced": auto_forced,
                 },
                 indent=2,
@@ -194,7 +214,16 @@ class PilotSession:
                 return message
             observation = message["observation"]
             if observation["player"] != self.pilot_seat:
-                self.game.send(observation, advance_action(observation))
+                if self.opponent == "xmage_mad":
+                    raise RuntimeError(
+                        "Engine AI unexpectedly requested a controller action"
+                    )
+                action = (
+                    self.random.choice(observation["actions"])["index"]
+                    if self.opponent == "random"
+                    else advance_action(observation)
+                )
+                self.game.send(observation, action)
                 self.opponent_decisions += 1
             elif self.auto_forced and len(observation["actions"]) == 1:
                 self.game.send(observation, 0)
@@ -220,12 +249,21 @@ def run(
     deck_b: Path | None = None,
     pilot_seat: str | None = None,
     auto_forced: bool = False,
+    opponent: str = "scripted_v1",
+    pilot_policy: str = "scripted_v1",
 ) -> dict:
+    if pilot_policy not in {"scripted_v1", "random"}:
+        raise ValueError("pilot_policy must be scripted_v1 or random")
+    if not pilot_seat and opponent != "scripted_v1":
+        raise ValueError("Choose pilot_seat to select an opponent")
     session = (
-        PilotSession(output, seed, java_bin, deck_a, deck_b, pilot_seat, auto_forced)
+        PilotSession(
+            output, seed, java_bin, deck_a, deck_b, pilot_seat, auto_forced, opponent
+        )
         if pilot_seat
         else GameSession(output, seed, java_bin, deck_a, deck_b)
     )
+    rng = random.Random(seed)
     try:
         if interactive:
             seats = [pilot_seat] if pilot_seat else ["player_a", "player_b"]
@@ -242,7 +280,11 @@ def run(
             if message["type"] == "result":
                 return message
             observation = message["observation"]
-            action = advance_action(observation)
+            action = (
+                rng.choice(observation["actions"])["index"]
+                if pilot_policy == "random"
+                else advance_action(observation)
+            )
             if interactive:
                 view = observation["view"]
                 print(
@@ -323,7 +365,18 @@ def main():
     parser.add_argument(
         "--pilot-seat",
         choices=["player_a", "player_b"],
-        help="Control one seat against scripted_v1",
+        help="Control one seat against the selected opponent",
+    )
+    parser.add_argument(
+        "--opponent",
+        choices=["random", "scripted_v1", "scripted", "xmage_mad"],
+        default="scripted_v1",
+    )
+    parser.add_argument(
+        "--pilot-policy",
+        choices=["scripted_v1", "random"],
+        default="scripted_v1",
+        help="Local pilot policy for opponent ladder checks (overridden by interactive input)",
     )
     parser.add_argument(
         "--auto-forced",
@@ -342,6 +395,8 @@ def main():
                 args.deck_b,
                 args.pilot_seat,
                 args.auto_forced,
+                args.opponent,
+                args.pilot_policy,
             ),
             indent=2,
         )

@@ -94,10 +94,12 @@ class XMageEnvironment(vf.MultiTurnEnv):
         state["pilot_seat"] = state["info"]["pilot_seat"]
         state["auto_passed_priority"] = 0
         try:
-            session_class = PilotSession if self.opponent == "scripted" else GameSession
+            session_class = (
+                GameSession if self.opponent == "self_play" else PilotSession
+            )
             extra = (
-                {"pilot_seat": state["pilot_seat"]}
-                if self.opponent == "scripted"
+                {"pilot_seat": state["pilot_seat"], "opponent": self.opponent}
+                if self.opponent != "self_play"
                 else {}
             )
             session = await asyncio.to_thread(
@@ -237,11 +239,23 @@ def load_environment(
     pilot_seat: str = "alternate",
     auto_pass_priority: bool = True,
 ) -> vf.Environment:
-    """Use self_play for protocol checks or scripted for a pilot-win baseline."""
+    """Opponents: random, scripted_v1 (alias scripted), or native xmage_mad.
+
+    MAD uses ComputerPlayer7 at fixed skill 4 (depth 4). It is omniscient:
+    simulations copy the full game, including the pilot's real hand and exact
+    library order. Its 12s wall-clock search budget uses a shared 5-thread pool;
+    strength depends on hardware/load and search is not deterministic.
+    Pilot observations remain private.
+    self_play retains two-seat model control for protocol checks, not pilot wins.
+    """
     if num_games < 1 or max_turns < 1 or history_decisions < 1:
         raise ValueError("num_games, max_turns and history_decisions must be positive")
-    if opponent not in {"self_play", "scripted"}:
-        raise ValueError("opponent must be self_play or scripted")
+    if opponent == "scripted":
+        opponent = "scripted_v1"
+    if opponent not in {"self_play", "random", "scripted_v1", "xmage_mad"}:
+        raise ValueError(
+            "opponent must be self_play, random, scripted_v1, or xmage_mad"
+        )
     if type(auto_pass_priority) is not bool:
         raise ValueError("auto_pass_priority must be a boolean")
     if pilot_seat not in {"alternate", "player_a", "player_b"}:
@@ -280,7 +294,7 @@ def load_environment(
         max_turns=max_turns,
         rubric=(
             vf.Rubric(funcs=[pilot_win, recording_validity], weights=[1.0, 0.0])
-            if opponent == "scripted"
+            if opponent != "self_play"
             else vf.Rubric(funcs=[recording_validity])
         ),
     )
