@@ -1,0 +1,30 @@
+# Run: prime eval run configs/eval/xmage-real-model-pilot.toml
+# Use the compatible CLI stack pinned in Prime lifecycle CI; CLI -m does not override TOML.
+# To compare mini, change endpoint_id to "openai/gpt-4.1-mini" in a local copy.
+# Two alternating-seat fixtures are a pilot, not an unbiased win-rate estimate.
+[[eval]]
+env_id = "xmage-poc"
+endpoint_id = "openai/gpt-4.1-nano"
+endpoints_path = "../endpoints.toml"
+num_examples = 2
+rollouts_per_example = 1
+max_concurrent = 1
+max_retries = 0
+max_tokens = 256
+temperature = 0.0
+# Verifiers applies this to the entire rollout, not to each model request.
+timeout = 7200
+save_results = true
+disable_env_server = true
+disable_tui = true
+state_columns = ["pilot_seat", "game_result", "recording_audit", "recording_path", "auto_passed_priority", "trajectory"]
+
+[eval.env_args]
+num_games = 2
+seed = 7
+opponent = "scripted"
+pilot_seat = "alternate"
+# Bound spend even if a model never advances the game. Truncation is not a loss.
+max_turns = 256
+history_decisions = 1
+auto_pass_priority = true
