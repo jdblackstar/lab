@@ -19,3 +19,5 @@ pilot_seat = "alternate"
 max_turns = 4000
 history_decisions = 4
 auto_pass_priority = true
+# Audit every decision projection; choose full_audit for restoration/counterfactual checks.
+recording_mode = "benchmark"

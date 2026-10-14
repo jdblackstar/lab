@@ -2,6 +2,7 @@ package lab.xmage;
 
 import com.google.gson.*;
 import mage.MageObject;
+import mage.abilities.Ability;
 import mage.abilities.ActivatedAbility;
 import mage.cards.Card;
 import mage.cards.CardSetInfo;
@@ -20,6 +21,7 @@ import mage.player.human.HumanPlayer;
 import mage.player.human.PlayerResponse;
 import mage.players.Player;
 import mage.players.net.UserData;
+import mage.util.CardUtil;
 import mage.util.RandomUtil;
 import mage.view.GameView;
 
@@ -68,11 +70,16 @@ public final class PocMain {
     static final class BridgePlayer extends HumanPlayer {
         final transient PlayerResponse reply;
         final transient Channel channel;
-        BridgePlayer(String name, Channel channel) { this(name, channel, new PlayerResponse()); }
-        private BridgePlayer(String name, Channel channel, PlayerResponse reply) {
+        final long seed;
+        final Map<UUID, Integer> cardOrder = new HashMap<>();
+        long deckSeed;
+        long shuffles;
+        BridgePlayer(String name, Channel channel, long seed) { this(name, channel, seed, new PlayerResponse()); }
+        private BridgePlayer(String name, Channel channel, long seed, PlayerResponse reply) {
             super(new HumanPlayer(name, RangeOfInfluence.ALL, 1), reply);
             this.reply = reply;
             this.channel = channel;
+            this.seed = seed;
             UserData user = UserData.getDefaultUserDataView();
             user.setAutoTargetLevel(0);
             // Despite the "Skip" name, true enables a stop: HumanPlayer.checkPassStep
@@ -90,8 +97,47 @@ public final class PocMain {
             user.getUserSkipPrioritySteps().getOpponentTurn().setEndOfTurn(true);
             setUserData(user);
         }
-        private BridgePlayer(BridgePlayer p) { super(p); reply = p.reply; channel = p.channel; }
+        private BridgePlayer(BridgePlayer p) {
+            super(p); reply = p.reply; channel = p.channel; seed = p.seed; deckSeed = p.deckSeed; shuffles = p.shuffles;
+            cardOrder.putAll(p.cardOrder);
+        }
         @Override public BridgePlayer copy() { return new BridgePlayer(this); }
+        @Override public void restore(Player p) {
+            super.restore(p);
+            BridgePlayer saved = (BridgePlayer) p;
+            deckSeed = saved.deckSeed; shuffles = saved.shuffles;
+        }
+        @Override public void useDeck(Deck deck, Game game) {
+            super.useDeck(deck, game);
+            // Deck.getMaindeckCards() collects into an unordered HashSet upstream.
+            Set<Card> ordered = new LinkedHashSet<>();
+            List<String> names = new ArrayList<>();
+            cardOrder.clear();
+            for (Card card : deck.getCards()) if (!card.isExtraDeckCard()) {
+                cardOrder.put(card.getId(), cardOrder.size());
+                ordered.add(card); names.add(card.getName());
+            }
+            library.clear();
+            library.addAll(ordered, game);
+            // Deck identity, not seat or UUID, keys an independent shuffle stream.
+            deckSeed = seed ^ UUID.nameUUIDFromBytes(JSON.toJson(names).getBytes(StandardCharsets.UTF_8)).getLeastSignificantBits();
+            shuffles = 0;
+        }
+        @Override public void shuffleLibrary(Ability source, Game game) {
+            // Preserve PlayerImpl's replacement check, logging and shuffle event.
+            if (!game.replaceEvent(GameEvent.getEvent(GameEvent.EventType.SHUFFLE_LIBRARY, playerId, source, playerId))) {
+                List<Card> shuffled = library.getCards(game);
+                // Mulligans return an unordered hand to the library. Canonicalize
+                // every shuffle, not only the opening deck, for registered cards.
+                shuffled.sort(Comparator.comparingInt(c -> cardOrder.getOrDefault(c.getId(), Integer.MAX_VALUE)));
+                long shuffleSeed = UUID.nameUUIDFromBytes((deckSeed + ":" + shuffles++).getBytes(StandardCharsets.UTF_8)).getLeastSignificantBits();
+                Collections.shuffle(shuffled, new Random(shuffleSeed));
+                library.clear();
+                library.addAll(new LinkedHashSet<>(shuffled), game);
+                if (!game.isSimulation()) game.informPlayers(getLogName() + "'s library is shuffled" + CardUtil.getSourceLogName(game, source));
+                game.fireEvent(GameEvent.getEvent(GameEvent.EventType.LIBRARY_SHUFFLED, playerId, source, playerId));
+            }
+        }
         @Override protected void waitForResponse(Game game) {
             reply.resetAnswers();
             JsonObject action = channel.request(game, this);
@@ -133,17 +179,22 @@ public final class PocMain {
 
     static final class Recorder implements Closeable {
         final Path root;
+        final boolean fullAudit;
         final BufferedWriter states;
         final BufferedWriter decisions;
+        final BufferedWriter events;
         final Map<UUID, BufferedWriter> views = new LinkedHashMap<>();
         long sequence = 0;
         boolean capturing;
-        Recorder(Path root, Game game) throws IOException {
+        Recorder(Path root, Game game, String mode) throws IOException {
             this.root = root;
-            Files.createDirectories(root.resolve("internal/checkpoints"));
+            fullAudit = mode.equals("full_audit");
+            Files.createDirectories(root.resolve("internal"));
+            if (fullAudit) Files.createDirectories(root.resolve("internal/checkpoints"));
             Files.createDirectories(root.resolve("players"));
             states = Files.newBufferedWriter(root.resolve("internal/states.jsonl"), StandardCharsets.UTF_8);
             decisions = Files.newBufferedWriter(root.resolve("internal/decisions.jsonl"), StandardCharsets.UTF_8);
+            events = Files.newBufferedWriter(root.resolve("internal/events.jsonl"), StandardCharsets.UTF_8);
             for (Player p : game.getPlayers().values()) {
                 views.put(p.getId(), Files.newBufferedWriter(root.resolve("players/" + p.getName() + ".jsonl"), StandardCharsets.UTF_8));
             }
@@ -152,25 +203,30 @@ public final class PocMain {
             if (capturing || g.isSimulation()) return sequence;
             capturing = true;
             try {
+                if (reason.equals("event")) line(events, event);
+                // Benchmark privacy audits retain every decision's engine projection,
+                // not event/update projections or restorable engine graphs.
+                if (!fullAudit && (reason.equals("event") || reason.equals("update"))) return sequence;
                 long seq = ++sequence;
-                String file = String.format("checkpoints/%06d.game.gz", seq);
-                // Preserve the entire serializable engine graph, rather than treating a
-                // selective JSON projection as a complete engine checkpoint.
-                try (ObjectOutputStream out = new ObjectOutputStream(new GZIPOutputStream(
-                    Files.newOutputStream(root.resolve("internal").resolve(file))))) { out.writeObject(g); }
                 JsonObject state = summary(g);
                 state.addProperty("sequence", seq);
                 state.addProperty("reason", reason);
                 state.add("event", event);
-                state.addProperty("checkpoint", file);
-                state.addProperty("sha256", hash(root.resolve("internal").resolve(file)));
+                if (fullAudit) {
+                    String file = String.format("checkpoints/%06d.game.gz", seq);
+                    // Only full_audit claims complete, restorable engine graphs.
+                    try (ObjectOutputStream out = new ObjectOutputStream(new GZIPOutputStream(
+                        Files.newOutputStream(root.resolve("internal").resolve(file))))) { out.writeObject(g); }
+                    state.addProperty("checkpoint", file);
+                    state.addProperty("sha256", hash(root.resolve("internal").resolve(file)));
+                }
                 line(states, state);
                 return seq;
             } catch (Exception e) { throw new IllegalStateException("Recording failed; discard this run", e); }
             finally { capturing = false; }
         }
         @Override public void close() throws IOException {
-            states.close(); decisions.close();
+            states.close(); decisions.close(); events.close();
             for (BufferedWriter w : views.values()) w.close();
         }
     }
@@ -208,6 +264,7 @@ public final class PocMain {
     static final class Channel {
         PlayerQueryEvent pending;
         Recorder recorder;
+        final Map<UUID, Integer> objectOrder = new HashMap<>();
         final BufferedReader input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
         int decision;
 
@@ -220,7 +277,28 @@ public final class PocMain {
                 if (pending == null || !pending.getPlayerId().equals(p.getId())) throw new IllegalStateException("Missing query");
                 PlayerQueryEvent q = pending;
                 JsonObject view = JsonParser.parseString(new GameView(g.getState(), g, p.getId(), null).toJson()).getAsJsonObject();
+                stripClock(view);
                 JsonArray actions = actions(q, g, p, view);
+                // Hash iteration must not decide which indexed action is offered first.
+                List<JsonElement> ordered = new ArrayList<>();
+                for (JsonElement action : actions) ordered.add(action);
+                ordered.sort(Comparator.comparingInt((JsonElement e) -> {
+                        String kind = e.getAsJsonObject().get("kind").getAsString();
+                        return kind.equals("pass") || kind.equals("cancel") ? 1 : 0;
+                    }).thenComparing(e -> e.getAsJsonObject().get("kind").getAsString())
+                    // Keep suggested allocation order; only UUID choices need a
+                    // card-name/registration-order tie-break instead of hash order.
+                    .thenComparing(e -> e.getAsJsonObject().get("response_type").getAsString().equals("uuid")
+                        ? e.getAsJsonObject().get("label").getAsString() : "")
+                    .thenComparingInt(e -> {
+                        JsonObject a = e.getAsJsonObject();
+                        return a.get("response_type").getAsString().equals("uuid")
+                            ? objectOrder.getOrDefault(UUID.fromString(a.get("value").getAsString()), Integer.MAX_VALUE) : 0;
+                    }));
+                actions = new JsonArray();
+                for (JsonElement action : ordered) {
+                    action.getAsJsonObject().addProperty("index", actions.size()); actions.add(action);
+                }
                 if (actions.size() == 0) throw new IllegalStateException("No actions for " + q.getQueryType());
                 String message = q.getMessage();
                 if (message == null && q.getOptions() != null) message = String.valueOf(q.getOptions().getOrDefault("header", q.getOptions().getOrDefault("title", "Choose an allocation")));
@@ -481,6 +559,10 @@ public final class PocMain {
     static void verifyCheckpoints(Path output) throws Exception {
         int count = 0;
         Path internal = output.resolve("internal");
+        JsonObject manifest = JsonParser.parseString(new String(Files.readAllBytes(internal.resolve("manifest.json")), StandardCharsets.UTF_8)).getAsJsonObject();
+        if (manifest.has("recording_mode") && !manifest.get("recording_mode").getAsString().equals("full_audit")) {
+            throw new IllegalArgumentException("Checkpoint restoration/counterfactual audit requires recording_mode=full_audit; benchmark only retains decision projections");
+        }
         try (BufferedReader input = Files.newBufferedReader(internal.resolve("states.jsonl"), StandardCharsets.UTF_8)) {
             String line;
             while ((line = input.readLine()) != null) {
@@ -537,14 +619,19 @@ public final class PocMain {
         }
         Path output = Paths.get(args[0]);
         long seed = Long.parseLong(args[1]);
+        String mode = args.length > 4 ? args[4] : "full_audit";
+        if (!mode.equals("full_audit") && !mode.equals("benchmark")) throw new IllegalArgumentException("Unknown recording mode: " + mode);
         RandomUtil.setSeed(seed);
         Channel channel = new Channel();
         RecordedGame game = new RecordedGame();
         GameOptions options = new GameOptions();
         options.rollbackTurnsAllowed = false;
         game.setGameOptions(options);
-        BridgePlayer a = new BridgePlayer("player_a", channel), b = new BridgePlayer("player_b", channel);
+        BridgePlayer a = new BridgePlayer("player_a", channel, seed), b = new BridgePlayer("player_b", channel, seed);
         Deck deckA = deck(Paths.get(args[2]), a), deckB = deck(Paths.get(args[3]), b);
+        channel.objectOrder.put(a.getId(), 0); channel.objectOrder.put(b.getId(), 1);
+        for (Card c : deckA.getCards()) channel.objectOrder.put(c.getId(), channel.objectOrder.size());
+        for (Card c : deckB.getCards()) channel.objectOrder.put(c.getId(), channel.objectOrder.size());
         MatchOptions matchOptions = new MatchOptions("POC", "Two Player Duel", false);
         matchOptions.setWinsNeeded(1);
         TwoPlayerMatch match = new TwoPlayerMatch(matchOptions);
@@ -557,15 +644,19 @@ public final class PocMain {
         game.addPlayer(a, deckA);
         game.addPlayer(b, deckB);
         game.addPlayerQueryEventListener(e -> { if (e.getQueryType() != PlayerQueryEvent.QueryType.PERSONAL_MESSAGE) channel.pending = e; });
-        try (Recorder recorder = new Recorder(output, game)) {
+        try (Recorder recorder = new Recorder(output, game, mode)) {
             channel.recorder = recorder;
             game.recorder = recorder;
-            Files.write(output.resolve("internal/manifest.json"), JSON.toJson(object("schema_version", 1,
+            Files.write(output.resolve("internal/manifest.json"), JSON.toJson(object("schema_version", 2,
                 "xmage_revision", REVISION, "seed", seed, "deck_a", Files.readAllLines(Paths.get(args[2])),
                 "deck_b", Files.readAllLines(Paths.get(args[3])), "players", Arrays.asList(a.getId(), b.getId()),
-                "checkpoint_format", "gzip Java serialization of complete Game graph; transport fields are transient",
+                "recording_mode", mode,
+                "privacy_audit", "all delivered observations/actions compared to paired decision projections; hidden IDs and public counts checked; fixture-limited",
+                "checkpoint_format", recorder.fullAudit ? "gzip Java serialization of complete Game graph; transport fields are transient" : "none; decision projections are not restorable engine checkpoints",
+                "determinism", "ordered deck input; per-deck seed and shuffle ordinal; stable known-card action ordering; UUIDs, clocks and engine internals are not deterministic",
+                "shuffle_algorithm", "java.util.Collections.shuffle / Random(low64(nameUUID(deck_seed + ':' + shuffle_ordinal))); deck_seed = seed XOR low64(nameUUID(JSON ordered card names)); ordinal starts at 0",
                 "card_module", "org.mage:mage-sets:1.4.62", "catalog_names", CardCatalog.DEFINITIONS.size(),
-                "coverage", "two 60-card decks; limited query adapter; snapshots at game events, updates, decisions, start and end")).getBytes(StandardCharsets.UTF_8));
+                "coverage", recorder.fullAudit ? "two 60-card decks; limited query adapter; full checkpoints at game events, updates, decisions, start and end" : "two 60-card decks; limited query adapter; JSON projections at every decision, start and end; compact event log; no restoration or hidden-state counterfactual audit")).getBytes(StandardCharsets.UTF_8));
             recorder.capture(game, "start", new JsonObject());
             game.start(a.getId());
             recorder.capture(game, "end", new JsonObject());

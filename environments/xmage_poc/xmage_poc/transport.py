@@ -22,7 +22,10 @@ class GameSession:
         java_bin: str | None = None,
         deck_a: Path | None = None,
         deck_b: Path | None = None,
+        recording_mode: str = "full_audit",
     ):
+        if recording_mode not in {"full_audit", "benchmark"}:
+            raise ValueError("recording_mode must be full_audit or benchmark")
         self.output = output.resolve()
         self.output.mkdir(parents=True, exist_ok=False)
         java = java_bin or os.environ.get("XMAGE_JAVA_BIN") or shutil.which("java")
@@ -59,6 +62,7 @@ class GameSession:
                 str(self.output),
                 str(seed),
                 *(str(path) for path in deck_paths),
+                recording_mode,
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -162,10 +166,11 @@ class PilotSession:
         deck_b: Path | None = None,
         pilot_seat: str = "player_a",
         auto_forced: bool = False,
+        recording_mode: str = "full_audit",
     ):
         if pilot_seat not in {"player_a", "player_b"}:
             raise ValueError("pilot_seat must be player_a or player_b")
-        self.game = GameSession(output, seed, java_bin, deck_a, deck_b)
+        self.game = GameSession(output, seed, java_bin, deck_a, deck_b, recording_mode)
         self.output = self.game.output
         self.deck_contexts = self.game.deck_contexts
         self.pilot_seat = pilot_seat
@@ -220,11 +225,21 @@ def run(
     deck_b: Path | None = None,
     pilot_seat: str | None = None,
     auto_forced: bool = False,
+    recording_mode: str = "full_audit",
 ) -> dict:
     session = (
-        PilotSession(output, seed, java_bin, deck_a, deck_b, pilot_seat, auto_forced)
+        PilotSession(
+            output,
+            seed,
+            java_bin,
+            deck_a,
+            deck_b,
+            pilot_seat,
+            auto_forced,
+            recording_mode,
+        )
         if pilot_seat
-        else GameSession(output, seed, java_bin, deck_a, deck_b)
+        else GameSession(output, seed, java_bin, deck_a, deck_b, recording_mode)
     )
     try:
         if interactive:
@@ -321,6 +336,12 @@ def main():
     parser.add_argument("--deck-a", type=Path)
     parser.add_argument("--deck-b", type=Path)
     parser.add_argument(
+        "--recording-mode",
+        choices=["full_audit", "benchmark"],
+        default="full_audit",
+        help="benchmark audits every decision projection but omits restorable checkpoints",
+    )
+    parser.add_argument(
         "--pilot-seat",
         choices=["player_a", "player_b"],
         help="Control one seat against scripted_v1",
@@ -342,6 +363,7 @@ def main():
                 args.deck_b,
                 args.pilot_seat,
                 args.auto_forced,
+                args.recording_mode,
             ),
             indent=2,
         )
