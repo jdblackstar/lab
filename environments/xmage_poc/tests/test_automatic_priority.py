@@ -11,7 +11,7 @@ from xmage_poc.environment import DECK_CONTEXT_MARKER
 @pytest.mark.parametrize("opponent", ["self_play", "scripted"])
 @pytest.mark.parametrize("auto_pass_priority", [True, False])
 def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
-    tmp_path, monkeypatch, opponent, auto_pass_priority
+    tmp_path, monkeypatch, stub_bridge_runtime, opponent, auto_pass_priority
 ):
     def prompt(number, player, message, actions, query_type="SELECT", stack=None):
         return {
@@ -99,6 +99,7 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
         "_prompted_decision": None,
         "trajectory": [],
         "auto_passed_priority": 0,
+        "model_action_attempts": 0,
     }
 
     async def exercise():
@@ -144,5 +145,5 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
     assert state["recording_audit"]["privacy_passed"]
 
 
-def test_environment_enables_automatic_priority_by_default():
+def test_environment_enables_automatic_priority_by_default(stub_bridge_runtime):
     assert load_environment(java_bin="/bin/false").auto_pass_priority

@@ -83,6 +83,8 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
     decisions = read_lines(output / "internal/decisions.jsonl")
     require(states and decisions, "No recorded gameplay")
     manifest = json.loads((output / "internal/manifest.json").read_text())
+    mode = manifest.get("recording_mode", "full_audit")
+    require(mode in {"full_audit", "benchmark"}, "Unknown recording mode")
     # Older recordings predate static deck contexts. Audit the added files when
     # present, while retaining support for those historical native transcripts.
     for seat, key in (("player_a", "deck_a"), ("player_b", "deck_b")):
@@ -95,16 +97,40 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
             )
     by_sequence = {s["sequence"]: s for s in states}
     require(len(by_sequence) == len(states), "Duplicate state sequence")
+    if "starting_player" in manifest:
+        # Benchmark recordings omit event snapshots such as BEGIN_TURN; every
+        # snapshot in turn 1 with an active player names the starting player.
+        first_turn = next(
+            (s for s in states if s["turn"] == 1 and s["active_player"]), None
+        )
+        require(first_turn is not None or not require_finished, "No turn began")
+        if first_turn is not None:
+            actual = next(
+                p["name"]
+                for p in first_turn["players"]
+                if p["id"] == first_turn["active_player"]
+            )
+            require(actual == manifest["starting_player"], "Starting player differs")
     require(
         [s["sequence"] for s in states] == list(range(1, len(states) + 1)),
         "Recording invariant failed",
     )
     for state in states:
-        checkpoint = output / "internal" / state["checkpoint"]
-        require(
-            hashlib.sha256(checkpoint.read_bytes()).hexdigest() == state["sha256"],
-            "Checkpoint corrupt",
-        )
+        if mode == "full_audit":
+            checkpoint = output / "internal" / state["checkpoint"]
+            require(
+                hashlib.sha256(checkpoint.read_bytes()).hexdigest() == state["sha256"],
+                "Checkpoint corrupt",
+            )
+        else:
+            require(
+                "checkpoint" not in state and "sha256" not in state,
+                "Benchmark projections must not claim engine checkpoints",
+            )
+            require(
+                state["reason"] in {"start", "decision", "end"},
+                "Unexpected benchmark projection",
+            )
         require(len(state["players"]) == 2, "Recording invariant failed")
         ids = [
             c["id"]
@@ -185,16 +211,27 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
         require(result["snapshots"] == len(states), "Recording invariant failed")
         require(states[-1]["reason"] == "end", "Recording invariant failed")
         require(any(s["turn"] > 1 for s in states), "No turns were played")
+        events = (
+            read_lines(output / "internal/events.jsonl")
+            if mode == "benchmark"
+            else [s["event"] for s in states]
+        )
         require(
-            any(s["event"].get("type") == "LAND_PLAYED" for s in states),
+            any(e.get("type") == "LAND_PLAYED" for e in events),
             "No land play recorded",
         )
         require(
-            any("DAMAGE" in s["event"].get("type", "") for s in states),
+            any("DAMAGE" in e.get("type", "") for e in events),
             "No damage recorded",
         )
     return {
         "privacy_passed": True,
+        "recording_mode": mode,
+        "privacy_scope": "all delivered observations/actions vs paired decision projections; fixture-limited",
+        "checkpoint_hashes_checked": len(states) if mode == "full_audit" else 0,
+        # Python verifies projections/hashes; the separate Java verify command
+        # performs restoration and hidden-state counterfactual checks.
+        "checkpoint_restoration_checked": False,
         "decisions": len(decisions),
         "snapshots": len(states),
         "players": len(observed_players),
