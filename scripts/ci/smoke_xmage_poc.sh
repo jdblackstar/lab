@@ -10,7 +10,7 @@ prime env install xmage-poc --no-upgrade --plain
 python -c "import xmage_poc; xmage_poc.load_environment()"
 XMAGE_INTEGRATION=1 python -m pytest environments/xmage_poc/tests -q
 python scripts/smoke_xmage_poc_eval.py --protocol-only --output "environments/xmage_poc/outputs/ci-protocol"
-python scripts/smoke_xmage_poc_eval.py --protocol-only --opponent scripted --pilot-seat player_b --output "environments/xmage_poc/outputs/ci-pilot-protocol"
+python scripts/smoke_xmage_poc_eval.py --protocol-only --opponent scripted --pilot-seat player_b --recording-mode benchmark --output "environments/xmage_poc/outputs/ci-pilot-protocol"
 
 uv build environments/xmage_poc --out-dir environments/xmage_poc/dist
 # Check both distribution formats, then load the wheel outside the checkout.

@@ -78,6 +78,7 @@ class XMageEnvironment(vf.MultiTurnEnv):
         deck_b: Path | None,
         opponent: str,
         auto_pass_priority: bool,
+        recording_mode: str,
         **kwargs,
     ):
         self.output_dir = output_dir
@@ -87,6 +88,7 @@ class XMageEnvironment(vf.MultiTurnEnv):
         self.deck_b = deck_b
         self.opponent = opponent
         self.auto_pass_priority = auto_pass_priority
+        self.recording_mode = recording_mode
         super().__init__(**kwargs)
 
     async def setup_state(self, state):
@@ -107,6 +109,7 @@ class XMageEnvironment(vf.MultiTurnEnv):
                 self.java_bin,
                 self.deck_a,
                 self.deck_b,
+                recording_mode=self.recording_mode,
                 **extra,
             )
             state["_session"] = session
@@ -236,10 +239,13 @@ def load_environment(
     opponent: str = "self_play",
     pilot_seat: str = "alternate",
     auto_pass_priority: bool = True,
+    recording_mode: str = "full_audit",
 ) -> vf.Environment:
-    """Use self_play for protocol checks or scripted for a pilot-win baseline."""
+    """Use scripted for pilot wins; benchmark keeps privacy projections, not checkpoints."""
     if num_games < 1 or max_turns < 1 or history_decisions < 1:
         raise ValueError("num_games, max_turns and history_decisions must be positive")
+    if recording_mode not in {"full_audit", "benchmark"}:
+        raise ValueError("recording_mode must be full_audit or benchmark")
     if opponent not in {"self_play", "scripted"}:
         raise ValueError("opponent must be self_play or scripted")
     if type(auto_pass_priority) is not bool:
@@ -277,6 +283,7 @@ def load_environment(
         deck_b=Path(deck_b).resolve() if deck_b else None,
         opponent=opponent,
         auto_pass_priority=auto_pass_priority,
+        recording_mode=recording_mode,
         max_turns=max_turns,
         rubric=(
             vf.Rubric(funcs=[pilot_win, recording_validity], weights=[1.0, 0.0])

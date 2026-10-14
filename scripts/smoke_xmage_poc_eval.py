@@ -27,6 +27,9 @@ def main():
     parser.add_argument("--java-bin", default=os.environ.get("XMAGE_JAVA_BIN"))
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
+        "--recording-mode", choices=["full_audit", "benchmark"], default="full_audit"
+    )
+    parser.add_argument(
         "--opponent", choices=["self_play", "scripted"], default="self_play"
     )
     parser.add_argument(
@@ -121,6 +124,7 @@ def main():
         "opponent": args.opponent,
         "pilot_seat": args.pilot_seat,
         "auto_pass_priority": not args.no_auto_pass_priority,
+        "recording_mode": args.recording_mode,
     }
     if args.java_bin:
         env_args["java_bin"] = args.java_bin
