@@ -138,8 +138,9 @@ def test_real_game_private_views_and_engine_roundtrip(
         check=True,
         capture_output=True,
         text=True,
-        # Native AI checkpoints include its simulation graph, not just two humans.
-        timeout=300,
+        # Native AI checkpoints include its simulation graph, not just two humans;
+        # a long AI game on the denser decks took ~6 min to restore on 4 cores.
+        timeout=900 if opponent == "xmage_mad" else 300,
     )
     result = json.loads(restored.stdout)
     assert result["checkpoints_restored"] == audit["snapshots"]
