@@ -14,6 +14,7 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from math import sqrt
 from pathlib import Path
+from threading import Lock
 
 from .decklist import deck_context
 from .environment import load_environment
@@ -82,6 +83,8 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(ROOT / "runtime/build.json", output / "runtime-build.json")
+    records = []
+    log_lock = Lock()
 
     def exercise(case):
         index, row = case
@@ -105,25 +108,27 @@ def main():
             "game_result": result,
             "recording_audit": audit,
         }
-        if args.discard_recordings:
-            shutil.rmtree(recording)
-        else:
+        if not args.discard_recordings:
             record["recording_path"] = str(recording)
-        return record
-
-    records = []
-    with (
-        (output / "games.jsonl").open("w") as log,
-        ThreadPoolExecutor(max_workers=args.workers) as executor,
-    ):
-        for record in executor.map(exercise, enumerate(environment.dataset)):
-            records.append(record)
+        # Persist in the worker: an earlier case may fail before map yields this one.
+        with log_lock:
             log.write(json.dumps(record) + "\n")
             log.flush()
+            records.append(record)
             print(
                 f"Audited {len(records)}/{len(environment.dataset)} games",
                 flush=True,
             )
+        if args.discard_recordings:
+            shutil.rmtree(recording)
+
+    # Keep the log open until all running workers finish, including on failure.
+    with (
+        (output / "games.jsonl").open("w") as log,
+        ThreadPoolExecutor(max_workers=args.workers) as executor,
+    ):
+        for _ in executor.map(exercise, enumerate(environment.dataset)):
+            pass
 
     summary = {
         "controller": "scripted_v1 vs scripted_v1",

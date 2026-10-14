@@ -1,5 +1,10 @@
+import json
+import sys
+from threading import Event
+from types import SimpleNamespace
+
 import pytest
-from xmage_poc import load_environment
+from xmage_poc import baseline, load_environment
 from xmage_poc.baseline import summarize
 from xmage_poc.environment import pilot_win
 
@@ -31,7 +36,7 @@ def test_draw_or_interrupted_game_is_not_a_win():
     assert pilot_win(state) == 0.0
 
 
-def test_balanced_dataset_crosses_all_factors_within_each_seed():
+def test_balanced_dataset_crosses_all_factors_within_each_seed(stub_bridge_runtime):
     env = load_environment(num_games=16, seed=31, java_bin="/bin/false")
     for seed in (31, 32):
         cases = [row["info"] for row in env.dataset if row["info"]["seed"] == seed]
@@ -54,7 +59,9 @@ def test_balanced_dataset_crosses_all_factors_within_each_seed():
 @pytest.mark.parametrize("seat", ["player_a", "player_b"])
 @pytest.mark.parametrize("deck", ["deck_a", "deck_b"])
 @pytest.mark.parametrize("order", ["play", "draw"])
-def test_factors_can_be_fixed_independently(tmp_path, seat, deck, order):
+def test_factors_can_be_fixed_independently(
+    tmp_path, stub_bridge_runtime, seat, deck, order
+):
     decks = [tmp_path / "fixture-a.txt", tmp_path / "fixture-b.txt"]
     for path, contents in zip(decks, ("60 Plains", "60 Mountain"), strict=True):
         path.write_text(contents)
@@ -142,3 +149,72 @@ def test_baseline_intervals_use_each_stratums_denominator_and_include_draws():
     assert strata["pilot_deck"]["deck_b"]["win_rate_ci95"] == pytest.approx(
         [0.2065493143772374, 1.0], abs=1e-12
     )
+
+
+@pytest.mark.parametrize("discard_recordings", [True, False])
+def test_baseline_preserves_audited_results_when_an_earlier_game_fails(
+    tmp_path, monkeypatch, discard_recordings
+):
+    output = tmp_path / "baseline"
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "build.json").write_text("{}")
+    monkeypatch.setattr(baseline, "ROOT", tmp_path)
+    infos = [
+        {"seed": seed, "pilot_seat": "player_b", "starting_player": "player_a"}
+        for seed in (7, 8)
+    ]
+    monkeypatch.setattr(
+        baseline,
+        "load_environment",
+        lambda **_: SimpleNamespace(
+            dataset=[{"info": info} for info in infos],
+            java_bin="/bin/false",
+            decks_for=lambda _: (None, None),
+        ),
+    )
+    audited = Event()
+    result = {
+        "players": [
+            {"name": "player_a", "won": False, "lost": True},
+            {"name": "player_b", "won": True, "lost": False},
+        ]
+    }
+    audit = {"privacy_passed": True, "decisions": 23}
+
+    def run(recording, *, seed, **_):
+        recording.mkdir()
+        if seed == 7:
+            assert audited.wait(timeout=10), "Later game never reached its audit"
+            raise RuntimeError("Injected earlier-game failure")
+        return result
+
+    def verify(_):
+        audited.set()
+        return audit
+
+    monkeypatch.setattr(baseline, "run", run)
+    monkeypatch.setattr(baseline, "verify", verify)
+    argv = ["baseline", "--output", str(output), "--workers", "2"]
+    if discard_recordings:
+        argv.append("--discard-recordings")
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(RuntimeError, match="Injected earlier-game failure"):
+        baseline.main()
+
+    records = [
+        json.loads(line) for line in (output / "games.jsonl").read_text().splitlines()
+    ]
+    expected = {
+        **infos[1],
+        "won": True,
+        "lost": False,
+        "game_result": result,
+        "recording_audit": audit,
+    }
+    recording = output / "game-0001"
+    if not discard_recordings:
+        expected["recording_path"] = str(recording)
+    assert records == [expected]
+    assert recording.exists() == (not discard_recordings)
+    assert (output / "game-0000").exists()
