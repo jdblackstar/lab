@@ -90,6 +90,7 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
         auto_pass_priority=auto_pass_priority,
         java_bin="/bin/false",
         history_decisions=1,
+        observation_format="json",
     )
     session = Session()
     state = {
@@ -97,6 +98,7 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
         "_seat_histories": {},
         "_processed_turns": 0,
         "_prompted_decision": None,
+        "starting_player": "player_a",
         "trajectory": [],
         "auto_passed_priority": 0,
         "model_action_attempts": 0,

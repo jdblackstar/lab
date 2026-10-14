@@ -15,6 +15,7 @@ from pathlib import Path
 import verifiers as vf
 from xmage_poc import load_environment
 from xmage_poc.environment import DECK_CONTEXT_MARKER
+from xmage_poc.render import render_observation
 from xmage_poc.transport import advance_action, is_pass_only_priority
 from xmage_poc.verify import read_lines, verify
 
@@ -26,6 +27,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--java-bin", default=os.environ.get("XMAGE_JAVA_BIN"))
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--observation-format", choices=["json", "text"], default="text"
+    )
     parser.add_argument(
         "--recording-mode", choices=["full_audit", "benchmark"], default="full_audit"
     )
@@ -55,9 +59,12 @@ def main():
         help="Exercise parse recovery, index recovery, and exhausted-attempt fallback",
     )
     args = parser.parse_args()
+    other_seat = "player_b" if args.pilot_seat == "player_a" else "player_a"
+    starter = args.pilot_seat if args.pilot_play_order == "play" else other_seat
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     requests = []
+    http_messages = []
     request_contexts = []
     attempts = {}
 
@@ -80,14 +87,43 @@ def main():
                     content = message["content"]
                     if isinstance(content, list):
                         content = "".join(p.get("text", "") for p in content)
-                    value = json.loads(content)
-                    if "actions" in value:
-                        observations.append(value)
-                    else:
+                    try:
+                        value = json.loads(content)
+                    except ValueError:
+                        value = None
+                    if isinstance(value, dict) and "error" in value:
                         # Corrections must refer only to the preceding private
                         # observation, never to the other seat's pending choice.
-                        assert "error" in value
                         assert value["decision"] == observations[-1]["decision"]
+                        continue
+                    if args.observation_format == "json":
+                        obs = value
+                    else:
+                        # The scripted endpoint isn't an LLM/parser benchmark.
+                        # Resolve the decision to its public player transcript,
+                        # then verify the actual HTTP text before choosing.
+                        header = content.splitlines()[0]
+                        number, seat = header.removeprefix("Decision ").split(
+                            " | You: "
+                        )
+                        game = next((output / "games").iterdir())
+                        obs = next(
+                            o
+                            for o in read_lines(game / "players" / f"{seat}.jsonl")
+                            if o["decision"] == int(number)
+                        )
+                        assert content == render_observation(
+                            obs,
+                            pilot_play_order="play" if seat == starter else "draw",
+                            starting_player=starter,
+                        )
+                    observations.append(obs)
+                http_messages.append(
+                    [
+                        {"role": m["role"], "content": m["content"]}
+                        for m in payload["messages"]
+                    ]
+                )
                 actor = observations[-1]["player_id"]
                 systems = [m for m in payload["messages"] if m["role"] == "system"]
                 assert len(systems) == 1
@@ -170,6 +206,7 @@ def main():
         "pilot_deck": args.pilot_deck,
         "pilot_play_order": args.pilot_play_order,
         "auto_pass_priority": not args.no_auto_pass_priority,
+        "observation_format": args.observation_format,
         "recording_mode": args.recording_mode,
     }
     if args.java_bin:
@@ -268,6 +305,9 @@ def main():
     games = list((output / "games").iterdir())
     assert len(games) == 1
     audit = verify(games[0])
+    assert http_messages == [
+        p["messages"] for p in read_lines(games[0] / "model-prompts.jsonl")
+    ], "Recorded prompts differ from actual HTTP model inputs"
     decisions = read_lines(games[0] / "internal/decisions.jsonl")
     if args.opponent != "self_play":
         decisions = [

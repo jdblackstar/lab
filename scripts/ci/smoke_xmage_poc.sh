@@ -10,6 +10,7 @@ prime env install xmage-poc --no-upgrade --plain
 python -c "import xmage_poc; xmage_poc.load_environment()"
 XMAGE_INTEGRATION=1 python -m pytest environments/xmage_poc/tests -q
 python scripts/smoke_xmage_poc_eval.py --protocol-only --output "environments/xmage_poc/outputs/ci-protocol"
+python scripts/smoke_xmage_poc_eval.py --protocol-only --observation-format json --inject-invalid-replies --output "environments/xmage_poc/outputs/ci-json-protocol"
 python scripts/smoke_xmage_poc_eval.py --protocol-only --opponent scripted --pilot-seat player_b --recording-mode benchmark --inject-invalid-replies --output "environments/xmage_poc/outputs/ci-pilot-protocol"
 for opponent in random xmage_mad; do
   python scripts/smoke_xmage_poc_eval.py --protocol-only --opponent "$opponent" --pilot-seat player_b --output "environments/xmage_poc/outputs/ci-$opponent-protocol"

@@ -7,6 +7,12 @@ import json
 from pathlib import Path
 
 from .decklist import deck_context
+from .render import (
+    TEXT_INSTRUCTIONS,
+    glossary_text,
+    public_card_rules,
+    render_observation,
+)
 
 
 def require(condition, message):
@@ -76,6 +82,158 @@ def audit_observation(obs: dict, state: dict) -> None:
         not view["opponentHands"] and (not view["watchedHands"]),
         "Recording invariant failed",
     )
+
+
+# Corrections are fixed controller strings; nothing from the game state but
+# the decision number and an offered fallback index may appear in them.
+CORRECTION_TEXT = {
+    "error": {
+        "Your reply could not be parsed. Follow the response format in the system message.",
+        "The selected action is not offered for this decision.",
+    },
+    "instruction": {
+        "Choose an offered index from the unchanged observation above.",
+        "Attempt limit reached; the fallback action was submitted.",
+    },
+}
+
+
+def correction(content: str) -> dict | None:
+    """Return a controller correction, or None for an observation message."""
+    try:
+        value = json.loads(content)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) and "error" in value else None
+
+
+def audit_model_prompts(output: Path, decisions: list[dict], controller: dict) -> int:
+    """Reconstruct full inference inputs from audited seat observations.
+
+    Every inference (including invalid-reply retries) is recorded. User messages
+    must be this seat's own rendered observations, in order, or fixed-schema
+    corrections for a decision shown in that prompt. Assistant messages are the
+    model's own replies and are not reconstructed.
+
+    Public play/draw metadata is the only extra input; restrict it to the player
+    roster and play/draw enum. No free-form state strings may enter the prompt.
+    """
+    from .environment import DECK_CONTEXT_MARKER, SYSTEM
+    from .transport import is_pass_only_priority
+
+    expected = [
+        d
+        for d in decisions
+        if (
+            controller["opponent"] == "self_play"
+            or d["observation"]["player"] == controller["pilot_seat"]
+        )
+        and not (
+            controller["auto_pass_priority"] and is_pass_only_priority(d["observation"])
+        )
+    ]
+    prompts = read_lines(output / "model-prompts.jsonl")
+    covered = [
+        p["decision"]
+        for i, p in enumerate(prompts)
+        if i == 0 or p["decision"] != prompts[i - 1]["decision"]
+    ]
+    require(
+        covered == [d["decision"] for d in expected],
+        "Model prompt coverage differs from model decisions",
+    )
+    by_decision = {d["decision"]: d for d in expected}
+    seen = {}
+    glossaries = {}
+    rendered = {}
+    for prompt in prompts:
+        decision = by_decision[prompt["decision"]]
+        obs = decision["observation"]
+        require(prompt["player"] == obs["player"], "Prompt sent to the wrong seat")
+        order, starter = prompt["pilot_play_order"], prompt["starting_player"]
+        roster = {p["playerId"]: p["name"] for p in obs["view"]["players"]}
+        require(order in {None, "play", "draw"}, "Invalid public play/draw factor")
+        require(
+            starter is None or starter in {*roster, *roster.values()},
+            "Invalid public starting player",
+        )
+        if starter is not None and order is not None:
+            own = starter in {obs["player"], obs["player_id"]}
+            require(
+                order == ("play" if own else "draw"), "Inconsistent play/draw factors"
+            )
+        history = seen.setdefault(obs["player_id"], [])
+        if not history or history[-1]["decision"] != obs["decision"]:
+            history.append(obs)
+            system = SYSTEM
+            if controller["observation_format"] == "text":
+                glossary = glossaries.setdefault(obs["player_id"], {})
+                glossary.update(public_card_rules(obs))
+                system += TEXT_INSTRUCTIONS + glossary_text(glossary)
+                text = render_observation(
+                    obs, pilot_play_order=order, starting_player=starter
+                )
+            else:
+                require(
+                    controller["observation_format"] == "json",
+                    "Unknown observation format",
+                )
+                text = json.dumps(obs)
+            context = json.loads(
+                (output / "players" / f"{obs['player']}.context.json").read_text()
+            )
+            system += DECK_CONTEXT_MARKER + json.dumps(context)
+            rendered[obs["decision"]] = (system, text)
+        system, _ = rendered[obs["decision"]]
+        messages = prompt["messages"]
+        require(
+            messages[0] == {"role": "system", "content": system},
+            "Rendered system prompt differs from audited seat context",
+        )
+        window = [o["decision"] for o in history[-controller["history_decisions"] :]]
+        shown = []
+        for message in messages[1:]:
+            role, content = message["role"], message["content"]
+            if role == "assistant":
+                require(isinstance(content, str), "Invalid model history reply")
+                continue
+            require(role == "user", "Unexpected prompt message role")
+            fix = correction(content)
+            if fix is not None:
+                offered = (
+                    {
+                        a["index"]
+                        for a in by_decision[shown[-1]]["observation"]["actions"]
+                    }
+                    if shown
+                    else set()
+                )
+                require(
+                    bool(shown)
+                    and fix["decision"] == shown[-1]
+                    and set(fix) - {"fallback_action"}
+                    == {"error", "decision", "attempts_remaining", "instruction"}
+                    and all(fix[k] in v for k, v in CORRECTION_TEXT.items())
+                    and type(fix["attempts_remaining"]) is int
+                    and fix.get("fallback_action", next(iter(offered), None))
+                    in offered,
+                    "Correction is not a fixed notice for the preceding observation",
+                )
+                continue
+            require(
+                len(shown) < len(window) and content == rendered[window[len(shown)]][1],
+                "Rendered model prompt differs from audited observation/history",
+            )
+            shown.append(window[len(shown)])
+        require(
+            shown == window,
+            "Model prompt history differs from its seat's recent decisions",
+        )
+        require(
+            messages[-1]["role"] == "user",
+            "Model prompt does not end with an observation or correction",
+        )
+    return len(prompts)
 
 
 def verify(output: Path, *, require_finished: bool = True) -> dict:
@@ -224,7 +382,7 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
             any("DAMAGE" in e.get("type", "") for e in events),
             "No damage recorded",
         )
-    return {
+    audit = {
         "privacy_passed": True,
         "recording_mode": mode,
         "privacy_scope": "all delivered observations/actions vs paired decision projections; fixture-limited",
@@ -236,6 +394,14 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
         "snapshots": len(states),
         "players": len(observed_players),
     }
+    controller_path = output / "model-controller.json"
+    if controller_path.exists():
+        controller = json.loads(controller_path.read_text())
+        # Preserve historical raw recordings that predate renderer logging.
+        if "observation_format" in controller:
+            audit["model_prompts"] = audit_model_prompts(output, decisions, controller)
+            audit["model_prompt_privacy_passed"] = True
+    return audit
 
 
 if __name__ == "__main__":

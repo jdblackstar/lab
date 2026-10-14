@@ -11,6 +11,12 @@ from pathlib import Path
 import verifiers as vf
 from datasets import Dataset
 
+from .render import (
+    TEXT_INSTRUCTIONS,
+    glossary_text,
+    public_card_rules,
+    render_observation,
+)
 from .transport import ROOT, GameSession, PilotSession, is_pass_only_priority
 from .verify import verify
 
@@ -130,6 +136,7 @@ class XMageEnvironment(vf.MultiTurnEnv):
         deck_b: Path | None,
         opponent: str,
         auto_pass_priority: bool,
+        observation_format: str,
         recording_mode: str,
         max_action_attempts: int,
         **kwargs,
@@ -141,6 +148,7 @@ class XMageEnvironment(vf.MultiTurnEnv):
         self.deck_b = deck_b
         self.opponent = opponent
         self.auto_pass_priority = auto_pass_priority
+        self.observation_format = observation_format
         self.recording_mode = recording_mode
         self.max_action_attempts = max_action_attempts
         super().__init__(**kwargs)
@@ -191,6 +199,8 @@ class XMageEnvironment(vf.MultiTurnEnv):
                         **state["info"],
                         "opponent": self.opponent,
                         "auto_pass_priority": self.auto_pass_priority,
+                        "observation_format": self.observation_format,
+                        "history_decisions": self.history_decisions,
                         "max_action_attempts": self.max_action_attempts,
                         "invalid_action_fallback": "pass_no_cancel_else_first",
                     },
@@ -202,6 +212,7 @@ class XMageEnvironment(vf.MultiTurnEnv):
         except (OSError, RuntimeError, TimeoutError) as exc:
             raise vf.InfraError(str(exc)) from exc
         state["_seat_histories"] = {}
+        state["_card_glossaries"] = {}
         state["_processed_turns"] = 0
         state["_prompted_decision"] = None
         return state
@@ -326,13 +337,36 @@ class XMageEnvironment(vf.MultiTurnEnv):
             ]
         history = state["_seat_histories"][obs["player_id"]]
         if state["_prompted_decision"] != obs["decision"]:
-            history.append([vf.UserMessage(content=json.dumps(obs))])
+            # Presentation only: neither the action protocol nor seat history changes.
+            # Play/draw is public and fixed by the bridge for both seats.
+            starter = state["starting_player"]
+            factors = {
+                "pilot_play_order": (
+                    "play" if starter in {obs["player"], obs["player_id"]} else "draw"
+                ),
+                "starting_player": starter,
+            }
+            if self.observation_format == "text":
+                glossary = state["_card_glossaries"].setdefault(obs["player_id"], {})
+                glossary.update(public_card_rules(obs))
+                context = session.deck_contexts[obs["player"]]
+                history[0] = vf.SystemMessage(
+                    content=SYSTEM
+                    + TEXT_INSTRUCTIONS
+                    + glossary_text(glossary)
+                    + DECK_CONTEXT_MARKER
+                    + json.dumps(context)
+                )
+                rendered = render_observation(obs, **factors)
+            else:
+                rendered = json.dumps(obs)
+            history.append([vf.UserMessage(content=rendered)])
             state["_prompted_decision"] = obs["decision"]
+            state["_prompt_factors"] = factors
         # Trim whole decisions, not messages: corrections must never evict the
         # current observation, even with history_decisions=1. Blocks stay private
         # to their seat, including rejected replies and fallback notifications.
-        # Return a new list: Verifiers trajectories must not mutate as a seat plays.
-        return [
+        prompt = [
             history[0],
             *(
                 message
@@ -340,6 +374,25 @@ class XMageEnvironment(vf.MultiTurnEnv):
                 for message in block
             ),
         ]
+        # Audit exactly the messages returned for inference, including retries,
+        # the persistent glossary and trimmed history, not just the raw view.
+        key = [obs["decision"], len(history[-1])]
+        if state.get("_recorded_prompt") != key:
+            state["_recorded_prompt"] = key
+            record = {
+                "decision": obs["decision"],
+                "player": obs["player"],
+                **state["_prompt_factors"],
+                "messages": [{"role": m.role, "content": m.content} for m in prompt],
+            }
+
+            def record_prompt():
+                with (session.output / "model-prompts.jsonl").open("a") as log:
+                    log.write(json.dumps(record) + "\n")
+
+            await asyncio.to_thread(record_prompt)
+        # Return a new list: Verifiers trajectories must not mutate as a seat plays.
+        return prompt
 
     @vf.cleanup
     async def close_game(self, state):
@@ -347,6 +400,7 @@ class XMageEnvironment(vf.MultiTurnEnv):
         if session is not None:
             await asyncio.to_thread(session.close)
         state.pop("_seat_histories", None)
+        state.pop("_card_glossaries", None)
         state.pop("_pending", None)
 
 
@@ -362,6 +416,7 @@ def load_environment(
     opponent: str = "self_play",
     pilot_seat: str = "alternate",
     auto_pass_priority: bool = True,
+    observation_format: str = "text",
     pilot_deck: str = "balanced",
     pilot_play_order: str = "balanced",
     recording_mode: str = "full_audit",
@@ -375,6 +430,8 @@ def load_environment(
     (default White/Red), not permanent seat assignments. self_play controls both
     seats; every other opponent measures the designated pilot's wins.
     benchmark recording keeps privacy projections, not restorable checkpoints.
+    Text observations remove engine/UI serialization overhead; json is the raw
+    ablation.
 
     Opponents: random, scripted_v1 (alias scripted), or native xmage_mad.
     MAD uses ComputerPlayer7 at fixed skill 4 (depth 4). It is omniscient:
@@ -385,6 +442,8 @@ def load_environment(
     """
     if num_games < 1 or max_turns < 1 or history_decisions < 1:
         raise ValueError("num_games, max_turns and history_decisions must be positive")
+    if observation_format not in {"json", "text"}:
+        raise ValueError("observation_format must be json or text")
     if recording_mode not in {"full_audit", "benchmark"}:
         raise ValueError("recording_mode must be full_audit or benchmark")
     if opponent == "scripted":
@@ -457,6 +516,7 @@ def load_environment(
         deck_b=Path(deck_b).resolve() if deck_b else None,
         opponent=opponent,
         auto_pass_priority=auto_pass_priority,
+        observation_format=observation_format,
         recording_mode=recording_mode,
         max_action_attempts=max_action_attempts,
         max_turns=max_turns,
