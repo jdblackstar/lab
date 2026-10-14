@@ -556,6 +556,18 @@ public final class PocMain {
         if (!before.equals(playerView(game, actor))) throw new IllegalStateException("Hidden state changed player view for " + actor);
     }
 
+    /** Named --name=value options after the four positional game arguments. */
+    static Map<String, String> options(String[] args, int start, String... known) {
+        Map<String, String> options = new HashMap<>();
+        for (int i = start; i < args.length; i++) {
+            if (!args[i].startsWith("--") || !args[i].contains("=")) throw new IllegalArgumentException("Expected --name=value option: " + args[i]);
+            String[] pair = args[i].substring(2).split("=", 2);
+            if (!Arrays.asList(known).contains(pair[0])) throw new IllegalArgumentException("Unknown option: --" + pair[0]);
+            if (options.put(pair[0], pair[1]) != null) throw new IllegalArgumentException("Duplicate option: --" + pair[0]);
+        }
+        return options;
+    }
+
     static void verifyCheckpoints(Path output) throws Exception {
         int count = 0;
         Path internal = output.resolve("internal");
@@ -619,7 +631,8 @@ public final class PocMain {
         }
         Path output = Paths.get(args[0]);
         long seed = Long.parseLong(args[1]);
-        String mode = args.length > 4 ? args[4] : "full_audit";
+        Map<String, String> bridgeOptions = options(args, 4, "recording-mode");
+        String mode = bridgeOptions.getOrDefault("recording-mode", "full_audit");
         if (!mode.equals("full_audit") && !mode.equals("benchmark")) throw new IllegalArgumentException("Unknown recording mode: " + mode);
         RandomUtil.setSeed(seed);
         Channel channel = new Channel();
