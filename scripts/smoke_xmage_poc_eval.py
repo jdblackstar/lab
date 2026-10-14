@@ -35,6 +35,8 @@ def main():
     parser.add_argument(
         "--pilot-seat", choices=["player_a", "player_b"], default="player_a"
     )
+    parser.add_argument("--pilot-deck", choices=["deck_a", "deck_b"], default="deck_a")
+    parser.add_argument("--pilot-play-order", choices=["play", "draw"], default="play")
     parser.add_argument(
         "--no-auto-pass-priority",
         action="store_true",
@@ -163,6 +165,8 @@ def main():
         "seed": args.seed,
         "opponent": args.opponent,
         "pilot_seat": args.pilot_seat,
+        "pilot_deck": args.pilot_deck,
+        "pilot_play_order": args.pilot_play_order,
         "auto_pass_priority": not args.no_auto_pass_priority,
         "recording_mode": args.recording_mode,
     }
@@ -186,6 +190,14 @@ def main():
                 )
                 assert state.get("error") is None, state.get("error")
                 assert state.get("recording_audit", {}).get("privacy_passed")
+                assert state["pilot_deck"] == args.pilot_deck
+                assert state["pilot_play_order"] == args.pilot_play_order
+                assert (state["starting_player"] == args.pilot_seat) == (
+                    args.pilot_play_order == "play"
+                )
+                assert (
+                    state["game_result"]["starting_player"] == state["starting_player"]
+                )
                 await environment.rubric.score_rollout(state)
                 assert state["invalid_action_count"] == (
                     5 if args.inject_invalid_replies else 0
@@ -320,6 +332,8 @@ def main():
     audit["driver"] = "protocol_test" if args.protocol_only else "prime_eval"
     audit["opponent"] = args.opponent
     audit["pilot_seat"] = args.pilot_seat if args.opponent == "scripted" else None
+    audit["pilot_deck"] = args.pilot_deck
+    audit["pilot_play_order"] = args.pilot_play_order
     (output / "audit.json").write_text(json.dumps(audit, indent=2) + "\n")
     print(json.dumps(audit, indent=2))
 

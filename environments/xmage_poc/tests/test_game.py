@@ -54,7 +54,8 @@ def test_full_card_module_and_native_name_lookup():
     os.environ.get("XMAGE_INTEGRATION") != "1",
     reason="Set XMAGE_INTEGRATION=1 after building the Java bridge",
 )
-def test_real_game_private_views_and_engine_roundtrip(tmp_path):
+@pytest.mark.parametrize("starting_player", ["player_a", "player_b"])
+def test_real_game_private_views_and_engine_roundtrip(tmp_path, starting_player):
     java = os.environ.get("XMAGE_JAVA_BIN") or shutil.which("java")
     assert java and (ROOT / "runtime/xmage-poc.jar").is_file(), (
         "Integration prerequisites missing"
@@ -74,8 +75,28 @@ def test_real_game_private_views_and_engine_roundtrip(tmp_path):
         deck_b.write_text(
             (ROOT / "decks/red.txt").read_text().replace("Shock", "Lightning Bolt")
         )
-        result = run(output, seed=7, java_bin=java, deck_a=deck_a, deck_b=deck_b)
+        if starting_player == "player_b":
+            deck_a, deck_b = deck_b, deck_a
+        result = run(
+            output,
+            seed=7,
+            java_bin=java,
+            deck_a=deck_a,
+            deck_b=deck_b,
+            starting_player=starting_player,
+        )
         assert result["ended"] and result["errors"] == 0
+        assert result["starting_player"] == starting_player
+        states = read_lines(output / "internal/states.jsonl")
+        first_turn = next(s for s in states if s["event"].get("type") == "BEGIN_TURN")
+        expected_id = next(
+            p["id"] for p in first_turn["players"] if p["name"] == starting_player
+        )
+        assert first_turn["active_player"] == expected_id
+        assert not any(
+            "starting player" in (d["observation"]["message"] or "").lower()
+            for d in read_lines(output / "internal/decisions.jsonl")
+        )
     audit = verify(output)
     assert audit["players"] == 2 and audit["decisions"] > 20
     restored = subprocess.run(
@@ -96,8 +117,6 @@ def test_real_game_private_views_and_engine_roundtrip(tmp_path):
     assert result["checkpoints_restored"] == audit["snapshots"]
     assert result["counterfactual_seats"] == 2
     if not existing:
-        from xmage_poc.verify import read_lines
-
         first_state = read_lines(output / "internal/states.jsonl")[0]
         names = {
             card["name"]

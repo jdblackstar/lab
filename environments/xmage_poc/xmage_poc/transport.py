@@ -23,9 +23,12 @@ class GameSession:
         deck_a: Path | None = None,
         deck_b: Path | None = None,
         recording_mode: str = "full_audit",
+        starting_player: str = "player_a",
     ):
         if recording_mode not in {"full_audit", "benchmark"}:
             raise ValueError("recording_mode must be full_audit or benchmark")
+        if starting_player not in {"player_a", "player_b"}:
+            raise ValueError("starting_player must be player_a or player_b")
         self.output = output.resolve()
         self.output.mkdir(parents=True, exist_ok=False)
         java = java_bin or os.environ.get("XMAGE_JAVA_BIN") or shutil.which("java")
@@ -63,6 +66,7 @@ class GameSession:
                 str(seed),
                 *(str(path) for path in deck_paths),
                 f"--recording-mode={recording_mode}",
+                f"--starting-player={starting_player}",
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -128,12 +132,6 @@ def is_pass_only_priority(observation: dict) -> bool:
 def advance_action(observation: dict) -> int:
     """Simple local controller that uses ONLY the delivered observation."""
     actions = observation["actions"]
-    if "starting player" in str(observation.get("message") or "").lower():
-        own = next(
-            (a for a in actions if a.get("value") == observation["player_id"]), None
-        )
-        if own:
-            return own["index"]
     for kind in ("no", "attack", "block", "land", "cast", "mana"):
         found = next((a for a in actions if a["kind"] == kind), None)
         if found is not None:
@@ -167,10 +165,19 @@ class PilotSession:
         pilot_seat: str = "player_a",
         auto_forced: bool = False,
         recording_mode: str = "full_audit",
+        starting_player: str = "player_a",
     ):
         if pilot_seat not in {"player_a", "player_b"}:
             raise ValueError("pilot_seat must be player_a or player_b")
-        self.game = GameSession(output, seed, java_bin, deck_a, deck_b, recording_mode)
+        self.game = GameSession(
+            output,
+            seed,
+            java_bin,
+            deck_a,
+            deck_b,
+            recording_mode=recording_mode,
+            starting_player=starting_player,
+        )
         self.output = self.game.output
         self.deck_contexts = self.game.deck_contexts
         self.pilot_seat = pilot_seat
@@ -226,6 +233,7 @@ def run(
     pilot_seat: str | None = None,
     auto_forced: bool = False,
     recording_mode: str = "full_audit",
+    starting_player: str = "player_a",
 ) -> dict:
     session = (
         PilotSession(
@@ -236,10 +244,19 @@ def run(
             deck_b,
             pilot_seat,
             auto_forced,
-            recording_mode,
+            recording_mode=recording_mode,
+            starting_player=starting_player,
         )
         if pilot_seat
-        else GameSession(output, seed, java_bin, deck_a, deck_b, recording_mode)
+        else GameSession(
+            output,
+            seed,
+            java_bin,
+            deck_a,
+            deck_b,
+            recording_mode=recording_mode,
+            starting_player=starting_player,
+        )
     )
     try:
         if interactive:
@@ -342,6 +359,9 @@ def main():
         help="benchmark audits every decision projection but omits restorable checkpoints",
     )
     parser.add_argument(
+        "--starting-player", choices=["player_a", "player_b"], default="player_a"
+    )
+    parser.add_argument(
         "--pilot-seat",
         choices=["player_a", "player_b"],
         help="Control one seat against scripted_v1",
@@ -363,7 +383,8 @@ def main():
                 args.deck_b,
                 args.pilot_seat,
                 args.auto_forced,
-                args.recording_mode,
+                recording_mode=args.recording_mode,
+                starting_player=args.starting_player,
             ),
             indent=2,
         )

@@ -22,6 +22,8 @@ def load_environment(
     opponent: str = "self_play",
     pilot_seat: str = "alternate",
     auto_pass_priority: bool = True,
+    pilot_deck: str = "balanced",
+    pilot_play_order: str = "balanced",
     recording_mode: str = "full_audit",
     max_action_attempts: int = 3,
 ) -> vf.Environment:
@@ -40,6 +42,8 @@ def load_environment(
         opponent=opponent,
         pilot_seat=pilot_seat,
         auto_pass_priority=auto_pass_priority,
+        pilot_deck=pilot_deck,
+        pilot_play_order=pilot_play_order,
         recording_mode=recording_mode,
         max_action_attempts=max_action_attempts,
     )

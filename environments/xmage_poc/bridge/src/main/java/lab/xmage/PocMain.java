@@ -631,9 +631,13 @@ public final class PocMain {
         }
         Path output = Paths.get(args[0]);
         long seed = Long.parseLong(args[1]);
-        Map<String, String> bridgeOptions = options(args, 4, "recording-mode");
+        Map<String, String> bridgeOptions = options(args, 4, "recording-mode", "starting-player");
         String mode = bridgeOptions.getOrDefault("recording-mode", "full_audit");
         if (!mode.equals("full_audit") && !mode.equals("benchmark")) throw new IllegalArgumentException("Unknown recording mode: " + mode);
+        String startingPlayer = bridgeOptions.getOrDefault("starting-player", "player_a");
+        if (!startingPlayer.equals("player_a") && !startingPlayer.equals("player_b")) {
+            throw new IllegalArgumentException("Starting player must be player_a or player_b");
+        }
         RandomUtil.setSeed(seed);
         Channel channel = new Channel();
         RecordedGame game = new RecordedGame();
@@ -656,12 +660,14 @@ public final class PocMain {
         game.loadCards(deckB.getCards(), b.getId());
         game.addPlayer(a, deckA);
         game.addPlayer(b, deckB);
+        // Fix play/draw as an experimental factor, not a controller decision.
+        game.setStartingPlayerId(startingPlayer.equals("player_a") ? a.getId() : b.getId());
         game.addPlayerQueryEventListener(e -> { if (e.getQueryType() != PlayerQueryEvent.QueryType.PERSONAL_MESSAGE) channel.pending = e; });
         try (Recorder recorder = new Recorder(output, game, mode)) {
             channel.recorder = recorder;
             game.recorder = recorder;
             Files.write(output.resolve("internal/manifest.json"), JSON.toJson(object("schema_version", 2,
-                "xmage_revision", REVISION, "seed", seed, "deck_a", Files.readAllLines(Paths.get(args[2])),
+                "xmage_revision", REVISION, "seed", seed, "starting_player", startingPlayer, "deck_a", Files.readAllLines(Paths.get(args[2])),
                 "deck_b", Files.readAllLines(Paths.get(args[3])), "players", Arrays.asList(a.getId(), b.getId()),
                 "recording_mode", mode,
                 "privacy_audit", "all delivered observations/actions compared to paired decision projections; hidden IDs and public counts checked; fixture-limited",
@@ -674,6 +680,7 @@ public final class PocMain {
             game.start(a.getId());
             recorder.capture(game, "end", new JsonObject());
             JsonObject result = object("type", "result", "ended", game.hasEnded(), "winner", game.getWinner(),
+                "starting_player", startingPlayer,
                 "errors", game.getTotalErrorsCount(), "technical_failure", game.technicalFailure,
                 "decisions", channel.decision, "snapshots", recorder.sequence);
             JsonArray outcomes = new JsonArray();
