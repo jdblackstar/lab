@@ -184,7 +184,15 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
                 for z in ("hand", "library", "graveyard")
             ) + len(state["battlefield"])
             require(total == 120, f"Card conservation failed: {total}")
-    require(len(observed_players) == 2, "Both controllers must receive decisions")
+    # Native AI acts inside XMage, without the pipe's prompts or responses. Older
+    # manifests imply two bridge seats; never drop the pilot's audit coverage.
+    bridge_players = set(manifest.get("bridge_players", manifest["players"]))
+    require(
+        bridge_players
+        and bridge_players <= set(manifest["players"])
+        and observed_players == bridge_players,
+        "Every controller seat must receive decisions",
+    )
     for name, expected in actual_by_player.items():
         require(
             read_lines(output / "players" / f"{name}.jsonl") == expected,

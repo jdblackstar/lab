@@ -164,10 +164,12 @@ class XMageEnvironment(vf.MultiTurnEnv):
         state["fallback_action_count"] = 0
         state["_invalid_attempts"] = 0
         try:
-            session_class = PilotSession if self.opponent == "scripted" else GameSession
+            session_class = (
+                GameSession if self.opponent == "self_play" else PilotSession
+            )
             extra = (
-                {"pilot_seat": state["pilot_seat"]}
-                if self.opponent == "scripted"
+                {"pilot_seat": state["pilot_seat"], "opponent": self.opponent}
+                if self.opponent != "self_play"
                 else {}
             )
             session = await asyncio.to_thread(
@@ -371,15 +373,26 @@ def load_environment(
     use multiples of eight for balance (short prefixes are only behavior smokes).
     Fix any factor independently for ablations. deck_a/deck_b name matchup lists
     (default White/Red), not permanent seat assignments. self_play controls both
-    seats; only scripted measures the designated pilot against scripted_v1.
+    seats; every other opponent measures the designated pilot's wins.
     benchmark recording keeps privacy projections, not restorable checkpoints.
+
+    Opponents: random, scripted_v1 (alias scripted), or native xmage_mad.
+    MAD uses ComputerPlayer7 at fixed skill 4 (depth 4). It is omniscient:
+    simulations copy the full game, including the pilot's real hand and exact
+    library order. Its 12s wall-clock search budget uses a shared 5-thread pool;
+    strength depends on hardware/load and search is not deterministic.
+    Pilot observations remain private.
     """
     if num_games < 1 or max_turns < 1 or history_decisions < 1:
         raise ValueError("num_games, max_turns and history_decisions must be positive")
     if recording_mode not in {"full_audit", "benchmark"}:
         raise ValueError("recording_mode must be full_audit or benchmark")
-    if opponent not in {"self_play", "scripted"}:
-        raise ValueError("opponent must be self_play or scripted")
+    if opponent == "scripted":
+        opponent = "scripted_v1"
+    if opponent not in {"self_play", "random", "scripted_v1", "xmage_mad"}:
+        raise ValueError(
+            "opponent must be self_play, random, scripted_v1, or xmage_mad"
+        )
     if type(auto_pass_priority) is not bool:
         raise ValueError("auto_pass_priority must be a boolean")
     if type(max_action_attempts) is not int or max_action_attempts < 1:
@@ -425,7 +438,7 @@ def load_environment(
     dataset = Dataset.from_list(rows)
     rubric = (
         vf.Rubric(funcs=[pilot_win, recording_validity], weights=[1.0, 0.0])
-        if opponent == "scripted"
+        if opponent != "self_play"
         else vf.Rubric(funcs=[recording_validity])
     )
     for metric in (

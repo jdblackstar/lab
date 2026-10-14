@@ -68,7 +68,7 @@ def main() -> None:
         maven
         + [
             "-pl",
-            "Mage.Sets,Mage.Common,Mage.Server.Plugins/Mage.Player.Human,Mage.Server.Plugins/Mage.Game.TwoPlayerDuel",
+            "Mage.Sets,Mage.Common,Mage.Server.Plugins/Mage.Player.Human,Mage.Server.Plugins/Mage.Game.TwoPlayerDuel,Mage.Server.Plugins/Mage.Player.AI.MAD",
             "-am",
             "install",
         ],

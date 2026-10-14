@@ -30,7 +30,9 @@ def main():
         "--recording-mode", choices=["full_audit", "benchmark"], default="full_audit"
     )
     parser.add_argument(
-        "--opponent", choices=["self_play", "scripted"], default="self_play"
+        "--opponent",
+        choices=["self_play", "scripted", "scripted_v1", "random", "xmage_mad"],
+        default="self_play",
     )
     parser.add_argument(
         "--pilot-seat", choices=["player_a", "player_b"], default="player_a"
@@ -267,7 +269,7 @@ def main():
     assert len(games) == 1
     audit = verify(games[0])
     decisions = read_lines(games[0] / "internal/decisions.jsonl")
-    if args.opponent == "scripted":
+    if args.opponent != "self_play":
         decisions = [
             d for d in decisions if d["observation"]["player"] == args.pilot_seat
         ]
@@ -331,7 +333,7 @@ def main():
         audit["invalid_reply_recovery_passed"] = True
     audit["driver"] = "protocol_test" if args.protocol_only else "prime_eval"
     audit["opponent"] = args.opponent
-    audit["pilot_seat"] = args.pilot_seat if args.opponent == "scripted" else None
+    audit["pilot_seat"] = args.pilot_seat if args.opponent != "self_play" else None
     audit["pilot_deck"] = args.pilot_deck
     audit["pilot_play_order"] = args.pilot_play_order
     (output / "audit.json").write_text(json.dumps(audit, indent=2) + "\n")

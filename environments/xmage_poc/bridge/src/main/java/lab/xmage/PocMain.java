@@ -17,6 +17,7 @@ import mage.game.mulligan.MulliganType;
 import mage.game.match.MatchOptions;
 import mage.game.match.MatchPlayer;
 import mage.game.permanent.Permanent;
+import mage.player.ai.ComputerPlayer7;
 import mage.player.human.HumanPlayer;
 import mage.player.human.PlayerResponse;
 import mage.players.Player;
@@ -575,6 +576,10 @@ public final class PocMain {
         if (manifest.has("recording_mode") && !manifest.get("recording_mode").getAsString().equals("full_audit")) {
             throw new IllegalArgumentException("Checkpoint restoration/counterfactual audit requires recording_mode=full_audit; benchmark only retains decision projections");
         }
+        Set<UUID> bridgePlayers = new HashSet<>();
+        for (JsonElement id : manifest.getAsJsonArray(manifest.has("bridge_players") ? "bridge_players" : "players")) {
+            bridgePlayers.add(UUID.fromString(id.getAsString()));
+        }
         try (BufferedReader input = Files.newBufferedReader(internal.resolve("states.jsonl"), StandardCharsets.UTF_8)) {
             String line;
             while ((line = input.readLine()) != null) {
@@ -607,7 +612,7 @@ public final class PocMain {
                 tested.add(actor);
             }
         }
-        if (tested.size() != 2) throw new IllegalStateException("Counterfactual test must cover both seats");
+        if (bridgePlayers.isEmpty() || !tested.equals(bridgePlayers)) throw new IllegalStateException("Counterfactual test must cover every controller seat");
         System.out.println(JSON.toJson(object("checkpoints_restored", count, "counterfactual_seats", tested.size())));
     }
 
@@ -631,7 +636,7 @@ public final class PocMain {
         }
         Path output = Paths.get(args[0]);
         long seed = Long.parseLong(args[1]);
-        Map<String, String> bridgeOptions = options(args, 4, "recording-mode", "starting-player");
+        Map<String, String> bridgeOptions = options(args, 4, "recording-mode", "starting-player", "engine-ai-seat");
         String mode = bridgeOptions.getOrDefault("recording-mode", "full_audit");
         if (!mode.equals("full_audit") && !mode.equals("benchmark")) throw new IllegalArgumentException("Unknown recording mode: " + mode);
         String startingPlayer = bridgeOptions.getOrDefault("starting-player", "player_a");
@@ -644,7 +649,15 @@ public final class PocMain {
         GameOptions options = new GameOptions();
         options.rollbackTurnsAllowed = false;
         game.setGameOptions(options);
-        BridgePlayer a = new BridgePlayer("player_a", channel, seed), b = new BridgePlayer("player_b", channel, seed);
+        String aiSeat = bridgeOptions.getOrDefault("engine-ai-seat", "none");
+        if (!Arrays.asList("none", "player_a", "player_b").contains(aiSeat)) throw new IllegalArgumentException("Invalid AI seat: " + aiSeat);
+        // The server uses ComputerPlayerControllableProxy, a ComputerPlayer7 subclass
+        // that adds human takeover support. A headless opponent needs only the AI.
+        // Only bridge seats get the canonical deck order and per-deck shuffle stream.
+        Player a = aiSeat.equals("player_a") ? new ComputerPlayer7("player_a", RangeOfInfluence.ALL, 4) : new BridgePlayer("player_a", channel, seed);
+        Player b = aiSeat.equals("player_b") ? new ComputerPlayer7("player_b", RangeOfInfluence.ALL, 4) : new BridgePlayer("player_b", channel, seed);
+        List<UUID> bridgePlayers = new ArrayList<>();
+        for (Player p : Arrays.asList(a, b)) if (p instanceof BridgePlayer) bridgePlayers.add(p.getId());
         Deck deckA = deck(Paths.get(args[2]), a), deckB = deck(Paths.get(args[3]), b);
         channel.objectOrder.put(a.getId(), 0); channel.objectOrder.put(b.getId(), 1);
         for (Card c : deckA.getCards()) channel.objectOrder.put(c.getId(), channel.objectOrder.size());
@@ -669,6 +682,10 @@ public final class PocMain {
             Files.write(output.resolve("internal/manifest.json"), JSON.toJson(object("schema_version", 2,
                 "xmage_revision", REVISION, "seed", seed, "starting_player", startingPlayer, "deck_a", Files.readAllLines(Paths.get(args[2])),
                 "deck_b", Files.readAllLines(Paths.get(args[3])), "players", Arrays.asList(a.getId(), b.getId()),
+                "bridge_players", bridgePlayers, "engine_ai", aiSeat.equals("none") ? null : object("seat", aiSeat,
+                    "class", ComputerPlayer7.class.getName(), "skill", 4, "max_depth", 4, "max_think_seconds", 12,
+                    "information", "perfect: searches the full copied game, including the pilot's real hand and exact library order",
+                    "budget", "wall-clock 12s per search on a shared 5-thread pool; hardware/load dependent and non-deterministic"),
                 "recording_mode", mode,
                 "privacy_audit", "all delivered observations/actions compared to paired decision projections; hidden IDs and public counts checked; fixture-limited",
                 "checkpoint_format", recorder.fullAudit ? "gzip Java serialization of complete Game graph; transport fields are transient" : "none; decision projections are not restorable engine checkpoints",

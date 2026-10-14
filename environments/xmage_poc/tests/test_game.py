@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from xmage_poc.transport import ROOT, GameSession, run
+from xmage_poc.transport import ROOT, GameSession, advance_action, run
 from xmage_poc.verify import read_lines, verify
 
 
@@ -54,13 +54,27 @@ def test_full_card_module_and_native_name_lookup():
     os.environ.get("XMAGE_INTEGRATION") != "1",
     reason="Set XMAGE_INTEGRATION=1 after building the Java bridge",
 )
-@pytest.mark.parametrize("starting_player", ["player_a", "player_b"])
-def test_real_game_private_views_and_engine_roundtrip(tmp_path, starting_player):
+@pytest.mark.parametrize(
+    "opponent,seat,starting_player",
+    [
+        ("self_play", None, "player_a"),
+        ("self_play", None, "player_b"),
+        ("random", "player_b", "player_a"),
+        ("scripted_v1", "player_a", "player_b"),
+        ("xmage_mad", "player_a", "player_a"),
+        ("xmage_mad", "player_b", "player_b"),
+    ],
+)
+def test_real_game_private_views_and_engine_roundtrip(
+    tmp_path, opponent, seat, starting_player
+):
     java = os.environ.get("XMAGE_JAVA_BIN") or shutil.which("java")
     assert java and (ROOT / "runtime/xmage-poc.jar").is_file(), (
         "Integration prerequisites missing"
     )
-    existing = os.environ.get("XMAGE_POC_RECORDING")
+    existing = (
+        os.environ.get("XMAGE_POC_RECORDING") if opponent == "self_play" else None
+    )
     output = Path(existing) if existing else tmp_path / "game"
     if not existing:
         # Exercise cards outside the former ten-card build, including a targeted
@@ -83,9 +97,15 @@ def test_real_game_private_views_and_engine_roundtrip(tmp_path, starting_player)
             java_bin=java,
             deck_a=deck_a,
             deck_b=deck_b,
+            pilot_seat=seat,
+            opponent=opponent if seat else "scripted_v1",
             starting_player=starting_player,
         )
         assert result["ended"] and result["errors"] == 0
+        if opponent == "xmage_mad":
+            assert result["opponent_decisions"] == 0
+            other = "player_b" if seat == "player_a" else "player_a"
+            assert (output / "players" / f"{other}.jsonl").read_text() == ""
         assert result["starting_player"] == starting_player
         states = read_lines(output / "internal/states.jsonl")
         first_turn = next(s for s in states if s["event"].get("type") == "BEGIN_TURN")
@@ -98,7 +118,14 @@ def test_real_game_private_views_and_engine_roundtrip(tmp_path, starting_player)
             for d in read_lines(output / "internal/decisions.jsonl")
         )
     audit = verify(output)
-    assert audit["players"] == 2 and audit["decisions"] > 20
+    expected_seats = 1 if opponent == "xmage_mad" else 2
+    assert audit["players"] == expected_seats and audit["decisions"] > 20
+    if opponent == "random":
+        assert any(
+            d["selected"]["index"] != advance_action(d["observation"])
+            for d in read_lines(output / "internal/decisions.jsonl")
+            if d["observation"]["player"] != seat
+        ), "Random opponent must not silently fall back to scripted_v1"
     restored = subprocess.run(
         [
             java,
@@ -111,11 +138,13 @@ def test_real_game_private_views_and_engine_roundtrip(tmp_path, starting_player)
         check=True,
         capture_output=True,
         text=True,
-        timeout=180,
+        # Native AI checkpoints include its simulation graph, not just two humans;
+        # a long AI game on the denser decks took ~6 min to restore on 4 cores.
+        timeout=900 if opponent == "xmage_mad" else 300,
     )
     result = json.loads(restored.stdout)
     assert result["checkpoints_restored"] == audit["snapshots"]
-    assert result["counterfactual_seats"] == 2
+    assert result["counterfactual_seats"] == expected_seats
     if not existing:
         first_state = read_lines(output / "internal/states.jsonl")[0]
         names = {
