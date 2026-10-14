@@ -86,6 +86,7 @@ def test_invalid_replies_retry_same_decision_then_fall_back_without_mixing_seats
         opponent=opponent,
         pilot_seat="player_a",
         history_decisions=history_decisions,
+        observation_format="json",
     )
 
     async def exercise():

@@ -209,7 +209,9 @@ def test_system_glossary_survives_history_trimming_and_actual_prompt_audit(tmp_p
         changed = copy.deepcopy(rows)
         changed[-1]["messages"][index]["content"] += " opponent-hidden-card"
         path.write_text("\n".join(json.dumps(row) for row in changed))
-        with pytest.raises(AssertionError, match="Rendered (system|model) prompt differs"):
+        with pytest.raises(
+            AssertionError, match="Rendered (system|model) prompt differs"
+        ):
             audit_model_prompts(tmp_path, decisions, controller)
     path.write_text("\n".join(json.dumps(row) for row in rows[:-1]))
     with pytest.raises(AssertionError, match="coverage"):

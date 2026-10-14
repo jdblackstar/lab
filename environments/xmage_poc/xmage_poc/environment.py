@@ -341,7 +341,9 @@ class XMageEnvironment(vf.MultiTurnEnv):
             # Play/draw is public and fixed by the bridge for both seats.
             starter = state["starting_player"]
             factors = {
-                "pilot_play_order": "play" if obs["player"] == starter else "draw",
+                "pilot_play_order": (
+                    "play" if starter in {obs["player"], obs["player_id"]} else "draw"
+                ),
                 "starting_player": starter,
             }
             if self.observation_format == "text":
