@@ -17,7 +17,11 @@ from .verify import verify
 SYSTEM = (
     "You pilot one seat in a Magic: The Gathering fixture game. "
     "Each user message contains your current player observation and an indexed action list. "
-    'Return ONLY a JSON object of the form {"action": 0}, selecting an offered index. '
+    "You may reason before committing to an action. End your reply with exactly one "
+    '<answer>{"action": 0}</answer> block, selecting an offered integer index. '
+    "Put any visible reasoning before the answer block and nothing after it. "
+    "The answer must contain only that JSON object, optionally in a JSON code fence. "
+    "If you omit reasoning, a bare JSON object or a single JSON code fence is also valid. "
     "You see your own hand and public information. Your recent history contains only your seat's decisions. "
     "Your registered decklist is provided below; use it to plan your strategy and mulligans. "
     "Counts describe the starting deck, not its current library contents or draw order. "
@@ -28,6 +32,7 @@ SYSTEM = (
 )
 
 DECK_CONTEXT_MARKER = "\nRegistered deck (your seat only):\n"
+ANSWER_PARSER = vf.XMLParser(fields=["answer"])
 
 
 def completion_action(messages) -> int:
@@ -38,13 +43,40 @@ def completion_action(messages) -> int:
             for part in text
         )
     try:
-        result = json.loads(text)
-        if set(result) != {"action"} or type(result["action"]) is not int:
+        text = (text or "").strip()
+        if "<answer>" in text or "</answer>" in text:
+            # XMLParser extracts an answer but does not reject multiple answers.
+            if (
+                text.count("<answer>") != 1
+                or text.count("</answer>") != 1
+                or not text.endswith("</answer>")
+            ):
+                raise ValueError("Expected one final answer block")
+            text = ANSWER_PARSER.parse_answer(text)
+        if not text:
+            raise ValueError("Expected an answer")
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if (
+                len(lines) < 3
+                or lines[0] not in {"```", "```json"}
+                or lines[-1] != "```"
+            ):
+                raise ValueError("Expected one complete JSON code fence")
+            text = "\n".join(lines[1:-1])
+        # Preserve object pairs so duplicate action keys cannot silently win.
+        result = json.loads(text, object_pairs_hook=tuple)
+        if (
+            type(result) is not tuple
+            or len(result) != 1
+            or result[0][0] != "action"
+            or type(result[0][1]) is not int
+        ):
             raise ValueError("Expected a single integer action")
-        return result["action"]
+        return result[0][1]
     except (TypeError, ValueError, KeyError) as exc:
         raise vf.InvalidModelResponseError(
-            'Respond with exactly {"action": <offered index>}'
+            'End with one <answer>{"action": <offered index>}</answer> block'
         ) from exc
 
 
@@ -68,6 +100,25 @@ def pilot_win(state) -> float:
     return float(bool(outcome and outcome["won"]))
 
 
+def invalid_action_count(state) -> float:
+    """All rejected model replies, including unparseable replies."""
+    return float(state.get("invalid_action_count", 0))
+
+
+def unparseable_reply_count(state) -> float:
+    return float(state.get("unparseable_reply_count", 0))
+
+
+def invalid_action_rate(state) -> float:
+    """Rejected replies / model attempts, including corrective attempts."""
+    attempts = state.get("model_action_attempts", 0)
+    return invalid_action_count(state) / attempts if attempts else 0.0
+
+
+def fallback_action_count(state) -> float:
+    return float(state.get("fallback_action_count", 0))
+
+
 class XMageEnvironment(vf.MultiTurnEnv):
     def __init__(
         self,
@@ -79,6 +130,8 @@ class XMageEnvironment(vf.MultiTurnEnv):
         deck_b: Path | None,
         opponent: str,
         auto_pass_priority: bool,
+        recording_mode: str,
+        max_action_attempts: int,
         **kwargs,
     ):
         self.output_dir = output_dir
@@ -88,6 +141,8 @@ class XMageEnvironment(vf.MultiTurnEnv):
         self.deck_b = deck_b
         self.opponent = opponent
         self.auto_pass_priority = auto_pass_priority
+        self.recording_mode = recording_mode
+        self.max_action_attempts = max_action_attempts
         super().__init__(**kwargs)
 
     def decks_for(self, info):
@@ -103,6 +158,11 @@ class XMageEnvironment(vf.MultiTurnEnv):
         path = self.output_dir / uuid.uuid4().hex
         state.update(state["info"])
         state["auto_passed_priority"] = 0
+        state["model_action_attempts"] = 0
+        state["invalid_action_count"] = 0
+        state["unparseable_reply_count"] = 0
+        state["fallback_action_count"] = 0
+        state["_invalid_attempts"] = 0
         try:
             session_class = PilotSession if self.opponent == "scripted" else GameSession
             extra = (
@@ -117,6 +177,7 @@ class XMageEnvironment(vf.MultiTurnEnv):
                 self.java_bin,
                 *self.decks_for(state["info"]),
                 starting_player=state["starting_player"],
+                recording_mode=self.recording_mode,
                 **extra,
             )
             state["_session"] = session
@@ -128,6 +189,8 @@ class XMageEnvironment(vf.MultiTurnEnv):
                         **state["info"],
                         "opponent": self.opponent,
                         "auto_pass_priority": self.auto_pass_priority,
+                        "max_action_attempts": self.max_action_attempts,
+                        "invalid_action_fallback": "pass_no_cancel_else_first",
                     },
                     indent=2,
                 )
@@ -183,17 +246,58 @@ class XMageEnvironment(vf.MultiTurnEnv):
         if len(state["trajectory"]) > state["_processed_turns"]:
             obs = state["_pending"]["observation"]
             completion = state["trajectory"][-1]["completion"]
-            action = completion_action(completion)
-            try:
-                session.send(obs, action)
-            except ValueError as exc:
-                raise vf.InvalidModelResponseError(str(exc)) from exc
-            state["_seat_histories"][obs["player_id"]].extend(completion)
-            try:
-                state["_pending"] = await self.receive_for_model(state)
-            except (OSError, RuntimeError, TimeoutError) as exc:
-                raise vf.InfraError(str(exc)) from exc
+            history = state["_seat_histories"][obs["player_id"]]
+            history[-1].extend(completion)
+            state["model_action_attempts"] += 1
             state["_processed_turns"] = len(state["trajectory"])
+            error = None
+            exhausted = False
+            try:
+                action = completion_action(completion)
+            except vf.InvalidModelResponseError:
+                state["unparseable_reply_count"] += 1
+                error = "Your reply could not be parsed. Follow the response format in the system message."
+            else:
+                try:
+                    session.send(obs, action)
+                except ValueError:
+                    error = "The selected action is not offered for this decision."
+            if error is not None:
+                state["invalid_action_count"] += 1
+                state["_invalid_attempts"] += 1
+                exhausted = state["_invalid_attempts"] >= self.max_action_attempts
+                correction = {
+                    "error": error,
+                    "decision": obs["decision"],
+                    "attempts_remaining": self.max_action_attempts
+                    - state["_invalid_attempts"],
+                    "instruction": "Choose an offered index from the unchanged observation above.",
+                }
+                if exhausted:
+                    # Avoid a fresh shuffle or strategic help from advance_action.
+                    # Some decisions (targets, mana, etc.) have no pass option.
+                    action = next(
+                        (
+                            a["index"]
+                            for kind in ("pass", "no", "cancel")
+                            for a in obs["actions"]
+                            if a["kind"] == kind
+                        ),
+                        obs["actions"][0]["index"],
+                    )
+                    correction["fallback_action"] = action
+                    correction["instruction"] = (
+                        "Attempt limit reached; the fallback action was submitted."
+                    )
+                    session.send(obs, action)
+                    state["fallback_action_count"] += 1
+                history[-1].append(vf.UserMessage(content=json.dumps(correction)))
+            if error is None or exhausted:
+                state["_invalid_attempts"] = 0
+                try:
+                    state["_pending"] = await self.receive_for_model(state)
+                except (OSError, RuntimeError, TimeoutError) as exc:
+                    raise vf.InfraError(str(exc)) from exc
         pending = state["_pending"]
         if pending["type"] == "result":
             state["game_result"] = pending
@@ -220,10 +324,20 @@ class XMageEnvironment(vf.MultiTurnEnv):
             ]
         history = state["_seat_histories"][obs["player_id"]]
         if state["_prompted_decision"] != obs["decision"]:
-            history.append(vf.UserMessage(content=json.dumps(obs)))
+            history.append([vf.UserMessage(content=json.dumps(obs))])
             state["_prompted_decision"] = obs["decision"]
+        # Trim whole decisions, not messages: corrections must never evict the
+        # current observation, even with history_decisions=1. Blocks stay private
+        # to their seat, including rejected replies and fallback notifications.
         # Return a new list: Verifiers trajectories must not mutate as a seat plays.
-        return [history[0], *history[1:][-(2 * self.history_decisions - 1) :]]
+        return [
+            history[0],
+            *(
+                message
+                for block in history[1:][-self.history_decisions :]
+                for message in block
+            ),
+        ]
 
     @vf.cleanup
     async def close_game(self, state):
@@ -248,6 +362,8 @@ def load_environment(
     auto_pass_priority: bool = True,
     pilot_deck: str = "balanced",
     pilot_play_order: str = "balanced",
+    recording_mode: str = "full_audit",
+    max_action_attempts: int = 3,
 ) -> vf.Environment:
     """Cross seat × matchup deck × play/draw within each seed block.
 
@@ -256,13 +372,18 @@ def load_environment(
     Fix any factor independently for ablations. deck_a/deck_b name matchup lists
     (default White/Red), not permanent seat assignments. self_play controls both
     seats; only scripted measures the designated pilot against scripted_v1.
+    benchmark recording keeps privacy projections, not restorable checkpoints.
     """
     if num_games < 1 or max_turns < 1 or history_decisions < 1:
         raise ValueError("num_games, max_turns and history_decisions must be positive")
+    if recording_mode not in {"full_audit", "benchmark"}:
+        raise ValueError("recording_mode must be full_audit or benchmark")
     if opponent not in {"self_play", "scripted"}:
         raise ValueError("opponent must be self_play or scripted")
     if type(auto_pass_priority) is not bool:
         raise ValueError("auto_pass_priority must be a boolean")
+    if type(max_action_attempts) is not int or max_action_attempts < 1:
+        raise ValueError("max_action_attempts must be a positive integer")
     if pilot_seat not in {"alternate", "player_a", "player_b"}:
         raise ValueError("pilot_seat must be alternate, player_a, or player_b")
     if pilot_deck not in {"balanced", "deck_a", "deck_b"}:
@@ -302,6 +423,18 @@ def load_environment(
             }
         )
     dataset = Dataset.from_list(rows)
+    rubric = (
+        vf.Rubric(funcs=[pilot_win, recording_validity], weights=[1.0, 0.0])
+        if opponent == "scripted"
+        else vf.Rubric(funcs=[recording_validity])
+    )
+    for metric in (
+        invalid_action_count,
+        unparseable_reply_count,
+        invalid_action_rate,
+        fallback_action_count,
+    ):
+        rubric.add_metric(metric)
     return XMageEnvironment(
         dataset=dataset,
         output_dir=Path(output_dir or "environments/xmage_poc/outputs/games").resolve(),
@@ -311,10 +444,8 @@ def load_environment(
         deck_b=Path(deck_b).resolve() if deck_b else None,
         opponent=opponent,
         auto_pass_priority=auto_pass_priority,
+        recording_mode=recording_mode,
+        max_action_attempts=max_action_attempts,
         max_turns=max_turns,
-        rubric=(
-            vf.Rubric(funcs=[pilot_win, recording_validity], weights=[1.0, 0.0])
-            if opponent == "scripted"
-            else vf.Rubric(funcs=[recording_validity])
-        ),
+        rubric=rubric,
     )

@@ -5,8 +5,10 @@ env_id = "xmage-poc"
 num_examples = 8
 rollouts_per_example = 1
 max_concurrent = 1
-max_tokens = 64
-timeout = 300
+# OpenAI chat includes hidden reasoning in this per-decision completion budget.
+max_tokens = 4096
+# Wall-clock timeout per complete game, not per model request (seconds).
+timeout = 7200
 state_columns = ["seed", "pilot_seat", "pilot_deck", "opponent_deck", "pilot_play_order", "starting_player", "game_result", "recording_audit", "recording_path", "auto_passed_priority"]
 
 [eval.env_args]
@@ -19,3 +21,5 @@ pilot_play_order = "balanced"
 max_turns = 4000
 history_decisions = 4
 auto_pass_priority = true
+# Audit every decision projection; choose full_audit for restoration/counterfactual checks.
+recording_mode = "benchmark"

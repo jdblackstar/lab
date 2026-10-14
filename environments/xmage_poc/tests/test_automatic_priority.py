@@ -99,6 +99,7 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
         "_prompted_decision": None,
         "trajectory": [],
         "auto_passed_priority": 0,
+        "model_action_attempts": 0,
     }
 
     async def exercise():
