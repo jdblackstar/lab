@@ -75,6 +75,9 @@ public final class PocMain {
             this.channel = channel;
             UserData user = UserData.getDefaultUserDataView();
             user.setAutoTargetLevel(0);
+            // Despite the "Skip" name, true enables a stop: HumanPlayer.checkPassStep
+            // passes when !isPhaseStepSet(...). Keep every instant-speed window;
+            // Python's auto_pass_priority drains only prompts with no legal play.
             user.getUserSkipPrioritySteps().getYourTurn().setUpkeep(true);
             user.getUserSkipPrioritySteps().getYourTurn().setDraw(true);
             user.getUserSkipPrioritySteps().getYourTurn().setBeforeCombat(true);

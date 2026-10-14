@@ -16,7 +16,11 @@ from .verify import verify
 SYSTEM = (
     "You pilot one seat in a Magic: The Gathering fixture game. "
     "Each user message contains your current player observation and an indexed action list. "
-    'Return ONLY a JSON object of the form {"action": 0}, selecting an offered index. '
+    "You may reason before committing to an action. End your reply with exactly one "
+    '<answer>{"action": 0}</answer> block, selecting an offered integer index. '
+    "Put any visible reasoning before the answer block and nothing after it. "
+    "The answer must contain only that JSON object, optionally in a JSON code fence. "
+    "If you omit reasoning, a bare JSON object or a single JSON code fence is also valid. "
     "You see your own hand and public information. Your recent history contains only your seat's decisions. "
     "Your registered decklist is provided below; use it to plan your strategy and mulligans. "
     "Counts describe the starting deck, not its current library contents or draw order. "
@@ -27,6 +31,7 @@ SYSTEM = (
 )
 
 DECK_CONTEXT_MARKER = "\nRegistered deck (your seat only):\n"
+ANSWER_PARSER = vf.XMLParser(fields=["answer"])
 
 
 def completion_action(messages) -> int:
@@ -37,13 +42,40 @@ def completion_action(messages) -> int:
             for part in text
         )
     try:
-        result = json.loads(text)
-        if set(result) != {"action"} or type(result["action"]) is not int:
+        text = (text or "").strip()
+        if "<answer>" in text or "</answer>" in text:
+            # XMLParser extracts an answer but does not reject multiple answers.
+            if (
+                text.count("<answer>") != 1
+                or text.count("</answer>") != 1
+                or not text.endswith("</answer>")
+            ):
+                raise ValueError("Expected one final answer block")
+            text = ANSWER_PARSER.parse_answer(text)
+        if not text:
+            raise ValueError("Expected an answer")
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if (
+                len(lines) < 3
+                or lines[0] not in {"```", "```json"}
+                or lines[-1] != "```"
+            ):
+                raise ValueError("Expected one complete JSON code fence")
+            text = "\n".join(lines[1:-1])
+        # Preserve object pairs so duplicate action keys cannot silently win.
+        result = json.loads(text, object_pairs_hook=tuple)
+        if (
+            type(result) is not tuple
+            or len(result) != 1
+            or result[0][0] != "action"
+            or type(result[0][1]) is not int
+        ):
             raise ValueError("Expected a single integer action")
-        return result["action"]
+        return result[0][1]
     except (TypeError, ValueError, KeyError) as exc:
         raise vf.InvalidModelResponseError(
-            'Respond with exactly {"action": <offered index>}'
+            'End with one <answer>{"action": <offered index>}</answer> block'
         ) from exc
 
 

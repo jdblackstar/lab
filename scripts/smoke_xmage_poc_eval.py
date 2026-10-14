@@ -64,6 +64,8 @@ def main():
                 payload = json.loads(
                     self.rfile.read(int(self.headers["Content-Length"]))
                 )
+                assert payload["max_completion_tokens"] == 4096
+                assert "max_tokens" not in payload
                 observations = []
                 for message in payload["messages"]:
                     if message["role"] != "user":
@@ -96,7 +98,17 @@ def main():
                 )
                 assert len(observations) <= 4
                 requests.append(observations)
-                completion = json.dumps({"action": advance_action(observations[-1])})
+                action_json = json.dumps({"action": advance_action(observations[-1])})
+                # Exercise instruct, hidden-reasoning, and visible-reasoning replies.
+                completion = (
+                    action_json,
+                    f"```json\n{action_json}\n```",
+                    f"I will advance the game.\n<answer>{action_json}</answer>",
+                    (
+                        f"<think>I will advance the game.</think>\n"
+                        f"<answer>```json\n{action_json}\n```</answer>"
+                    ),
+                )[(len(requests) - 1) % 4]
                 decision = observations[-1]["decision"]
                 attempts[decision] = attempts.get(decision, 0) + 1
                 if args.inject_invalid_replies:
@@ -117,7 +129,11 @@ def main():
                         "choices": [
                             {
                                 "index": 0,
-                                "message": {"role": "assistant", "content": completion},
+                                "message": {
+                                    "role": "assistant",
+                                    "content": completion,
+                                    "reasoning_content": "Choose the scripted action.",
+                                },
                                 "finish_reason": "stop",
                             }
                         ],
@@ -162,7 +178,7 @@ def main():
                     environment.dataset[0],
                     client,
                     "xmage-scripted-local",
-                    {"max_tokens": 32},
+                    {"max_tokens": 4096},
                 )
                 assert state.get("error") is None, state.get("error")
                 assert state.get("recording_audit", {}).get("privacy_passed")
@@ -212,7 +228,7 @@ def main():
                     "-c",
                     "1",
                     "-t",
-                    "32",
+                    "4096",
                     "-a",
                     json.dumps(env_args),
                     "-o",
