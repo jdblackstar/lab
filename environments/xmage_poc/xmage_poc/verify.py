@@ -98,8 +98,10 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
     by_sequence = {s["sequence"]: s for s in states}
     require(len(by_sequence) == len(states), "Duplicate state sequence")
     if "starting_player" in manifest:
+        # Benchmark recordings omit event snapshots such as BEGIN_TURN; every
+        # snapshot in turn 1 with an active player names the starting player.
         first_turn = next(
-            (s for s in states if s["event"].get("type") == "BEGIN_TURN"), None
+            (s for s in states if s["turn"] == 1 and s["active_player"]), None
         )
         require(first_turn is not None or not require_finished, "No turn began")
         if first_turn is not None:
