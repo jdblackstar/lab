@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import verifiers.v1 as vf
-from pydantic import Field, StrictBool, StrictInt, field_validator
+from pydantic import Field, field_validator
 
 from .harness import XMageHarness
 from .render import (
@@ -238,12 +238,21 @@ class XMageEnvConfig(vf.EnvConfig):
     """Java 21 executable (default: XMAGE_JAVA_BIN, then PATH)."""
     history_decisions: int = Field(4, ge=1)
     """Most recent own decisions kept in each seat's prompt."""
-    auto_pass_priority: StrictBool = True
+    auto_pass_priority: bool = True
     """Submit pass-only priority prompts without a model call."""
     observation_format: Literal["json", "text"] = "text"
     recording_mode: Literal["full_audit", "benchmark"] = "full_audit"
-    max_action_attempts: StrictInt = Field(3, ge=1)
+    max_action_attempts: int = Field(3, ge=1)
     """Replies per decision before the fallback action is submitted."""
+
+    @field_validator("max_action_attempts", mode="before")
+    @classmethod
+    def _not_a_bool(cls, value):
+        # CLI values arrive as strings, so stay lax except for booleans.
+        if isinstance(value, bool):
+            # Pydantic reports ValueError, not TypeError, as a ValidationError.
+            raise ValueError("max_action_attempts must be an integer")  # noqa: TRY004
+        return value
 
     @field_validator("opponent")
     @classmethod

@@ -158,3 +158,9 @@ def test_invalid_replies_retry_same_decision_then_fall_back_without_mixing_seats
 def test_action_attempt_bound_must_be_a_positive_integer(bound):
     with pytest.raises(ValidationError, match="max_action_attempts"):
         XMageEnvConfig(max_action_attempts=bound)
+
+
+def test_cli_strings_parse_for_env_knobs():
+    # prime-rl's eval CLI passes --env.* values through as strings.
+    config = XMageEnvConfig(max_action_attempts="2", auto_pass_priority="false")
+    assert (config.max_action_attempts, config.auto_pass_priority) == (2, False)
