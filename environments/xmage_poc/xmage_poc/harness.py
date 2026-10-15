@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import traceback
 
+import httpx
 from openai import APIError, AsyncOpenAI
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.null import NullHarness
@@ -47,7 +48,12 @@ class XMageHarness(NullHarness):
         if system:
             messages.insert(0, {"role": "system", "content": system})
         try:
-            async with AsyncOpenAI(base_url=endpoint, api_key=secret) as client:
+            # Like the null chat program: no read limit; the rollout timeouts bound it.
+            async with AsyncOpenAI(
+                base_url=endpoint,
+                api_key=secret,
+                timeout=httpx.Timeout(None, connect=5.0),
+            ) as client:
                 stream = await client.chat.completions.create(
                     model=ctx.model,
                     messages=messages,
