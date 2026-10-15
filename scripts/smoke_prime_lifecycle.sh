@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # End-to-end smoke for the documented Prime + verifiers v1 path:
-#   prime env install <env>  ->  vf-validate <env>  ->  vf-eval <env> ...
+#   prime env install <env>  ->  vf-validate <env>  ->  prime-rl `uv run eval` <env> ...
 #
 # Usage (from repo root):
 #   ./scripts/smoke_prime_lifecycle.sh
 #
-# Optional: set PRIME_API_KEY to also run a minimal ``vf-eval`` (one task, one rollout).
-# Without it, only install + model-free ``vf-validate`` (setup, gold, noop checks) run.
+# Optional: set PRIME_API_KEY to also run a minimal prime-rl eval (one task, one rollout,
+# uploaded to the Prime platform) through scripts/prime_rl_eval.sh, which needs Python
+# 3.12. Without it, only install + model-free ``vf-validate`` (setup, gold, noop) run.
 
 set -euo pipefail
 
@@ -39,23 +40,31 @@ if summary["valid_rate"] != 1.0:
 PY
 
 if [[ -n "${PRIME_API_KEY:-}" ]]; then
-  echo "==> vf-eval (minimal)"
-  vf-eval dbt-debugger \
+  echo "==> prime-rl eval (minimal)"
+  bash "$ROOT/scripts/prime_rl_eval.sh" "$ROOT/environments/dbt_debugger" dbt-debugger \
     -m deepseek/deepseek-v4-flash \
-    -n 1 -r 1 \
-    --output-dir "$OUT_DIR" --run.dir eval
-  # vf-eval exits 0 even when a rollout errors; require a clean trace.
-  python - "$OUT_DIR/eval/traces.jsonl" <<'PY'
+    -n 1 -r 1 -c 1 \
+    --output-dir "$OUT_DIR" --run.name eval \
+    --monitors.prime
+  # The eval exits 0 even when a rollout errors; require every planned episode to
+  # land in the file monitor's trace index without errors.
+  python - "$OUT_DIR/eval/monitors/file" <<'PY'
 import json
 import sys
+from pathlib import Path
 
-traces = [t for line in open(sys.argv[1]) for t in json.loads(line)["traces"]]
-errors = [e for t in traces for e in t["errors"]]
-if not traces or errors:
-    sys.exit(f"vf-eval: rollout errors: {errors or 'no traces'}")
+monitor = Path(sys.argv[1])
+plan = json.loads((monitor / "plan.json").read_text())
+planned = sum(n for groups in plan.values() for n in groups.values())
+index = monitor / "traces" / "stream.index.jsonl"
+episodes = [json.loads(line) for line in index.read_text().splitlines() if line]
+bad = [e for e in episodes if not e["ok"] or e["num_errors"]]
+if len(episodes) != planned or bad:
+    sys.exit(f"prime-rl eval: {len(episodes)}/{planned} episodes landed; errored: {bad}")
+print(f"prime-rl eval: {len(episodes)}/{planned} episodes landed without errors")
 PY
 else
-  echo "==> skip vf-eval (set PRIME_API_KEY to include eval smoke)"
+  echo "==> skip prime-rl eval (set PRIME_API_KEY to include eval smoke)"
 fi
 
 echo "==> OK"
