@@ -70,7 +70,7 @@ Local execution uses **`dbt-duckdb`** and bundled `sample_data` loaded into Duck
 | `spec/runtime_mapping.md`             | Corpus → verifiers v1 mapping                                              |
 | `validation/`                         | JSON Schema + `validate_scenarios.py`                                      |
 | `tests/`                              | Pytest smoke for workspace, dbt compile, tools, scoring, v1 wiring         |
-| `outputs/`                            | Local `vf-eval` / `vf-validate` runs (ignored by git from repo root `.gitignore`) |
+| `outputs/`                            | Local eval / `vf-validate` runs (ignored by git from repo root `.gitignore`) |
 
 
 ## Validate scenarios
@@ -99,28 +99,34 @@ cd environments/dbt_debugger
 uv run vf-validate dbt-debugger --runtime.type subprocess
 ```
 
-## Install and eval (smoke)
+## Eval
+
+Evals run through prime-rl's `uv run eval` (verifiers 0.4's `vf-eval` is deprecated in its favor). prime-rl is not on PyPI, so [`scripts/prime_rl_eval.sh`](../../scripts/prime_rl_eval.sh) checks out a pinned prime-rl commit into `~/.cache/prime-rl/`, syncs its Python 3.12 venv, installs this package into it, and forwards the remaining arguments to `uv run eval`. From the repo root:
 
 ```bash
-prime env install dbt-debugger -p /path/to/environments
-uv run vf-eval dbt-debugger -m deepseek/deepseek-v4-flash -n 2 -r 1
+scripts/prime_rl_eval.sh environments/dbt_debugger dbt-debugger \
+  -m deepseek/deepseek-v4-flash -n 2 -r 1 -c 2
 ```
 
-`vf-eval` uses Prime Inference with `PRIME_API_KEY` by default. Results are written under `outputs/<run>/` (`traces.jsonl`, resolved config, logs).
+The model is served by Prime Inference with `PRIME_API_KEY`. `-c N` pins the concurrency (an API exposes no load metrics to adapt to). Each run writes `outputs/<run.name>/` (`configs/`, `logs/`, and the file monitor's metrics and trace stream under `monitors/file/`). Add `--monitors.prime` to upload the run as a Prime evaluation, and `--output-dir` / `--run.name` to place it. The eval exits 0 even when rollouts error; check `monitors/file/traces/stream.index.jsonl` (`ok`, `num_errors`) or the `Error` share in the `Evaluated dbt-debugger ...` line of `logs/latest/eval.log`.
 
 Filter one scenario:
 
 ```bash
-uv run vf-eval dbt-debugger -m deepseek/deepseek-v4-flash \
-  --select.include.ids join_fanout_exec_revenue -n 1 -r 1
+scripts/prime_rl_eval.sh environments/dbt_debugger dbt-debugger \
+  -m deepseek/deepseek-v4-flash -n 1 -r 1 -c 1 \
+  --select.include.ids '["join_fanout_exec_revenue"]'
 ```
 
 Raise the turn budget:
 
 ```bash
-uv run vf-eval dbt-debugger -m deepseek/deepseek-v4-flash \
-  --select.include.ids join_fanout_exec_revenue --env.agent.max-turns 25
+scripts/prime_rl_eval.sh environments/dbt_debugger dbt-debugger \
+  -m deepseek/deepseek-v4-flash -n 1 -r 1 -c 1 \
+  --select.include.ids '["join_fanout_exec_revenue"]' --env.agent.max-turns 25
 ```
+
+To install the package for other tooling (for example `vf-validate`), `prime env install dbt-debugger -p /path/to/environments` still works.
 
 ## Current Verification Snapshot
 
@@ -162,4 +168,4 @@ Tools are advertised under these bare names (`TOOL_PREFIX = None`). Workspace pa
 
 ## Required environment variables
 
-None for the taskset itself. `vf-eval` needs the inference key for its client (`PRIME_API_KEY` for the default Prime Inference endpoint).
+None for the taskset itself. The eval needs the inference key for its client (`PRIME_API_KEY` for the default Prime Inference endpoint).
