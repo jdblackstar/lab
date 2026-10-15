@@ -1,4 +1,8 @@
-"""Tool callables for ``StatefulToolEnv`` (filesystem, dbt, diagnosis)."""
+"""Tool implementations (filesystem, dbt, evidence, diagnosis) behind the MCP toolset.
+
+Rollout-specific inputs (project root, globs, rollout state) are keyword-only and
+supplied by ``DbtDebuggerToolset``; they never appear in the model-visible schemas.
+"""
 
 from __future__ import annotations
 
@@ -13,27 +17,39 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from claim_text_matching import text_contains_option
-from runtime.sample_rows import matching_sample_rows
-from runtime.types import DiagnosisSubmission, EvidenceRef, RolloutStateKeys
+from dbt_debugger.claim_text_matching import text_contains_option
+from dbt_debugger.sample_rows import matching_sample_rows
+from dbt_debugger.types import DiagnosisSubmission, EvidenceRef, RolloutStateKeys
 
 _ALLOWED_DBT_SUBCOMMANDS = frozenset({"parse", "compile", "ls", "run", "test", "build"})
 _ALLOWED_DBT_RESOURCE_TYPES = frozenset(
     {"model", "test", "source", "seed", "snapshot", "exposure"}
 )
 _RUN_HISTORY_RECORD_TYPES = frozenset({"summary", "model", "test", "warning"})
-_EXTRA_READ_GLOBS = ("debug_context/**", "target/**", "logs/**")
+_DEBUG_CONTEXT_GLOB = "debug_context/**"
+_EXTRA_READ_GLOBS = (_DEBUG_CONTEXT_GLOB, "target/**", "logs/**")
 
 
 def dbt_argv(project_root: str, dbt_args: list[str]) -> list[str]:
-    """Build argv for invoking dbt: prefer ``dbt`` on PATH, else ``python -m dbt``.
+    """Build argv for invoking dbt from the running interpreter's environment.
 
-    Used by ``run_dbt_command`` and by tests so compile smoke checks match runtime.
+    Prefer the ``dbt`` script installed next to ``sys.executable`` (the tool server runs
+    as ``python -m`` without an activated venv), then ``dbt`` on ``PATH``, then dbt's
+    console entry point through the interpreter. Used by ``run_dbt_command`` and by tests
+    so compile smoke checks match runtime.
     """
-    exe = shutil.which("dbt")
+    sibling = Path(sys.executable).parent / "dbt"
+    exe = str(sibling) if sibling.is_file() else shutil.which("dbt")
     if exe:
         return [exe, *dbt_args, "--project-dir", project_root]
-    return [sys.executable, "-m", "dbt", *dbt_args, "--project-dir", project_root]
+    return [
+        sys.executable,
+        "-c",
+        "from dbt.cli.main import cli; cli()",
+        *dbt_args,
+        "--project-dir",
+        project_root,
+    ]
 
 
 def _append_trace(
@@ -172,6 +188,17 @@ def _path_matches_globs(rel_posix: str, globs: list[str]) -> bool:
         if _glob_matches_segments(path_segments, _glob_segments(pattern)):
             return True
     return False
+
+
+def _globs_for_list_and_search(manifest_globs: list[str]) -> list[str]:
+    """Append ``debug_context/**`` when missing so list/search can see debug_context."""
+    out = list(manifest_globs)
+    norm = {g.replace("\\", "/").strip() for g in out}
+    if _DEBUG_CONTEXT_GLOB not in norm and not any(
+        g.endswith("debug_context/**") for g in norm
+    ):
+        out.append(_DEBUG_CONTEXT_GLOB)
+    return out
 
 
 def _effective_read_globs(tool_visible_globs: list[str]) -> list[str]:

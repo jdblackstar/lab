@@ -1,97 +1,107 @@
-# Static scenario corpus → Verifiers runtime mapping
+# Static scenario corpus → verifiers v1 runtime mapping
 
-This document ties the JSON corpus in `scenarios/gold/` to the eventual `vf.StatefulToolEnv` implementation. It satisfies the **runtime shape** and **executable harness** planning steps from the benchmark roadmap.
+This document ties the JSON corpus in `dbt_debugger/scenarios/gold/` to the verifiers v1 taskset in `dbt_debugger/` (`verifiers>=0.4.0`, `import verifiers.v1 as vf`).
 
-## Why `StatefulToolEnv`
+## Package contract
 
-Per [Verifiers Environments](https://docs.primeintellect.ai/verifiers/environments), `ToolEnv`/`MCPEnv` are for stateless tools. A dbt debugging rollout needs:
+`dbt_debugger/__init__.py` exports, via `__all__`:
 
-- A **fresh project directory** per example (isolation, reproducibility).
-- **Hidden arguments** (workspace paths, scenario spec pointers) injected on each tool call via `args_to_skip` + `update_tool_args()`.
-- Optional **cleanup** of temp dirs after each rollout (`@vf.cleanup`).
+- `DbtDebuggerTaskset` (`vf.Taskset`): loads one `DbtDebuggerTask` per gold scenario.
+- `DbtDebuggerEnv` (`vf.SingleAgentEnv` subclass): pins the run defaults below.
 
-That matches the documented `StatefulToolEnv` pattern.
+There is no `load_environment()`; the v1 loader resolves both classes and their typed configs from `__all__`.
 
-## `load_environment()` contract
+| v0 (`verifiers` 0.1.x)                         | v1 (this package)                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------ |
+| Dataset row (`question`, `info`)               | `DbtDebuggerData(vf.TaskData)`: `prompt`, `scenario_id`, `difficulty_tier`     |
+| `load_environment(**kwargs)`                   | `DbtDebuggerTaskset` + `DbtDebuggerConfig`                                     |
+| `StatefulToolEnv` tools + `args_to_skip`       | `DbtDebuggerToolset(vf.Toolset)`, one server per rollout (`Task.toolsets`)     |
+| `setup_state()` workspace materialization      | `DbtDebuggerToolset.setup_task()`                                              |
+| Dict state                                     | `DbtDebuggerState(vf.State)` + `trace.info` after `finalize`                   |
+| `@vf.stop _diagnosis_accepted`                 | `@vf.stop diagnosis_accepted` on the task                                      |
+| `Rubric` reward + metrics                      | `@vf.reward diagnosis_reward`, `@vf.metric` on the task                        |
+| `max_turns=20` constructor arg                 | `DbtDebuggerEnvConfig.agent.max_turns = 20` (`--env.agent.max-turns`)          |
+| `@vf.cleanup` workspace removal                | Server exit stack + the subprocess runtime's workdir teardown                  |
 
-Expose explicit keyword parameters so `prime eval run` can slice the benchmark:
+## Run configuration
 
+| Knob                    | Default                         | CLI                                              |
+| ----------------------- | ------------------------------- | ------------------------------------------------ |
+| One scenario            | all 10                          | `--select.include.ids join_fanout_exec_revenue`  |
+| Difficulty tier         | all                             | `--env.taskset.difficulty-tier 3`                |
+| Number of tasks         | all                             | `-n 2`                                           |
+| Max model turns         | `20`                            | `--env.agent.max-turns 25`                       |
+| Harness                 | `null` (tools only)             | code-executing harnesses are refused             |
+| Harness runtime         | local `subprocess`              | `--env.agent.runtime.type ...`                   |
+| Tool server runtime     | local `subprocess`              | `--env.taskset.task.tools.runtime.type ...`      |
 
-| Parameter         | Purpose                               | CLI mapping                                                                                        |
-| ----------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `scenario_id`     | Single scenario                       | `--env-args '{"scenario_id":"join_fanout_exec_revenue"}'`                                          |
-| `difficulty_tier` | Filter by tier                        | `--env-args '{"difficulty_tier":3}'`                                                               |
-| `scenario_set`    | Future sets (`gold`, `synth`)         | `--env-args '{"scenario_set":"gold"}'`                                                             |
-| `max_scenarios`   | Cap rows after filters                | `--env-args '{"max_scenarios":2}'`                                                                 |
-| `max_turns`       | Tool turns (future `StatefulToolEnv`) | `--extra-env-kwargs '{"max_turns":25}'` or add to `load_environment()` when the tool harness lands |
+Code-executing harnesses (for example `bash`) are refused because a shell on the evaluator host could read the answer keys bundled under `dbt_debugger/scenarios/gold/` instead of debugging the project.
 
+## Task data
 
-**Implementation note:** `--env-args` passes JSON into `load_environment()`; `--extra-env-kwargs` passes kwargs to the environment constructor ([Evaluation docs](https://docs.primeintellect.ai/verifiers/evaluation)). The corpus-phase `SingleTurnEnv` does not expose multi-turn tooling; add `max_turns` to `load_environment()` once `StatefulToolEnv` replaces it.
+Each JSON file becomes one task:
 
-## Dataset rows
+| Field             | Source                                   | Notes                                                   |
+| ----------------- | ---------------------------------------- | ------------------------------------------------------- |
+| `prompt`          | `symptom.message` + task instructions    | Do **not** embed `ground_truth`.                        |
+| `id`              | `scenario_id`                            | Also the task `key`, so selection is order-independent. |
+| `name`            | `title`                                  | Display only.                                           |
+| `scenario_id`     | `scenario_id`                            | The tool server and scoring load the full spec by id.   |
+| `difficulty_tier` | `difficulty_tier`                        | Reported as `difficulty_metric`.                        |
 
-Each JSON file becomes one dataset row:
+`TaskData` rides on every trace and is sent to the tool server, so the full spec (ground truth, rubric hints) is never stored on it; both sides load it from the bundled JSON.
 
+## Tool server responsibilities
 
-| Column                 | Source                                                   | Notes                                    |
-| ---------------------- | -------------------------------------------------------- | ---------------------------------------- |
-| `question` or `prompt` | `symptom.message` + task instructions                    | Do **not** embed `ground_truth`.         |
-| `info`                 | `scenario_id`, `difficulty_tier`, optional safe metadata | Rich spec stays in evaluator state only. |
+`DbtDebuggerToolset.setup_task(task_data)` runs once per rollout in the tool server process:
 
+1. Load the scenario JSON keyed by `scenario_id`.
+2. Materialize `dbt_project.files` (+ optional seeds/macros), `debug_context/`, a rollout-local `profiles.yml`, and DuckDB source tables under a temporary workspace (inside the server runtime's workdir).
+3. Keep `project_root`, `profiles_dir`, `duckdb_path`, the manifest globs, valid model names, and the spec on the server. None of them appear in tool schemas.
 
-For large corpora, switch to `vf.DatasetBuilder` (lazy builder) as described in the Environments guide.
+Rollout state that the task needs lives in `DbtDebuggerState` (`collected_evidence`, `submitted_diagnosis`, `tool_trace`) and is synced with the host around every tool call.
 
-## `setup_state()` responsibilities
+## Tool surface
 
-1. Parse the scenario JSON for this row (or load from bundled path keyed by `scenario_id`).
-2. Materialize `dbt_project.files` (+ optional seeds/macros) under a **temporary** `workspace_root`.
-3. Store in `state`:
-  - `workspace_root`, `project_root`
-  - `scenario_spec` (full dict) **for rubric only**
-  - `artifact_manifest`
-  - `submitted_diagnosis` (empty until tool call)
+`TOOL_PREFIX = None`, so tools are advertised under the bare names the prompt uses. Descriptions and parameter schemas match v0; parameters with defaults are optional.
 
-## Tool surface (planned)
-
-
-| Tool                    | Model-visible args                         | Hidden injected args                | Behavior |
-| ----------------------- | ------------------------------------------ | ----------------------------------- | -------- |
-| `list_files`            | `path`, `max_entries`                      | `project_root`, rollout state       | Directory listing under workspace |
-| `read_file`             | `path`, line range                         | `project_root`, rollout state       | Read text file |
-| `search_project`        | `pattern`, `glob`                          | `project_root`, rollout state       | Ripgrep-like search (async-friendly) |
-| `run_dbt_command`       | structured subcommand + selectors          | `project_root`, `profiles_dir`, rollout state | Run a restricted `dbt` subprocess without arbitrary CLI flags |
-| `read_artifact`         | `path`                                     | `project_root`, rollout state       | Read `target/` or logs if allowed by manifest |
-| `add_file_evidence`     | `path`, `start_line`, `end_line`           | `project_root`, rollout state       | Validate/store one `file_span` citation from a project file |
-| `add_sample_rows_evidence` | `table`, `match_json`, `min_rows`       | rollout state                       | Validate/store one `sample_rows` citation from `debug_context/sample_data.json` |
-| `add_run_history_evidence` | `record_type`, optional filters         | `valid_model_names`, rollout state  | Validate/store one `run_history` citation from `debug_context/run_history.json` |
-| `list_collected_evidence` | none                                     | rollout state                       | Show the evidence currently stored for the rollout |
-| `submit_diagnosis`      | `has_bug`, `root_cause`, `buggy_models`, `fix` | `scenario_id`, `valid_model_names`, rollout state | Validates payload (`buggy_models` empty when `has_bug` is false), bundles previously collected evidence, and sets the stop flag |
-
-
-Register each with `add_tool(..., args_to_skip=[...])` and implement `update_tool_args()` to merge hidden fields from `state`.
+| Tool                       | Model-visible args                               | Server-side context                       | Behavior |
+| -------------------------- | ------------------------------------------------ | ----------------------------------------- | -------- |
+| `list_files`               | `path`, `max_entries`                            | project root, globs + `debug_context/**`  | Directory listing under workspace |
+| `read_file`                | `path`, line range                               | project root, globs                       | Read text file |
+| `search_project`           | `pattern`, `glob_pattern`, `max_matches`         | project root, globs + `debug_context/**`  | Regex search |
+| `run_dbt_command`          | structured subcommand + selectors                | project root, `profiles_dir`              | Run a restricted `dbt` subprocess without arbitrary CLI flags |
+| `read_artifact`            | `path`, line range                               | project root, globs                       | Read `target/` or logs |
+| `add_file_evidence`        | `path`, `start_line`, `end_line`                 | project root, state                       | Validate/store one `file_span` citation from a project file |
+| `add_sample_rows_evidence` | `table`, `match_json`, `min_rows`                | spec, state                               | Validate/store one `sample_rows` citation from `debug_context/sample_data.json` |
+| `add_run_history_evidence` | `record_type`, optional filters                  | spec, valid model names, state            | Validate/store one `run_history` citation from `debug_context/run_history.json` |
+| `list_collected_evidence`  | none                                             | state                                     | Show the evidence currently stored for the rollout |
+| `submit_diagnosis`         | `has_bug`, `root_cause`, `buggy_models`, `fix`   | scenario id, valid model names, state     | Validates payload (`buggy_models` empty when `has_bug` is false), bundles collected evidence, and sets `submitted_diagnosis` |
 
 ## Stop conditions
 
-- `@vf.stop` when `submit_diagnosis` succeeds.
-- Built-in `max_turns` / errors from Verifiers apply otherwise.
+- `@vf.stop diagnosis_accepted` fires before the next model call once `submitted_diagnosis` is set.
+- The agent's `max_turns` limit (default 20) applies otherwise.
 
-## Rubric (deterministic first)
+## Scoring (deterministic)
 
-1. Parse `submitted_diagnosis` payload (root cause, `buggy_models`, fix, previously collected structured evidence refs).
+`DbtDebuggerTask.finalize` copies the state into `trace.info` (`submitted_diagnosis`, `collected_evidence`, `tool_trace`, `verification_result`). Scoring recomputes the pure `score_diagnosis` audit from `trace.info`, so metrics never depend on reward execution order:
+
+1. Parse the submitted payload (root cause, `buggy_models`, fix, collected structured evidence refs).
 2. Compare to `rubric_hints.accepted_diagnoses` plus grounded `required_evidence`.
 3. For `has_bug: false`, assert **no** forbidden claim patterns (`rubric_hints.forbidden_claims`).
-4. Optional later: `vf.JudgeRubric` for explanation quality, composed via `vf.RubricGroup` ([Environments — RubricGroup](https://docs.primeintellect.ai/verifiers/environments)).
+
+`diagnosis_reward` is `strict_pass`; `difficulty_metric` and the audit fields (`strict_pass`, `has_bug_match`, `buggy_models_match`, `diagnosis_variant_ok`, `root_cause_coverage`, `fix_coverage`, `required_evidence_coverage`, `forbidden_ok`, `no_bug_semantic_partial`) are metrics.
+
+## Model-free validation
+
+`DbtDebuggerTask.validate` is the `vf-validate` gold check: it materializes the workspace, stores the `required_evidence` through the real evidence tools, submits `ground_truth` through `submit_diagnosis`, and requires a strict pass. The noop check confirms an untouched rollout scores 0.
 
 ## Packaging and install
 
-- Environment package name: `dbt-debugger` (maps to module `dbt_debugger` for `prime eval run dbt-debugger`).
-- Include `scenarios/gold/*.json` in the wheel/sdist via `[tool.hatch.build]` `include` so `load_environment()` works after `prime env install dbt-debugger`.
-- Defaults in `[tool.verifiers.eval]` follow [Developing Environments](https://docs.primeintellect.ai/verifiers/environments).
-
-## Current phase (implemented)
-
-`dbt_debugger.py` exposes `load_environment()` building a `DbtDebuggerEnv` `StatefulToolEnv` over the gold corpus. Each rollout materializes a temp dbt workspace, exposes bounded debugging tools, and scores a structured diagnosis deterministically.
+- Environment package name: `dbt-debugger` (module `dbt_debugger`).
+- The wheel ships the `dbt_debugger` package, including `dbt_debugger/scenarios/gold/*.json`, so the taskset works after `prime env install dbt-debugger`.
 
 ## Performance hygiene
 
-Avoid blocking the asyncio loop in `setup_state`, tools, and rubrics ([Environments — Performance](https://docs.primeintellect.ai/verifiers/environments)): use `asyncio.to_thread` for subprocesses and heavy file IO where needed.
+Avoid blocking the event loop in tool server setup, tools, and scoring: use `asyncio.to_thread` for heavy file IO and asyncio subprocesses for dbt.

@@ -1,4 +1,4 @@
-"""Per-rollout workspace materialization for ``StatefulToolEnv``."""
+"""Per-rollout dbt + DuckDB workspace materialization."""
 
 from __future__ import annotations
 
@@ -12,8 +12,6 @@ from typing import Any
 
 import duckdb
 import yaml
-
-from runtime.types import RolloutStateKeys
 
 
 @dataclass(frozen=True)
@@ -329,14 +327,3 @@ def cleanup_workspace(workspace_root: Path | str | None) -> CleanupResult:
             message="Workspace cleanup returned without removing the directory",
         )
     return CleanupResult(removed=True, message="Workspace removed")
-
-
-def build_rollout_state_paths(mw: MaterializedWorkspace) -> dict[str, Any]:
-    """Populate ``vf.State`` keys under :class:`RolloutStateKeys` from a materialized workspace."""
-    return {
-        RolloutStateKeys.WORKSPACE_ROOT: str(mw.workspace_root.resolve()),
-        RolloutStateKeys.PROJECT_ROOT: str(mw.project_root.resolve()),
-        RolloutStateKeys.CONTEXT_ROOT: str(mw.context_root.resolve()),
-        RolloutStateKeys.PROFILES_DIR: str(mw.profiles_dir.resolve()),
-        RolloutStateKeys.DUCKDB_PATH: str(mw.duckdb_path.resolve()),
-    }

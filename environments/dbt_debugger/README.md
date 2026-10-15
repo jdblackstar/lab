@@ -35,36 +35,42 @@ This environment is intentionally opinionated about what a good agentic eval sho
 
 ## Implementation Notes
 
-The important implementation pieces are:
+`dbt-debugger` is a native verifiers v1 package (`verifiers>=0.4.0`). The important implementation pieces are:
 
-- `runtime/env.py`: `vf.StatefulToolEnv` wiring, hidden rollout state injection, stop condition, and rubric metrics.
-- `runtime/tools.py`: scoped filesystem/dbt tools plus interactive evidence collection.
-- `runtime/scoring.py`: deterministic root-cause/fix/model/evidence scoring and no-bug guardrails.
+- `dbt_debugger/taskset.py`: `DbtDebuggerTaskset` (one task per gold scenario), the task's stop condition, deterministic reward/metrics, the `vf-validate` gold check, and `DbtDebuggerEnv`, which pins the run defaults.
+- `dbt_debugger/toolset.py`: `DbtDebuggerToolset`, the per-rollout MCP tool server that materializes the dbt workspace and exposes the tools, plus the shared `DbtDebuggerState`.
+- `dbt_debugger/tools.py`: scoped filesystem/dbt tools plus interactive evidence collection.
+- `dbt_debugger/scoring.py`: deterministic root-cause/fix/model/evidence scoring and no-bug guardrails.
 - `validation/validate_scenarios.py`: schema validation plus custom checks that catch impossible evidence and gold/rubric drift.
-- `scenarios/gold/*.json`: compact incident corpus spanning joins, incremental drift, source schema issues, macros/config, business-definition gaps, and no-bug cases.
+- `dbt_debugger/scenarios/gold/*.json`: compact incident corpus spanning joins, incremental drift, source schema issues, macros/config, business-definition gaps, and no-bug cases.
+
+See [`spec/runtime_mapping.md`](spec/runtime_mapping.md) for how the corpus maps onto the v1 taskset, tool server, and scoring.
 
 ## Status
 
-- **Scenario corpus**: Gold JSON scenarios under `scenarios/gold/` with schema in `spec/scenario_schema.md`.
-- **Runtime**: `load_environment()` returns a `**vf.StatefulToolEnv`** (`DbtDebuggerEnv`) that materializes a **temporary dbt + DuckDB workspace** per rollout, exposes filesystem + bounded `dbt` tools, accepts `**submit_diagnosis`**, and scores deterministically against explicit `rubric_hints.accepted_diagnoses` plus grounded evidence requirements (no LLM judge in v1).
+- **Scenario corpus**: Gold JSON scenarios under `dbt_debugger/scenarios/gold/` with schema in `spec/scenario_schema.md`.
+- **Runtime**: each rollout gets a per-rollout tool server that materializes a **temporary dbt + DuckDB workspace**, exposes filesystem + bounded `dbt` tools, and accepts **`submit_diagnosis`**. The diagnosis is scored deterministically against explicit `rubric_hints.accepted_diagnoses` plus grounded evidence requirements (no LLM judge).
+- **Run defaults** (`DbtDebuggerEnv`): the tools-only `null` harness on the local `subprocess` runtime, capped at 20 model turns. Harnesses that execute code (such as `bash`) are refused, because a shell on the evaluator host could read the bundled answer keys.
 
-Local execution uses `**dbt-duckdb**` and bundled `sample_data` loaded into DuckDB to match `sources.yml` — no external warehouse.
+Local execution uses **`dbt-duckdb`** and bundled `sample_data` loaded into DuckDB to match `sources.yml`. No external warehouse is needed.
 
 ## Layout
 
 
-| Path                      | Purpose                                                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `pyproject.toml`          | Package metadata, dependencies (verifiers, dbt, duckdb, pyyaml), Hatch `include`, `[tool.verifiers.eval]` defaults |
-| `spec/scenario_schema.md` | Canonical JSON field definitions                                                                                   |
-| `spec/authoring_guide.md` | How to write new scenarios                                                                                         |
-| `spec/runtime_mapping.md` | Corpus → `StatefulToolEnv` mapping                                                                                 |
-| `scenarios/gold/*.json`   | Reviewed scenarios                                                                                                 |
-| `validation/`             | JSON Schema + `validate_scenarios.py`                                                                              |
-| `runtime/`                | Packaged runtime helpers: workspace materialization, tools, scoring, `DbtDebuggerEnv`                              |
-| `dbt_debugger.py`         | `load_environment()` entrypoint                                                                                    |
-| `tests/`                  | Pytest smoke for workspace, dbt compile, scoring                                                                   |
-| `outputs/`                | Local `prime eval run` artifacts (ignored by git from repo root `.gitignore`)                                      |
+| Path                                  | Purpose                                                                    |
+| ------------------------------------- | -------------------------------------------------------------------------- |
+| `pyproject.toml`                      | Package metadata and dependencies (verifiers, dbt, duckdb, pyyaml)         |
+| `dbt_debugger/__init__.py`            | Exports `DbtDebuggerTaskset` and `DbtDebuggerEnv` via `__all__`            |
+| `dbt_debugger/taskset.py`             | Task data, task (stop, scoring, gold check), taskset, env defaults         |
+| `dbt_debugger/toolset.py`             | Per-rollout MCP tool server and shared rollout state                       |
+| `dbt_debugger/tools.py`, `workspace.py`, `scoring.py` | Tool implementations, workspace materialization, scoring   |
+| `dbt_debugger/scenarios/gold/*.json`  | Reviewed scenarios (shipped in the wheel)                                  |
+| `spec/scenario_schema.md`             | Canonical JSON field definitions                                           |
+| `spec/authoring_guide.md`             | How to write new scenarios                                                 |
+| `spec/runtime_mapping.md`             | Corpus → verifiers v1 mapping                                              |
+| `validation/`                         | JSON Schema + `validate_scenarios.py`                                      |
+| `tests/`                              | Pytest smoke for workspace, dbt compile, tools, scoring, v1 wiring         |
+| `outputs/`                            | Local `vf-eval` / `vf-validate` runs (ignored by git from repo root `.gitignore`) |
 
 
 ## Validate scenarios
@@ -82,30 +88,38 @@ uv sync --extra dev
 uv run --extra dev pytest tests/ -v
 ```
 
+Tests run `dbt compile` per scenario; the tools find the `dbt` script installed next to the running interpreter, so run them through `uv run`.
+
+## Model-free validation
+
+`vf-validate` runs a gold check per task (collect the required evidence and submit the documented ground truth through the real tools; it must strictly pass) and a noop check (an untouched rollout must score 0):
+
+```bash
+cd environments/dbt_debugger
+uv run vf-validate dbt-debugger --runtime.type subprocess
+```
+
 ## Install and eval (smoke)
 
 ```bash
 prime env install dbt-debugger -p /path/to/environments
-uv run --env-file .env prime eval run dbt-debugger \
-  -e /path/to/configs/endpoints.toml \
-  -m openai/gpt-4.1-mini \
-  -n 2 -r 1
+uv run vf-eval dbt-debugger -m deepseek/deepseek-v4-flash -n 2 -r 1
 ```
+
+`vf-eval` uses Prime Inference with `PRIME_API_KEY` by default. Results are written under `outputs/<run>/` (`traces.jsonl`, resolved config, logs).
 
 Filter one scenario:
 
 ```bash
-uv run --env-file .env prime eval run dbt-debugger \
-  -e /path/to/configs/endpoints.toml \
-  -m openai/gpt-4.1-mini \
-  -a '{"scenario_id":"join_fanout_exec_revenue"}' \
-  -n 1 -r 1 -A
+uv run vf-eval dbt-debugger -m deepseek/deepseek-v4-flash \
+  --select.include.ids join_fanout_exec_revenue -n 1 -r 1
 ```
 
-Raise the tool turn budget (passed into `load_environment`):
+Raise the turn budget:
 
 ```bash
-prime eval run dbt-debugger -a '{"scenario_id":"join_fanout_exec_revenue","max_turns":25}' -n 1 -r 1
+uv run vf-eval dbt-debugger -m deepseek/deepseek-v4-flash \
+  --select.include.ids join_fanout_exec_revenue --env.agent.max-turns 25
 ```
 
 ## Current Verification Snapshot
@@ -115,51 +129,37 @@ Local gates currently pass:
 ```bash
 uv run python validation/validate_scenarios.py
 uv run --extra dev pytest tests/ -v
+uv run vf-validate dbt-debugger --runtime.type subprocess
 ```
 
-Expected result: 10 scenario files validate; the focused runtime/validation suite passes.
+Expected result: 10 scenario files validate, the test suite passes, and `vf-validate` reports 10/10 valid gold and noop checks.
 
-Recent one-scenario smoke (`join_fanout_exec_revenue`, `openai/gpt-4.1-mini`) completed end-to-end with the interactive evidence flow:
+A three-scenario `vf-eval` smoke on verifiers 0.4.0 (`deepseek/deepseek-v4-flash`, first three scenarios) completed with no rollout errors and the same shape as the v0 baseline on that model: two rollouts hit the 20-turn cap and one stopped on `diagnosis_accepted` after its diagnosis was stored. All three scored a strict pass of `0.0`.
 
-- environment installed and loaded locally
-- model used `add_file_evidence`, `add_sample_rows_evidence`, and `add_run_history_evidence`
-- `submit_diagnosis` was accepted and rollout stopped on `_diagnosis_accepted`
-- evidence coverage and model-list match were correct
-- strict pass remained `0.0` because the answer missed one root-cause rubric phrase group
-
-That is the intended debugging signal: transport, tools, evidence collection, and scoring work; remaining failures are semantic/rubric fit rather than submission-format friction.
-
-## `load_environment` arguments
+## Configuration
 
 
-| Argument          | Description                                            |
-| ----------------- | ------------------------------------------------------ |
-| `scenario_id`     | Optional stem of one JSON file under `scenarios/gold/` |
-| `difficulty_tier` | Optional filter `1`–`4`                                |
-| `scenario_set`    | Must be `"gold"` (only bundled set)                    |
-| `max_scenarios`   | Cap rows after filters; `-1` = all                     |
-| `max_turns`       | Max model/tool turns per rollout (default `20`)        |
+| Knob                               | Description                                                       |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `--select.include.ids <id>`        | Keep only the named scenario(s) (stems under `scenarios/gold/`)   |
+| `--env.taskset.difficulty-tier N`  | Keep scenarios of difficulty tier `1`–`4`                         |
+| `-n N`                             | Cap the number of tasks                                           |
+| `--env.agent.max-turns N`          | Max model turns per rollout (default `20`)                        |
 
 
 ## Tools (model-visible)
 
-- `list_files`, `read_file`, `search_project` — scoped to the temp project and `artifact_manifest.tool_visible_globs` (plus `debug_context/**`, `target/**`, `logs/**` for reads).
-- `run_dbt_command` — structured subcommand interface (`parse`, `compile`, `ls`, `run`, `test`, `build`) with explicit selector/resource filters; prompt-controlled flags like `--vars` are rejected. Uses rollout-local `DBT_PROFILES_DIR`. If the `dbt` binary is not on `PATH`, the tool falls back to `python -m dbt` using the same interpreter.
-- `read_artifact` — same read rules as `read_file` for logs / `target/`.
-- `add_file_evidence` — store one `file_span` citation from a project file. Rejects `debug_context/`, `target/`, and `logs/` paths with guidance toward the correct evidence tool.
-- `add_sample_rows_evidence` — store one `sample_rows` citation from `debug_context/sample_data.json`.
-- `add_run_history_evidence` — store one `run_history` citation from `debug_context/run_history.json`.
-- `list_collected_evidence` — inspect the evidence currently stored for the rollout.
-- `submit_diagnosis` — `has_bug`, `root_cause`, `buggy_models` (models that must change for a real bug; **must be `[]` when `has_bug` is false**), and `fix`; uses the evidence already collected with the evidence tools and ends the rollout when accepted. If validation fails, the model can correct the payload and retry. Eval summaries also report rubric metrics (e.g. model-list match, evidence coverage, forbidden-claim status) in addition to the primary `strict_pass` reward.
+- `list_files`, `read_file`, `search_project`: scoped to the temp project and `artifact_manifest.tool_visible_globs` (plus `debug_context/**`, `target/**`, `logs/**` for reads).
+- `run_dbt_command`: structured subcommand interface (`parse`, `compile`, `ls`, `run`, `test`, `build`) with explicit selector/resource filters; prompt-controlled flags like `--vars` are rejected. Uses rollout-local `DBT_PROFILES_DIR` and the `dbt` installed with the tool server's interpreter.
+- `read_artifact`: same read rules as `read_file` for logs / `target/`.
+- `add_file_evidence`: store one `file_span` citation from a project file. Rejects `debug_context/`, `target/`, and `logs/` paths with guidance toward the correct evidence tool.
+- `add_sample_rows_evidence`: store one `sample_rows` citation from `debug_context/sample_data.json`.
+- `add_run_history_evidence`: store one `run_history` citation from `debug_context/run_history.json`.
+- `list_collected_evidence`: inspect the evidence currently stored for the rollout.
+- `submit_diagnosis`: `has_bug`, `root_cause`, `buggy_models` (models that must change for a real bug; **must be `[]` when `has_bug` is false**), and `fix`. It uses the evidence already collected with the evidence tools and ends the rollout when accepted. If validation fails, the model can correct the payload and retry. Eval summaries also report audit metrics (e.g. model-list match, evidence coverage, forbidden-claim status) in addition to the primary `diagnosis_reward` (`strict_pass`).
 
-Hidden paths (`profiles.yml`, DuckDB file) are injected via `args_to_skip` + `update_tool_args` and never appear in tool schemas.
+Tools are advertised under these bare names (`TOOL_PREFIX = None`). Workspace paths (`profiles.yml`, the DuckDB file, the project root) live only in the tool server process and never appear in tool schemas.
 
 ## Required environment variables
 
-None for the default environment. If you add a `JudgeRubric` later, validate keys with `vf.ensure_keys(...)` in `load_environment()`.
-
-### Local API keys (`.env`)
-
-`load_environment()` calls `python-dotenv` so variables from `.env` are available in-process. Files are merged with **first definition wins** (and never overriding variables already exported in the shell): `.env` in the current working directory, then `environments/dbt_debugger/.env`, then the repo root `.env` (parent of `environments/`). Put shared keys in the repo root file; override locally in cwd when needed.
-
-For `prime eval run`, the Prime CLI still needs the same keys in the environment it uses to call inference unless you export them or use your shell’s dotenv integration; loading here helps Python entrypoints (and any code that runs after `load_environment()` inside the same process).
+None for the taskset itself. `vf-eval` needs the inference key for its client (`PRIME_API_KEY` for the default Prime Inference endpoint).

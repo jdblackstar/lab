@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 import json
 import os
 import subprocess
@@ -11,11 +12,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from datasets import Dataset
+import verifiers.v1 as vf
+from mcp.server.mcpserver import MCPServer
 
-from runtime.sample_rows import matching_sample_rows
-from runtime.scoring import score_diagnosis
-from runtime.tools import (
+from dbt_debugger.sample_rows import matching_sample_rows
+from dbt_debugger.scenarios import GOLD_DIR
+from dbt_debugger.scoring import score_diagnosis
+from dbt_debugger.taskset import (
+    DbtDebuggerConfig,
+    DbtDebuggerData,
+    DbtDebuggerTask,
+    DbtDebuggerTaskset,
+)
+from dbt_debugger.tools import (
+    _globs_for_list_and_search,
     add_file_evidence,
     add_run_history_evidence,
     add_sample_rows_evidence,
@@ -27,25 +37,32 @@ from runtime.tools import (
     run_dbt_command,
     submit_diagnosis,
 )
-from runtime.types import RolloutStateKeys
-from runtime.workspace import cleanup_workspace, materialize_scenario_workspace
-
-_ROOT = Path(__file__).resolve().parent.parent
+from dbt_debugger.toolset import DbtDebuggerToolset
+from dbt_debugger.types import RolloutStateKeys
+from dbt_debugger.workspace import cleanup_workspace, materialize_scenario_workspace
 
 
 def _spec(name: str) -> dict[str, Any]:
     """Return one gold scenario payload by scenario id."""
-    path = _ROOT / "scenarios" / "gold" / f"{name}.json"
+    path = GOLD_DIR / f"{name}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _all_specs() -> list[dict[str, Any]]:
     """Return all bundled gold scenario payloads."""
-    scenario_dir = _ROOT / "scenarios" / "gold"
+    scenario_dir = GOLD_DIR
     return [
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted(scenario_dir.glob("*.json"))
     ]
+
+
+def _task_data(name: str) -> DbtDebuggerData:
+    """Return the task data the taskset builds for one scenario id."""
+    spec = _spec(name)
+    return DbtDebuggerData(
+        scenario_id=name, difficulty_tier=spec["difficulty_tier"], prompt="stub"
+    )
 
 
 def _scenario_ids() -> list[str]:
@@ -797,7 +814,7 @@ def test_cleanup_workspace_refuses_unmarked_dir(tmp_path: Path) -> None:
 def test_cleanup_workspace_surfaces_rmtree_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import runtime.workspace as workspace_mod
+    import dbt_debugger.workspace as workspace_mod
 
     spec = _spec("join_fanout_exec_revenue")
     workspace = materialize_scenario_workspace(spec)
@@ -816,9 +833,6 @@ def test_cleanup_workspace_surfaces_rmtree_failure(
 
 
 def test_list_files_respects_globs() -> None:
-    from runtime.env import _globs_for_list_and_search
-    from runtime.tools import list_files
-
     spec = _spec("join_fanout_exec_revenue")
     workspace = materialize_scenario_workspace(spec)
     try:
@@ -842,47 +856,24 @@ def test_list_files_respects_globs() -> None:
 
 def test_list_debug_context_via_env_globs() -> None:
     """Manifest-only globs still allow listing debug_context/."""
-    from runtime.env import _globs_for_list_and_search
-
     merged = _globs_for_list_and_search(["models/**", "dbt_project.yml"])
     assert "debug_context/**" in merged
 
 
 def test_explicit_empty_manifest_globs_do_not_expand_visibility() -> None:
-    from runtime.env import DbtDebuggerEnv, build_rubric
-
-    spec = _spec("join_fanout_exec_revenue")
-    workspace = materialize_scenario_workspace(spec)
-    env = DbtDebuggerEnv(
-        dataset=Dataset.from_list([{"question": "stub", "answer": "n/a", "info": {}}]),
-        eval_dataset=Dataset.from_list(
-            [{"question": "stub", "answer": "n/a", "info": {}}]
-        ),
-        rubric=build_rubric(),
-    )
-    state: dict[str, Any] = {
-        RolloutStateKeys.PROJECT_ROOT: str(workspace.project_root),
-        RolloutStateKeys.TOOL_VISIBLE_GLOBS: [],
-        RolloutStateKeys.IMMUTABLE_PATHS: [],
-    }
-    try:
-        tool_args = env.update_tool_args("list_files", {}, [], state)
-
-        async def _run() -> str:
-            return await list_files(
-                ".",
-                max_entries=50,
-                project_root=tool_args["project_root"],
-                tool_visible_globs=tool_args["tool_visible_globs"],
-                immutable_paths=tool_args["immutable_paths"],
+    async def _run() -> str:
+        toolset = DbtDebuggerToolset(vf.ToolsetConfig())
+        async with toolset._exit_stack:
+            await toolset.setup_task(_task_data("join_fanout_exec_revenue"))
+            toolset._workspace = replace(
+                toolset.workspace, tool_visible_globs=[], immutable_paths=[]
             )
+            return await toolset.list_files(".", max_entries=50)
 
-        output = asyncio.run(_run())
-        assert "debug_context" in output
-        assert "dbt_project.yml" not in output
-        assert "models/staging/stg_orders.sql" not in output
-    finally:
-        cleanup_workspace(workspace.workspace_root)
+    output = asyncio.run(_run())
+    assert "debug_context" in output
+    assert "dbt_project.yml" not in output
+    assert "models/staging/stg_orders.sql" not in output
 
 
 def test_corpus_targets_match_distribution() -> None:
@@ -898,29 +889,106 @@ def test_corpus_targets_match_distribution() -> None:
     assert any(set(spec["failure_categories"]) == {"config"} for spec in specs)
 
 
-def test_load_environment_returns_stateful_env() -> None:
-    from dbt_debugger import load_environment
+def test_taskset_loads_gold_scenarios_without_answer_keys() -> None:
+    tasks = list(DbtDebuggerTaskset(DbtDebuggerConfig(id="dbt-debugger")))
+    assert [task.key for task in tasks] == _scenario_ids()
+    for task in tasks:
+        spec = _spec(task.key)
+        assert spec["symptom"]["message"] in task.data.prompt
+        assert "submit_diagnosis" in task.data.prompt
+        assert spec["ground_truth"]["root_cause"] not in task.data.prompt
+    tier_two = list(
+        DbtDebuggerTaskset(DbtDebuggerConfig(id="dbt-debugger", difficulty_tier=2))
+    )
+    assert {task.data.difficulty_tier for task in tier_two} == {2}
+    assert len(tier_two) == 3
 
-    env = load_environment(scenario_id="join_fanout_exec_revenue", max_scenarios=1)
-    assert env.__class__.__name__ == "DbtDebuggerEnv"
-    names = {tool.name for tool in (env.tool_defs or [])}
-    assert "add_file_evidence" in names
-    assert "add_sample_rows_evidence" in names
-    assert "add_run_history_evidence" in names
-    assert "list_collected_evidence" in names
-    assert "submit_diagnosis" in names
+
+def test_toolset_advertises_v0_tool_names_without_hidden_args() -> None:
+    mcp = MCPServer("dbt-debugger")
+    DbtDebuggerToolset(vf.ToolsetConfig()).register(mcp)
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+    assert set(tools) == {
+        "list_files",
+        "read_file",
+        "search_project",
+        "run_dbt_command",
+        "read_artifact",
+        "add_file_evidence",
+        "add_sample_rows_evidence",
+        "add_run_history_evidence",
+        "list_collected_evidence",
+        "submit_diagnosis",
+    }
+    hidden = {"project_root", "profiles_dir", "duckdb_path", "rollout_state", "_state"}
+    for tool in tools.values():
+        assert not hidden & set(tool.input_schema["properties"])
+    assert set(tools["submit_diagnosis"].input_schema["required"]) == {
+        "has_bug",
+        "root_cause",
+        "buggy_models",
+        "fix",
+    }
 
 
-def test_build_rubric_uses_human_readable_metric_names() -> None:
-    """Eval output should expose audit metrics under their rubric field names."""
-    from runtime.env import build_rubric
+def test_toolset_submission_stops_and_scores_strict_pass() -> None:
+    """Evidence and diagnosis written through the toolset reach the task's stop and scoring."""
+    data = _task_data("join_fanout_exec_revenue")
+    task = DbtDebuggerTask(data)
 
-    rubric = build_rubric()
-    names = rubric._get_reward_func_names()
-    assert "buggy_models_match" in names
-    assert "fix_coverage" in names
-    assert "required_evidence_coverage" in names
-    assert "forbidden_ok" in names
-    assert "no_bug_semantic_partial" in names
-    assert "_metric_buggy_models_match" not in names
-    assert "_metric_fix_cov" not in names
+    async def _run() -> vf.Trace:
+        toolset = DbtDebuggerToolset(vf.ToolsetConfig())
+        async with toolset._exit_stack:
+            await toolset.setup_task(data)
+            await toolset.add_file_evidence(
+                "models/intermediate/int_order_lines.sql", 1, 14
+            )
+            await toolset.add_sample_rows_evidence(
+                "raw_order_promos", '{"order_id": 1001}', 2
+            )
+            response = await toolset.submit_diagnosis(
+                True,
+                "int_order_lines has a join fanout because order_promos can contribute "
+                "multiple promo rows per order, which duplicates revenue downstream.",
+                ["int_order_lines", "fct_daily_revenue"],
+                "Deduplicate or pre-aggregate promos so the join is one row per order "
+                "before fct_daily_revenue sums amount.",
+            )
+            assert json.loads(response)["status"] == "accepted"
+            state = toolset.state
+        trace = vf.Trace(
+            task=vf.TraceTask(
+                type="DbtDebuggerTask", data=data, key=task.key, hash=task.hash
+            ),
+            state=state,
+            agent=vf.AgentInfo(config=vf.AgentConfig(), name="test", trainable=False),
+        )
+        assert await task.diagnosis_accepted(trace)
+        await task.finalize(trace, None)
+        await task.score(trace)
+        return trace
+
+    trace = asyncio.run(_run())
+    assert trace.reward == 1.0
+    assert set(trace.rewards) == {"diagnosis_reward"}
+    assert trace.metrics["strict_pass"] == 1.0
+    assert trace.metrics["difficulty_metric"] == 2.0
+    assert {
+        "has_bug_match",
+        "buggy_models_match",
+        "diagnosis_variant_ok",
+        "root_cause_coverage",
+        "fix_coverage",
+        "required_evidence_coverage",
+        "forbidden_ok",
+        "no_bug_semantic_partial",
+    } <= set(trace.metrics)
+    assert sorted(trace.info["submitted_diagnosis"]["buggy_models"]) == [
+        "fct_daily_revenue",
+        "int_order_lines",
+    ]
+    assert [entry["tool"] for entry in trace.info["tool_trace"]] == [
+        "add_file_evidence",
+        "add_sample_rows_evidence",
+        "submit_diagnosis",
+    ]
