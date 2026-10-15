@@ -56,5 +56,7 @@ assert json.loads(result)['catalog_names'] > 30_000
 PY
 )
 
-# The CLI path needs no credentials: a local scripted endpoint and --no-push.
-python scripts/smoke_xmage_poc_eval.py --output "environments/xmage_poc/outputs/ci-vf-eval"
+# The eval path needs no credentials: prime-rl's `uv run eval` (via scripts/prime_rl_eval.sh,
+# which needs uv, Python 3.12 and network) against a local scripted endpoint. The smoke
+# reads prime-rl's file monitor, since `uv run eval` exits 0 even when episodes error.
+python scripts/smoke_xmage_poc_eval.py --output "environments/xmage_poc/outputs/ci-prime-rl-eval"

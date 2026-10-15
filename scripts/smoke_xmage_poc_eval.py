@@ -1,4 +1,4 @@
-"""Exercise vf-eval using a local scripted endpoint; no paid model calls."""
+"""Exercise prime-rl's eval using a local scripted endpoint; no paid model calls."""
 
 from __future__ import annotations
 
@@ -19,6 +19,31 @@ from xmage_poc.transport import advance_action, is_pass_only_priority
 from xmage_poc.verify import read_lines, verify
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def prime_rl_episode(monitor: Path) -> dict:
+    """The run's only episode, after requiring every planned episode landed cleanly.
+
+    `uv run eval` exits 0 even when every rollout errors, so read its file monitor:
+    an errored episode can report num_errors=0 with ok=false.
+    """
+    plan = json.loads((monitor / "plan.json").read_text())
+    planned = sum(n for groups in plan.values() for n in groups.values())
+    index = read_lines(monitor / "traces/stream.index.jsonl")
+    bad = [e for e in index if not e["ok"] or e["num_errors"]]
+    assert len(index) == planned == 1 and not bad, (
+        f"prime-rl eval: {len(index)}/{planned} episodes landed; errored: {bad}"
+    )
+    episodes = [
+        json.loads(line)
+        for chunk in sorted((monitor / "traces/stream").glob("*.jsonl.zst"))
+        for line in subprocess.run(
+            ["zstd", "-dc", str(chunk)], check=True, capture_output=True, text=True
+        ).stdout.splitlines()
+        if line
+    ]
+    assert [e["id"] for e in episodes] == [index[0]["id"]], "Trace stream != index"
+    return episodes[0]
 
 
 def main():
@@ -50,7 +75,7 @@ def main():
     parser.add_argument(
         "--protocol-only",
         action="store_true",
-        help="Run one episode in-process instead of through the vf-eval CLI",
+        help="Run one episode in-process instead of through prime-rl's eval",
     )
     parser.add_argument(
         "--inject-invalid-replies",
@@ -70,6 +95,16 @@ def main():
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
             pass
+
+        def do_GET(self):
+            # prime-rl's eval waits for /health and checks /v1/models first.
+            models = {"data": [{"id": "xmage-scripted-local", "object": "model"}]}
+            body = json.dumps(models if self.path == "/v1/models" else {}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_POST(self):
             try:
@@ -256,7 +291,9 @@ def main():
 
             subprocess.run(
                 [
-                    "vf-eval",
+                    "bash",
+                    str(ROOT / "scripts/prime_rl_eval.sh"),
+                    str(ROOT / "environments/xmage_poc"),
                     "xmage-poc",
                     "-m",
                     "xmage-scripted-local",
@@ -276,17 +313,16 @@ def main():
                     *flags("env.", env_args),
                     "--env.timeout.episode",
                     "300",
-                    "-o",
-                    str(output / "eval"),
-                    "--no-push",
-                    "--no-rich",
+                    "--output-dir",
+                    str(output),
+                    "--run.name",
+                    "eval",
+                    "--no-dashboard",
                 ],
                 cwd=ROOT,
                 check=True,
             )
-            (traces,) = (output / "eval").glob("*/traces.jsonl")
-            (line,) = traces.read_text().splitlines()
-            episode = json.loads(line)
+            episode = prime_rl_episode(output / "eval/monitors/file")
     finally:
         server.shutdown()
         server.server_close()
@@ -394,7 +430,7 @@ def main():
     audit["own_deck_context_passed"] = True
     if args.inject_invalid_replies:
         audit["invalid_reply_recovery_passed"] = True
-    audit["driver"] = "protocol_test" if args.protocol_only else "vf_eval"
+    audit["driver"] = "protocol_test" if args.protocol_only else "prime_rl_eval"
     audit["opponent"] = args.opponent
     audit["pilot_seat"] = args.pilot_seat if args.opponent != "self_play" else None
     audit["pilot_deck"] = args.pilot_deck
