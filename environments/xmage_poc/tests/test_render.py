@@ -1,10 +1,10 @@
-import asyncio
 import copy
 import json
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
-from xmage_poc import load_environment
+from pydantic import ValidationError
+from xmage_poc.environment import XMageEnvConfig
 from xmage_poc.render import glossary_text, public_card_rules, render_observation
 from xmage_poc.verify import audit_model_prompts
 
@@ -140,27 +140,10 @@ def test_render_preserves_asymmetric_game_state_and_distinct_same_name_objects()
     assert "Play/draw: play" in render_observation(obs, starting_player=A)
 
 
-def test_system_glossary_survives_history_trimming_and_actual_prompt_audit(tmp_path):
-    env = load_environment(
-        java_bin="/bin/false", history_decisions=1, auto_pass_priority=False
-    )
+def test_system_glossary_survives_history_trimming_and_actual_prompt_audit(play):
     contexts = {
         name: {"player": name, "deck_size": 60, "decklist": []}
         for name in ("player_a", "player_b")
-    }
-    (tmp_path / "players").mkdir()
-    for name, context in contexts.items():
-        (tmp_path / "players" / f"{name}.context.json").write_text(json.dumps(context))
-    state = {
-        "_session": SimpleNamespace(output=tmp_path, deck_contexts=contexts),
-        "_seat_histories": {},
-        "_card_glossaries": {},
-        "trajectory": [],
-        "_processed_turns": 0,
-        "_prompted_decision": None,
-        "pilot_seat": "player_a",
-        "pilot_play_order": "play",
-        "starting_player": A,
     }
     first = observation()
     other = copy.deepcopy(first)
@@ -171,38 +154,68 @@ def test_system_glossary_survives_history_trimming_and_actual_prompt_audit(tmp_p
     last = copy.deepcopy(first)
     last["decision"] = 11
     last["view"]["myHand"] = {}
-    decisions = []
+    observations = [first, other, last]
 
-    async def exercise():
-        for obs in (first, other, last):
-            state["_pending"] = {"type": "decision", "observation": obs}
-            prompt = await env.get_prompt_messages(state)
-            assert len(prompt) == 2
-            assert "Starting player: player_a" in prompt[-1].content
-            assert ("Play/draw: draw" if obs is other else "Play/draw: play") in prompt[
-                -1
-            ].content
-            if obs is last:
-                assert "Own secret: Lifelink" in prompt[0].content
-                assert "Other seat secret" not in prompt[0].content
-                assert "Own secret" not in prompt[-1].content
-            decisions.append(
-                {
-                    "decision": obs["decision"],
-                    "observation": obs,
-                    "response": {"action": 0},
-                }
+    class Session:
+        def __init__(self, output, *args, **kwargs):
+            self.output = output
+            self.deck_contexts = contexts
+            (output / "players").mkdir(parents=True)
+            for name, context in contexts.items():
+                (output / "players" / f"{name}.context.json").write_text(
+                    json.dumps(context)
+                )
+            self.pending = iter(
+                [{"type": "decision", "observation": obs} for obs in observations]
+                + [{"type": "result", "winner": "player_a", "players": []}]
             )
 
-    asyncio.run(exercise())
+        def receive(self):
+            return next(self.pending)
+
+        def send(self, observation, action):
+            pass
+
+        def close(self):
+            pass
+
+    prompts = iter(observations)
+
+    def reply(prompt):
+        obs = next(prompts)
+        assert len(prompt) == 2
+        assert "Starting player: player_a" in prompt[-1]["content"]
+        assert ("Play/draw: draw" if obs is other else "Play/draw: play") in prompt[-1][
+            "content"
+        ]
+        if obs is last:
+            assert "Own secret: Lifelink" in prompt[0]["content"]
+            assert "Other seat secret" not in prompt[0]["content"]
+            assert "Own secret" not in prompt[-1]["content"]
+        return '{"action": 0}'
+
+    episode, _ = play(
+        Session,
+        reply,
+        taskset={"pilot_seat": "player_a", "pilot_play_order": "play"},
+        history_decisions=1,
+        auto_pass_priority=False,
+    )
+    assert episode.ok, episode.errors
+    assert next(prompts, None) is None
+    recording = Path(episode.traces[0].info["recording_path"])
+    decisions = [
+        {"decision": obs["decision"], "observation": obs, "response": {"action": 0}}
+        for obs in observations
+    ]
     controller = {
         "opponent": "self_play",
         "auto_pass_priority": False,
         "history_decisions": 1,
         "observation_format": "text",
     }
-    assert audit_model_prompts(tmp_path, decisions, controller) == 3
-    path = tmp_path / "model-prompts.jsonl"
+    assert audit_model_prompts(recording, decisions, controller) == 3
+    path = recording / "model-prompts.jsonl"
     saved = path.read_text()
     rows = [json.loads(line) for line in saved.splitlines()]
     for index in (0, 1):  # A glossary leak and a user-message leak both fail.
@@ -212,19 +225,14 @@ def test_system_glossary_survives_history_trimming_and_actual_prompt_audit(tmp_p
         with pytest.raises(
             AssertionError, match="Rendered (system|model) prompt differs"
         ):
-            audit_model_prompts(tmp_path, decisions, controller)
+            audit_model_prompts(recording, decisions, controller)
     path.write_text("\n".join(json.dumps(row) for row in rows[:-1]))
     with pytest.raises(AssertionError, match="coverage"):
-        audit_model_prompts(tmp_path, decisions, controller)
+        audit_model_prompts(recording, decisions, controller)
 
 
 def test_format_contract():
-    assert load_environment(java_bin="/bin/false").observation_format == "text"
-    assert (
-        load_environment(
-            java_bin="/bin/false", observation_format="json"
-        ).observation_format
-        == "json"
-    )
-    with pytest.raises(ValueError, match="observation_format"):
-        load_environment(observation_format="yaml")
+    assert XMageEnvConfig().observation_format == "text"
+    assert XMageEnvConfig(observation_format="json").observation_format == "json"
+    with pytest.raises(ValidationError, match="observation_format"):
+        XMageEnvConfig(observation_format="yaml")

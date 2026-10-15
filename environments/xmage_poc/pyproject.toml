@@ -6,7 +6,9 @@ tags = ["mtg", "xmage", "eval"]
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "verifiers>=0.2.0,<0.3",
+    "openai>=2.54,<3",
+    "pydantic>=2.12,<3",
+    "verifiers>=0.4.0,<0.5",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +30,3 @@ packages = ["xmage_poc"]
 [tool.hatch.build.targets.sdist]
 include = ["/xmage_poc", "/bridge/pom.xml", "/bridge/src", "/examples", "/README.md", "/pyproject.toml"]
 exclude = ["/outputs/**", "/bridge/target/**", "/dist/**", "**/__pycache__/**"]
-
-[tool.verifiers.eval]
-num_examples = 1
-rollouts_per_example = 1

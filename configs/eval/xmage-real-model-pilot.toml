@@ -1,37 +1,37 @@
-# Run: prime eval run configs/eval/xmage-real-model-pilot.toml
-# Use the compatible CLI stack pinned in Prime lifecycle CI; CLI -m does not override TOML.
-# To compare mini, change endpoint_id to "openai/gpt-4.1-mini" in a local copy.
+# Run: vf-eval @ configs/eval/xmage-real-model-pilot.toml
+# To compare mini, add -m openai/gpt-4.1-mini (CLI flags override this file).
 # One seed × two decks × two seats × play/draw: a balanced pilot, not a win-rate estimate.
-[[eval]]
-env_id = "xmage-poc"
-endpoint_id = "openai/gpt-4.1-nano"
-endpoints_path = "../endpoints.toml"
-num_examples = 8
-rollouts_per_example = 1
+model = "openai/gpt-4.1-nano"
 max_concurrent = 1
-max_retries = 0
+# Keep run directories with the ignored environment outputs.
+output_dir = "environments/xmage_poc/outputs/evals"
+
+[sampling]
 # The system prompt invites reasoning before the <answer> block; a small budget
 # truncates the reply before the answer and counts as an invalid action.
 max_tokens = 4096
 temperature = 0.0
-# Verifiers applies this to the entire rollout, not to each model request.
-timeout = 7200
-save_results = true
-disable_env_server = true
-disable_tui = true
-state_columns = ["seed", "pilot_seat", "pilot_deck", "opponent_deck", "pilot_play_order", "starting_player", "game_result", "recording_audit", "recording_path", "auto_passed_priority", "trajectory"]
 
-[eval.env_args]
-num_games = 8
-seed = 7
+[env]
 opponent = "scripted"
-pilot_seat = "alternate"
-pilot_deck = "balanced"
-pilot_play_order = "balanced"
-# Bound spend even if a model never advances the game. Truncation is not a loss.
-# Invalid-reply retries count toward this cap: it bounds model attempts, not decisions.
-max_turns = 256
 history_decisions = 1
 auto_pass_priority = true
 # Privacy projections are still audited; choose full_audit for restoration checks.
 recording_mode = "benchmark"
+
+[env.timeout]
+# Verifiers applies this to the entire game, not to each model request.
+episode = 7200
+
+[env.taskset]
+id = "xmage-poc"
+num_games = 8
+seed = 7
+pilot_seat = "alternate"
+pilot_deck = "balanced"
+pilot_play_order = "balanced"
+
+[env.pilot]
+# Bound spend even if a model never advances the game. Truncation is not a loss.
+# Invalid-reply retries count toward this cap: it bounds model attempts, not decisions.
+max_turns = 256

@@ -1,17 +1,15 @@
-import asyncio
 import json
+from pathlib import Path
 
 import pytest
-import verifiers as vf
-from xmage_poc import load_environment
 from xmage_poc.decklist import deck_context
-from xmage_poc.environment import DECK_CONTEXT_MARKER
+from xmage_poc.environment import DECK_CONTEXT_MARKER, XMageEnvConfig
 
 
 @pytest.mark.parametrize("opponent", ["self_play", "scripted"])
 @pytest.mark.parametrize("auto_pass_priority", [True, False])
 def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
-    tmp_path, monkeypatch, stub_bridge_runtime, opponent, auto_pass_priority
+    play, opponent, auto_pass_priority
 ):
     def prompt(number, player, message, actions, query_type="SELECT", stack=None):
         return {
@@ -59,10 +57,12 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
         ]
     )
 
-    class Session:
-        output = tmp_path
+    responses = []
 
-        def __init__(self):
+    class Session:
+        def __init__(self, output, *args, **kwargs):
+            self.output = output
+            output.mkdir(parents=True)
             self.deck_contexts = {
                 "player_a": deck_context(
                     ["40 Plains", "20 Youthful Knight"], "player_a"
@@ -72,7 +72,6 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
                 ),
             }
             self.pending = iter(messages)
-            self.responses = []
 
         def receive(self):
             message = next(self.pending, None)
@@ -80,72 +79,59 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
             return message
 
         def send(self, observation, action):
-            self.responses.append((observation["decision"], action))
+            responses.append((observation["decision"], action))
 
-    monkeypatch.setattr(
-        "xmage_poc.environment.verify", lambda _: {"privacy_passed": True}
-    )
-    env = load_environment(
+        def close(self):
+            pass
+
+    model_decisions = []
+
+    def reply(history):
+        observation = json.loads(history[-1]["content"])
+        context = json.loads(history[0]["content"].split(DECK_CONTEXT_MARKER, 1)[1])
+        assert context == deck_context(
+            ["40 Plains", "20 Youthful Knight"]
+            if observation["player"] == "player_a"
+            else ["40 Mountain", "20 Goblin Piker"],
+            observation["player"],
+        )
+        assert len([m for m in history if m["role"] == "user"]) == 1
+        # The other seat and bypassed prompts must never enter model history.
+        observed = [json.loads(m["content"]) for m in history if m["role"] == "user"]
+        assert all(o["player"] == observation["player"] for o in observed)
+        if auto_pass_priority:
+            assert all(o["decision"] in {3, 4, 5} for o in observed)
+        model_decisions.append(observation["decision"])
+        return '{"action": 0}'
+
+    episode, _ = play(
+        Session,
+        reply,
+        taskset={"pilot_seat": "player_a", "pilot_play_order": "play"},
         opponent=opponent,
         auto_pass_priority=auto_pass_priority,
-        java_bin="/bin/false",
         history_decisions=1,
         observation_format="json",
     )
-    session = Session()
-    state = {
-        "_session": session,
-        "_seat_histories": {},
-        "_processed_turns": 0,
-        "_prompted_decision": None,
-        "starting_player": "player_a",
-        "trajectory": [],
-        "auto_passed_priority": 0,
-        "model_action_attempts": 0,
-    }
-
-    async def exercise():
-        state["_pending"] = await env.receive_for_model(state)
-        model_decisions = []
-        for _ in range(len(messages) + 1):
-            history = await env.get_prompt_messages(state)
-            if state.get("game_result"):
-                break
-            observation = json.loads(history[-1].content)
-            context = json.loads(history[0].content.split(DECK_CONTEXT_MARKER, 1)[1])
-            assert context == session.deck_contexts[observation["player"]]
-            assert len([m for m in history if m.role == "user"]) == 1
-            # The other seat and bypassed prompts must never enter model history.
-            observed = [json.loads(m.content) for m in history if m.role == "user"]
-            assert all(o["player"] == observation["player"] for o in observed)
-            if auto_pass_priority:
-                assert all(o["decision"] in {3, 4, 5} for o in observed)
-            model_decisions.append(observation["decision"])
-            state["trajectory"].append(
-                {"completion": [vf.AssistantMessage(content='{"action": 0}')]}
-            )
-        else:
-            pytest.fail("Game result did not stop model prompting")
-        return model_decisions
-
-    model_decisions = asyncio.run(exercise())
+    assert episode.ok, episode.errors
     original_decisions = [m["observation"]["decision"] for m in messages[:-1]]
     assert model_decisions == ([3, 4, 5] if auto_pass_priority else original_decisions)
-    assert session.responses == [(n, 0) for n in original_decisions]
+    assert responses == [(n, 0) for n in original_decisions]
     skipped = (
         [n for n in original_decisions if n not in {3, 4, 5}]
         if auto_pass_priority
         else []
     )
-    assert state["auto_passed_priority"] == len(skipped)
-    log = tmp_path / "automatic-priority.jsonl"
+    for trace in episode.traces:
+        assert trace.info["auto_passed_priority"] == len(skipped)
+        assert trace.info["recording_audit"]["privacy_passed"]
+    log = Path(episode.traces[0].info["recording_path"]) / "automatic-priority.jsonl"
     assert (
         [json.loads(line)["decision"] for line in log.read_text().splitlines()]
         if log.exists()
         else []
     ) == skipped
-    assert state["recording_audit"]["privacy_passed"]
 
 
-def test_environment_enables_automatic_priority_by_default(stub_bridge_runtime):
-    assert load_environment(java_bin="/bin/false").auto_pass_priority
+def test_environment_enables_automatic_priority_by_default():
+    assert XMageEnvConfig().auto_pass_priority

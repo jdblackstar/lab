@@ -17,9 +17,18 @@ from pathlib import Path
 from threading import Lock
 
 from .decklist import deck_context
-from .environment import load_environment
+from .environment import XMageConfig, XMageTaskset, resolve_java
 from .transport import ROOT, run
 from .verify import verify
+
+FACTORS = {
+    "seed",
+    "pilot_seat",
+    "pilot_deck",
+    "opponent_deck",
+    "pilot_play_order",
+    "starting_player",
+}
 
 
 def summarize(records):
@@ -72,14 +81,17 @@ def main():
     args = parser.parse_args()
     if args.num_seeds < 1 or args.workers < 1:
         parser.error("num-seeds and workers must be positive")
-    environment = load_environment(
-        num_games=8 * args.num_seeds,
-        seed=args.seed,
-        java_bin=args.java_bin,
-        deck_a=args.deck_a,
-        deck_b=args.deck_b,
-        opponent="scripted",
+    taskset = XMageTaskset(
+        XMageConfig(
+            id="xmage-poc",
+            num_games=8 * args.num_seeds,
+            seed=args.seed,
+            deck_a=args.deck_a,
+            deck_b=args.deck_b,
+        )
     )
+    java = resolve_java(args.java_bin)
+    cases = [task.data for task in taskset]
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(ROOT / "runtime/build.json", output / "runtime-build.json")
@@ -87,22 +99,21 @@ def main():
     log_lock = Lock()
 
     def exercise(case):
-        index, row = case
-        info = row["info"]
+        index, data = case
         recording = output / f"game-{index:04d}"
-        deck_a, deck_b = environment.decks_for(info)
+        deck_a, deck_b = taskset.decks_for(data)
         result = run(
             recording,
-            seed=info["seed"],
-            java_bin=environment.java_bin,
+            seed=data.seed,
+            java_bin=java,
             deck_a=deck_a,
             deck_b=deck_b,
-            starting_player=info["starting_player"],
+            starting_player=data.starting_player,
         )
         audit = verify(recording)
-        pilot = next(p for p in result["players"] if p["name"] == info["pilot_seat"])
+        pilot = next(p for p in result["players"] if p["name"] == data.pilot_seat)
         record = {
-            **info,
+            **data.model_dump(include=FACTORS),
             "won": pilot["won"],
             "lost": pilot["lost"],
             "game_result": result,
@@ -116,7 +127,7 @@ def main():
             log.flush()
             records.append(record)
             print(
-                f"Audited {len(records)}/{len(environment.dataset)} games",
+                f"Audited {len(records)}/{len(cases)} games",
                 flush=True,
             )
         if args.discard_recordings:
@@ -127,7 +138,7 @@ def main():
         (output / "games.jsonl").open("w") as log,
         ThreadPoolExecutor(max_workers=args.workers) as executor,
     ):
-        for _ in executor.map(exercise, enumerate(environment.dataset)):
+        for _ in executor.map(exercise, enumerate(cases)):
             pass
 
     summary = {
@@ -137,8 +148,8 @@ def main():
         "decks": {
             name: deck_context(path.read_text().splitlines(), name)
             for name, path in (
-                ("deck_a", environment.deck_a or ROOT / "decks/white.txt"),
-                ("deck_b", environment.deck_b or ROOT / "decks/red.txt"),
+                ("deck_a", taskset.config.deck_a or ROOT / "decks/white.txt"),
+                ("deck_b", taskset.config.deck_b or ROOT / "decks/red.txt"),
             )
         },
         "recordings_kept": not args.discard_recordings,

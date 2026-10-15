@@ -1,6 +1,6 @@
 import pytest
-import verifiers as vf
-from xmage_poc.environment import completion_action
+import verifiers.v1 as vf
+from xmage_poc.environment import InvalidAnswerError, completion_action
 
 
 @pytest.mark.parametrize(
@@ -18,12 +18,9 @@ def test_only_the_committed_answer_selects_an_action(content):
     assert completion_action([vf.AssistantMessage(content=content)]) == 7
 
 
-def test_hidden_reasoning_and_multipart_visible_content_are_independent():
+def test_hidden_reasoning_is_independent_of_the_visible_answer():
     message = vf.AssistantMessage(
-        content=[
-            {"type": "text", "text": 'Consider {"action": 2}.\n<answer>'},
-            {"type": "text", "text": '{"action": 7}</answer>'},
-        ],
+        content='Consider {"action": 2}.\n<answer>{"action": 7}</answer>',
         reasoning_content='I considered {"action": 3}.',
     )
     assert completion_action([message]) == 7
@@ -59,13 +56,13 @@ def test_hidden_reasoning_and_multipart_visible_content_are_independent():
         '```json\n{"action": 2}\n```\n```json\n{"action": 7}\n```',
     ],
 )
-def test_invalid_or_ambiguous_answers_still_raise_model_response_error(content):
-    with pytest.raises(vf.InvalidModelResponseError):
+def test_invalid_or_ambiguous_answers_are_rejected(content):
+    with pytest.raises(InvalidAnswerError):
         completion_action([vf.AssistantMessage(content=content)])
 
 
 def test_never_fall_back_to_an_earlier_turns_answer():
-    with pytest.raises(vf.InvalidModelResponseError):
+    with pytest.raises(InvalidAnswerError):
         completion_action(
             [
                 vf.AssistantMessage(content='<answer>{"action": 2}</answer>'),

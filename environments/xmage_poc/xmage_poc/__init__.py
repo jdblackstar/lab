@@ -2,50 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import verifiers as vf
-
-__all__ = ["load_environment"]
+__all__ = ["XMageEnv", "XMageHarness", "XMageTaskset"]
 
 
-def load_environment(
-    num_games: int = 1,
-    seed: int = 7,
-    output_dir: str | None = None,
-    java_bin: str | None = None,
-    max_turns: int = 4000,
-    history_decisions: int = 4,
-    deck_a: str | None = None,
-    deck_b: str | None = None,
-    opponent: str = "self_play",
-    pilot_seat: str = "alternate",
-    auto_pass_priority: bool = True,
-    observation_format: str = "text",
-    pilot_deck: str = "balanced",
-    pilot_play_order: str = "balanced",
-    recording_mode: str = "full_audit",
-    max_action_attempts: int = 3,
-) -> vf.Environment:
+def __getattr__(name: str):
     # Keep the standalone game/audit CLIs independent of Verifiers startup.
-    from .environment import load_environment as load
+    if name in {"XMageEnv", "XMageTaskset"}:
+        from . import environment
 
-    return load(
-        num_games=num_games,
-        seed=seed,
-        output_dir=output_dir,
-        java_bin=java_bin,
-        max_turns=max_turns,
-        history_decisions=history_decisions,
-        deck_a=deck_a,
-        deck_b=deck_b,
-        opponent=opponent,
-        pilot_seat=pilot_seat,
-        auto_pass_priority=auto_pass_priority,
-        observation_format=observation_format,
-        pilot_deck=pilot_deck,
-        pilot_play_order=pilot_play_order,
-        recording_mode=recording_mode,
-        max_action_attempts=max_action_attempts,
-    )
+        return getattr(environment, name)
+    if name == "XMageHarness":
+        from .harness import XMageHarness
+
+        return XMageHarness
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -4,9 +4,9 @@ from threading import Event
 from types import SimpleNamespace
 
 import pytest
-from xmage_poc import baseline, load_environment
+from xmage_poc import baseline
 from xmage_poc.baseline import summarize
-from xmage_poc.environment import pilot_win
+from xmage_poc.environment import XMageConfig, XMageData, XMageTaskset, pilot_win
 
 
 @pytest.mark.parametrize("seat", ["player_a", "player_b"])
@@ -36,13 +36,11 @@ def test_draw_or_interrupted_game_is_not_a_win():
     assert pilot_win(state) == 0.0
 
 
-def test_balanced_dataset_crosses_all_factors_within_each_seed(stub_bridge_runtime):
-    env = load_environment(num_games=16, seed=31, java_bin="/bin/false")
+def test_balanced_dataset_crosses_all_factors_within_each_seed():
+    taskset = XMageTaskset(XMageConfig(num_games=16, seed=31))
     for seed in (31, 32):
-        cases = [row["info"] for row in env.dataset if row["info"]["seed"] == seed]
-        assert {
-            (c["pilot_seat"], c["pilot_deck"], c["pilot_play_order"]) for c in cases
-        } == {
+        cases = [task.data for task in taskset if task.data.seed == seed]
+        assert {(c.pilot_seat, c.pilot_deck, c.pilot_play_order) for c in cases} == {
             (seat, deck, order)
             for seat in ("player_a", "player_b")
             for deck in ("deck_a", "deck_b")
@@ -50,42 +48,43 @@ def test_balanced_dataset_crosses_all_factors_within_each_seed(stub_bridge_runti
         }
         assert len(cases) == 8
         for case in cases:
-            assert (case["starting_player"] == case["pilot_seat"]) == (
-                case["pilot_play_order"] == "play"
+            assert (case.starting_player == case.pilot_seat) == (
+                case.pilot_play_order == "play"
             )
-            assert case["pilot_deck"] != case["opponent_deck"]
+            assert case.pilot_deck != case.opponent_deck
 
 
 @pytest.mark.parametrize("seat", ["player_a", "player_b"])
 @pytest.mark.parametrize("deck", ["deck_a", "deck_b"])
 @pytest.mark.parametrize("order", ["play", "draw"])
-def test_factors_can_be_fixed_independently(
-    tmp_path, stub_bridge_runtime, seat, deck, order
-):
+def test_factors_can_be_fixed_independently(tmp_path, seat, deck, order):
     decks = [tmp_path / "fixture-a.txt", tmp_path / "fixture-b.txt"]
     for path, contents in zip(decks, ("60 Plains", "60 Mountain"), strict=True):
         path.write_text(contents)
-    env = load_environment(
-        num_games=2,
-        seed=41,
-        java_bin="/bin/false",
-        deck_a=str(decks[0]),
-        deck_b=str(decks[1]),
-        pilot_seat=seat,
-        pilot_deck=deck,
-        pilot_play_order=order,
+    taskset = XMageTaskset(
+        XMageConfig(
+            num_games=2,
+            seed=41,
+            deck_a=decks[0],
+            deck_b=decks[1],
+            pilot_seat=seat,
+            pilot_deck=deck,
+            pilot_play_order=order,
+        )
     )
-    assert [row["info"]["seed"] for row in env.dataset] == [41, 42]
-    for row in env.dataset:
-        info = row["info"]
-        assert (info["pilot_seat"], info["pilot_deck"], info["pilot_play_order"]) == (
+    tasks = [task.data for task in taskset]
+    assert [data.seed for data in tasks] == [41, 42]
+    for data in tasks:
+        assert (data.pilot_seat, data.pilot_deck, data.pilot_play_order) == (
             seat,
             deck,
             order,
         )
-        seated = dict(zip(("player_a", "player_b"), env.decks_for(info), strict=True))
+        seated = dict(
+            zip(("player_a", "player_b"), taskset.decks_for(data), strict=True)
+        )
         assert seated[seat] == decks[0 if deck == "deck_a" else 1]
-        assert (info["starting_player"] == seat) == (order == "play")
+        assert (data.starting_player == seat) == (order == "play")
 
 
 @pytest.mark.parametrize(
@@ -161,18 +160,31 @@ def test_baseline_preserves_audited_results_when_an_earlier_game_fails(
     (runtime / "build.json").write_text("{}")
     monkeypatch.setattr(baseline, "ROOT", tmp_path)
     infos = [
-        {"seed": seed, "pilot_seat": "player_b", "starting_player": "player_a"}
+        {
+            "seed": seed,
+            "pilot_seat": "player_b",
+            "pilot_deck": "deck_a",
+            "opponent_deck": "deck_b",
+            "pilot_play_order": "draw",
+            "starting_player": "player_a",
+        }
         for seed in (7, 8)
     ]
-    monkeypatch.setattr(
-        baseline,
-        "load_environment",
-        lambda **_: SimpleNamespace(
-            dataset=[{"info": info} for info in infos],
-            java_bin="/bin/false",
-            decks_for=lambda _: (None, None),
-        ),
-    )
+
+    class Taskset:
+        config = XMageConfig()
+
+        def __init__(self, config):
+            pass
+
+        def __iter__(self):
+            return iter(SimpleNamespace(data=XMageData(**info)) for info in infos)
+
+        def decks_for(self, data):
+            return None, None
+
+    monkeypatch.setattr(baseline, "XMageTaskset", Taskset)
+    monkeypatch.setattr(baseline, "resolve_java", lambda _: "/bin/false")
     audited = Event()
     result = {
         "players": [

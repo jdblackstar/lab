@@ -1,25 +1,32 @@
-# Choose a configured model with: prime eval run configs/eval/xmage-pilot-smoke.toml -e configs/endpoints.toml -m <endpoint_id>
+# Run: vf-eval @ configs/eval/xmage-pilot-smoke.toml -m <model>
 # One seed × two decks × two seats × play/draw; a behavior smoke, not a win-rate estimate.
-[[eval]]
-env_id = "xmage-poc"
-num_examples = 8
-rollouts_per_example = 1
 max_concurrent = 1
+# Keep run directories with the ignored environment outputs.
+output_dir = "environments/xmage_poc/outputs/evals"
+
+[sampling]
 # OpenAI chat includes hidden reasoning in this per-decision completion budget.
 max_tokens = 4096
-# Wall-clock timeout per complete game, not per model request (seconds).
-timeout = 7200
-state_columns = ["seed", "pilot_seat", "pilot_deck", "opponent_deck", "pilot_play_order", "starting_player", "game_result", "recording_audit", "recording_path", "auto_passed_priority"]
 
-[eval.env_args]
-num_games = 8
-seed = 7
+[env]
 opponent = "scripted"
-pilot_seat = "alternate"
-pilot_deck = "balanced"
-pilot_play_order = "balanced"
-max_turns = 4000
 history_decisions = 4
 auto_pass_priority = true
 # Audit every decision projection; choose full_audit for restoration/counterfactual checks.
 recording_mode = "benchmark"
+
+[env.timeout]
+# Wall-clock timeout per complete game, not per model request (seconds).
+episode = 7200
+
+[env.taskset]
+id = "xmage-poc"
+num_games = 8
+seed = 7
+pilot_seat = "alternate"
+pilot_deck = "balanced"
+pilot_play_order = "balanced"
+
+[env.pilot]
+# Model attempts for the pilot seat, including invalid-reply retries.
+max_turns = 4000
