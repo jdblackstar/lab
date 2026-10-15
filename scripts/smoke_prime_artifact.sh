@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build the packaged environment artifact, install it into a fresh isolated venv, and
-# verify the installed package can import and load its bundled scenario data. Bootstrap
-# the same Prime-managed base stack first so dependency resolution matches normal usage.
+# verify the installed package validates against its bundled scenario data with the
+# model-free ``vf-validate``. Bootstrap the same Prime-managed base stack first so
+# dependency resolution matches normal usage.
 
 set -euo pipefail
 
@@ -48,10 +49,20 @@ uv pip install --python "$VENV_DIR/bin/python" prime
 echo "==> install built wheel into isolated venv"
 uv pip install --python "$VENV_DIR/bin/python" "$WHEEL"
 
-echo "==> import + load_environment(max_scenarios=1) outside repo checkout"
+echo "==> vf-validate on one task outside repo checkout"
 (
   cd "$WORK_DIR"
-  PYTHONPATH="" "$VENV_DIR/bin/python" -c "import dbt_debugger; dbt_debugger.load_environment(max_scenarios=1)"
+  PYTHONPATH="" "$VENV_DIR/bin/vf-validate" dbt-debugger --runtime.type subprocess \
+    -n 1 --output-dir "$WORK_DIR/outputs" --run.dir validate
+  # vf-validate exits 0 even when checks fail; require the task to validate.
+  PYTHONPATH="" "$VENV_DIR/bin/python" - "$WORK_DIR/outputs/validate/summary.json" <<'PY'
+import json
+import sys
+
+summary = json.load(open(sys.argv[1]))
+if summary["valid_rate"] != 1.0:
+    sys.exit(f"vf-validate: task is not valid: {summary['checks']}")
+PY
 )
 
 echo "==> OK"

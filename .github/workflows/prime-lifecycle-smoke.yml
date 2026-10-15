@@ -33,7 +33,7 @@ jobs:
         run: bash scripts/ci/smoke_orb_setup.sh
 
   install-smoke:
-    name: prime env install + load_environment
+    name: prime env install + vf-validate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -55,7 +55,7 @@ jobs:
         run: bash scripts/smoke_prime_lifecycle.sh
 
   artifact-smoke:
-    name: packaged artifact import + load_environment
+    name: packaged artifact install + vf-validate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -71,7 +71,7 @@ jobs:
         run: bash scripts/smoke_prime_artifact.sh
 
   eval-smoke:
-    name: prime eval run (minimal)
+    name: vf-eval (minimal)
     needs:
       - install-smoke
       - artifact-smoke
