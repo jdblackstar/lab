@@ -2,7 +2,8 @@
 # The local install smoke covers ``prime env install`` from a checkout; the artifact smoke
 # covers the built wheel/sdist contents; eval smoke runs only from ``main`` so PR branch
 # code never receives the secret, and the shell script skips eval when PRIME_API_KEY is
-# unset.
+# unset. The eval runs prime-rl's ``uv run eval`` (scripts/prime_rl_eval.sh), which
+# requires Python 3.12.
 #
 # Use a project ``uv venv`` and prepend ``.venv/bin`` to PATH so ``python`` matches the
 # interpreter ``prime env install`` targets (same as local dev with an activated venv).
@@ -33,7 +34,7 @@ jobs:
         run: bash scripts/ci/smoke_orb_setup.sh
 
   install-smoke:
-    name: prime env install + load_environment
+    name: prime env install + vf-validate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -55,7 +56,7 @@ jobs:
         run: bash scripts/smoke_prime_lifecycle.sh
 
   artifact-smoke:
-    name: packaged artifact import + load_environment
+    name: packaged artifact install + vf-validate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -71,7 +72,7 @@ jobs:
         run: bash scripts/smoke_prime_artifact.sh
 
   eval-smoke:
-    name: prime eval run (minimal)
+    name: prime-rl eval (minimal)
     needs:
       - install-smoke
       - artifact-smoke

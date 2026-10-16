@@ -1,18 +1,16 @@
 [project]
 name = "dbt-debugger"
-description = "dbt-native pipeline debugging benchmark (scenario corpus + Verifiers environment)"
-version = "0.1.0"
+description = "dbt-native pipeline debugging benchmark (scenario corpus + verifiers v1 taskset)"
+version = "0.2.0"
 requires-python = ">=3.11"
 readme = "README.md"
 tags = ["multi-turn", "tool-use", "dbt", "analytics", "eval"]
 dependencies = [
-    "verifiers>=0.1.11",
-    "datasets>=3.0.0",
+    "verifiers>=0.4.0",
     "dbt-core>=1.8.0",
     "dbt-duckdb>=1.8.0",
     "duckdb>=1.0.0",
     "pyyaml>=6.0.0",
-    "python-dotenv>=1.0.0",
     "jsonschema>=4.26.0",
 ]
 
@@ -25,23 +23,20 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build]
+[tool.hatch.build.targets.wheel]
+packages = ["dbt_debugger"]
+
+[tool.hatch.build.targets.sdist]
 include = [
-    "dbt_debugger.py",
-    "claim_text_matching.py",
+    "dbt_debugger/**/*.py",
+    "dbt_debugger/scenarios/**/*.json",
     "pyproject.toml",
     "README.md",
     "spec/**/*.md",
-    "scenarios/**/*.json",
     "validation/**/*.md",
     "validation/**/*.json",
     "validation/**/*.py",
-    "runtime/**/*.py",
 ]
-
-[tool.verifiers.eval]
-num_examples = 5
-rollouts_per_example = 1
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -61,30 +61,13 @@ class DiagnosisSubmission(TypedDict, total=False):
 
 
 class RolloutStateKeys:
-    """String keys for ``vf.State`` in the ``StatefulToolEnv`` implementation."""
+    """Keys of the rollout-state dict the tool functions read and mutate.
 
-    WORKSPACE_ROOT = "workspace_root"
-    PROJECT_ROOT = "project_root"
-    CONTEXT_ROOT = "context_root"
-    PROFILES_DIR = "profiles_dir"
-    DUCKDB_PATH = "duckdb_path"
+    The toolset builds this dict from its typed ``DbtDebuggerState`` (plus the
+    server-local scenario spec) around each tool call and writes it back afterwards.
+    """
+
     SCENARIO_SPEC = "scenario_spec"
-    ARTIFACT_MANIFEST = "artifact_manifest"
-    TOOL_VISIBLE_GLOBS = "tool_visible_globs"
-    IMMUTABLE_PATHS = "immutable_paths"
     COLLECTED_EVIDENCE = "collected_evidence"
     SUBMITTED_DIAGNOSIS = "submitted_diagnosis"
-    VERIFICATION_RESULT = "verification_result"
     TOOL_TRACE = "tool_trace"
-    VALID_MODEL_NAMES = "valid_model_names"
-    SCENARIO_ID = "scenario_id"
-    WORKSPACE_CLEANUP = "workspace_cleanup"
-
-
-def as_plain_dict(spec: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of *spec* for state storage.
-
-    Top-level keys get a new ``dict`` container; nested mutable values are
-    shared with *spec*, so callers must not mutate nested structures in place.
-    """
-    return dict(spec)

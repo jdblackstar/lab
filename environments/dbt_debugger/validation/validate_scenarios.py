@@ -13,16 +13,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from claim_text_matching import (
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
+
+from dbt_debugger.claim_text_matching import (
     claim_group_matches,
     iter_claim_pattern_options,
     option_is_negated_phrase,
     text_contains_option,
 )
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import ValidationError
-from runtime.scoring import _evaluate_variant
-from runtime.sample_rows import matching_sample_rows
+from dbt_debugger.sample_rows import matching_sample_rows
+from dbt_debugger.scenarios import GOLD_DIR
+from dbt_debugger.scoring import _evaluate_variant
 
 REQUIRED_CATEGORIES = frozenset(
     {"join", "incremental", "source_schema", "logic", "macro", "config", "no_bug"}
@@ -74,7 +76,7 @@ def _variant_overlaps_forbidden_claim(
 
 
 def _scenario_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "scenarios" / "gold"
+    return GOLD_DIR
 
 
 def _load_json(path: Path) -> dict[str, Any]:

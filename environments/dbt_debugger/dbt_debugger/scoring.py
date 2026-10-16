@@ -1,4 +1,4 @@
-"""Deterministic diagnosis scoring for ``StatefulToolEnv`` rubrics."""
+"""Deterministic diagnosis scoring against scenario ``rubric_hints``."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from claim_text_matching import (
+from dbt_debugger.claim_text_matching import (
     NEGATION_TOKENS,
     STOPWORDS,
     claim_group_matches,
@@ -16,8 +16,8 @@ from claim_text_matching import (
     stem_variants,
     text_contains_option,
 )
-from runtime.sample_rows import matching_sample_rows
-from runtime.types import (
+from dbt_debugger.sample_rows import matching_sample_rows
+from dbt_debugger.types import (
     ClaimPattern,
     DiagnosisVariant,
     EvidenceRef,
