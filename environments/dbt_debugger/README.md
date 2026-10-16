@@ -140,7 +140,7 @@ uv run vf-validate dbt-debugger --runtime.type subprocess
 
 Expected result: 10 scenario files validate, the test suite passes, and `vf-validate` reports 10/10 valid gold and noop checks.
 
-A three-scenario `vf-eval` smoke on verifiers 0.4.0 (`deepseek/deepseek-v4-flash`, first three scenarios) completed with no rollout errors and the same shape as the v0 baseline on that model: two rollouts hit the 20-turn cap and one stopped on `diagnosis_accepted` after its diagnosis was stored. All three scored a strict pass of `0.0`.
+The v0 → v1 comparison snapshot below was run with verifiers 0.4.0's `vf-eval`, before evals switched to prime-rl's `uv run eval` (`scripts/prime_rl_eval.sh`). That three-scenario smoke (`deepseek/deepseek-v4-flash`, first three scenarios) completed with no rollout errors and the same shape as the v0 baseline on that model: two rollouts hit the 20-turn cap and one stopped on `diagnosis_accepted` after its diagnosis was stored. All three scored a strict pass of `0.0`.
 
 ## Configuration
 
