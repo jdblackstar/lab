@@ -50,7 +50,7 @@ See [`spec/runtime_mapping.md`](spec/runtime_mapping.md) for how the corpus maps
 
 - **Scenario corpus**: Gold JSON scenarios under `dbt_debugger/scenarios/gold/` with schema in `spec/scenario_schema.md`.
 - **Runtime**: each rollout gets a per-rollout tool server that materializes a **temporary dbt + DuckDB workspace**, exposes filesystem + bounded `dbt` tools, and accepts **`submit_diagnosis`**. The diagnosis is scored deterministically against explicit `rubric_hints.accepted_diagnoses` plus grounded evidence requirements (no LLM judge).
-- **Run defaults** (`DbtDebuggerEnv`): the tools-only `null` harness on the local `subprocess` runtime, capped at 20 model turns. Harnesses that execute code (such as `bash`) are refused, because a shell on the evaluator host could read the bundled answer keys.
+- **Run defaults** (`DbtDebuggerEnv`): the tools-only `null` harness on the local `subprocess` runtime, capped at 20 model turns. The tool calls in the 20th (final allowed) reply still execute before the cap ends the rollout, so a diagnosis submitted there is stored and scored (stop condition `max_turns`). Under v0 (verifiers 0.1.x) the cap was checked before tools ran, so tool calls in reply 20 never executed and a diagnosis submitted there scored 0. Harnesses that execute code (such as `bash`) are refused, because a shell on the evaluator host could read the bundled answer keys.
 
 Local execution uses **`dbt-duckdb`** and bundled `sample_data` loaded into DuckDB to match `sources.yml`. No external warehouse is needed.
 
@@ -150,7 +150,7 @@ A three-scenario `vf-eval` smoke on verifiers 0.4.0 (`deepseek/deepseek-v4-flash
 | `--select.include.ids <id>`        | Keep only the named scenario(s) (stems under `scenarios/gold/`)   |
 | `--env.taskset.difficulty-tier N`  | Keep scenarios of difficulty tier `1`–`4`                         |
 | `-n N`                             | Cap the number of tasks                                           |
-| `--env.agent.max-turns N`          | Max model turns per rollout (default `20`)                        |
+| `--env.agent.max-turns N`          | Max model turns per rollout (default `20`); tools in the last reply run |
 
 
 ## Tools (model-visible)

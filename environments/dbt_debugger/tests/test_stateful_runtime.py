@@ -992,3 +992,139 @@ def test_toolset_submission_stops_and_scores_strict_pass() -> None:
         "add_sample_rows_evidence",
         "submit_diagnosis",
     ]
+
+
+def _scripted_reply(turn: int, submit_turn: int) -> dict[str, Any]:
+    """The scripted model's chat completion for one reply: store the gold evidence on
+    replies 1-2, idle on ``list_collected_evidence``, and submit on ``submit_turn``."""
+    if turn == 1:
+        call = (
+            "add_file_evidence",
+            {
+                "path": "models/intermediate/int_order_lines.sql",
+                "start_line": 1,
+                "end_line": 14,
+            },
+        )
+    elif turn == 2:
+        call = (
+            "add_sample_rows_evidence",
+            {
+                "table": "raw_order_promos",
+                "match_json": '{"order_id": 1001}',
+                "min_rows": 2,
+            },
+        )
+    elif turn < submit_turn:
+        call = ("list_collected_evidence", {})
+    else:
+        call = (
+            "submit_diagnosis",
+            {
+                "has_bug": True,
+                "root_cause": "int_order_lines has a join fanout because order_promos "
+                "can contribute multiple promo rows per order, which duplicates revenue "
+                "downstream.",
+                "buggy_models": ["int_order_lines", "fct_daily_revenue"],
+                "fix": "Deduplicate or pre-aggregate promos so the join is one row per "
+                "order before fct_daily_revenue sums amount.",
+            },
+        )
+    name, arguments = call
+    message = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": f"call_{turn}",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)},
+            }
+        ],
+    }
+    return {
+        "id": f"chatcmpl-scripted-{turn}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "scripted",
+        "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+
+
+@pytest.mark.parametrize(
+    ("submit_turn", "stop_condition"),
+    [(19, "diagnosis_accepted"), (20, "max_turns")],
+)
+def test_diagnosis_on_final_allowed_reply_is_stored_and_scored(
+    submit_turn: int,
+    stop_condition: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the default 20-turn cap, tools in the 20th reply still run (v0 skipped them),
+    so a gold diagnosis submitted there is stored and scores 1.0; one submitted on reply 19
+    stops the rollout on ``diagnosis_accepted`` before a 20th model call."""
+    from aiohttp import web
+    from verifiers.v1.cli.eval.runner import run_eval
+    from verifiers.v1.configs.cli.eval import EvalConfig
+    from verifiers.v1.dialects.chat import ChatDialect
+
+    monkeypatch.setenv("DBT_DEBUGGER_SCRIPTED_KEY", "scripted")
+    dialect = ChatDialect()
+    turns: list[int] = []
+
+    async def answer(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        turn = 1 + sum(m.get("role") == "assistant" for m in body["messages"])
+        turns.append(turn)
+        raw = _scripted_reply(turn, submit_turn)
+        if not dialect.streaming(body):
+            return web.json_response(raw)
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        for event in dialect.stream_events(raw):
+            await response.write(event)
+        await response.write_eof()
+        return response
+
+    async def _run() -> list[vf.Trace]:
+        app = web.Application()
+        app.router.add_post("/{tail:.*}", answer)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        try:
+            config = EvalConfig(
+                env={"taskset": {"id": "dbt-debugger"}},
+                select={"include": {"ids": ["join_fanout_exec_revenue"]}},
+                client={
+                    "base_url": f"http://127.0.0.1:{port}/v1",
+                    "api_key_var": "DBT_DEBUGGER_SCRIPTED_KEY",
+                },
+                model="scripted",
+                rich=None,
+                push=False,
+                output_dir=tmp_path,
+                run={"dir": "run"},
+            )
+            assert config.env.agent.max_turns == 20
+            records = await run_eval(config)
+        finally:
+            await runner.cleanup()
+        return [trace for record in records for trace in record.traces]
+
+    traces = asyncio.run(_run())
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace.errors == []
+    assert turns == list(range(1, submit_turn + 1))
+    assert trace.num_turns == submit_turn
+    assert trace.stop_condition == stop_condition
+    assert trace.info["submitted_diagnosis"] is not None
+    assert [entry["tool"] for entry in trace.info["tool_trace"]][
+        -1
+    ] == "submit_diagnosis"
+    assert trace.reward == 1.0
