@@ -7,7 +7,9 @@ export PATH="$XMAGE_SMOKE_ROOT/.venv/bin:$PATH"
 
 python scripts/build_xmage_poc.py
 prime env install xmage-poc --no-upgrade --plain
-python -c "import xmage_poc; xmage_poc.load_environment()"
+# Resolve the v1 plugin, then check Java and the bridge as an eval's startup does.
+vf-validate xmage-poc --runtime.type subprocess -n 1 -o environments/xmage_poc/outputs/ci-validate
+python -c "import asyncio; from xmage_poc.environment import XMageEnv, XMageEnvConfig; asyncio.run(XMageEnv(XMageEnvConfig(taskset={'id': 'xmage-poc'})).start())"
 XMAGE_INTEGRATION=1 python -m pytest environments/xmage_poc/tests -q
 python scripts/smoke_xmage_poc_eval.py --protocol-only --output "environments/xmage_poc/outputs/ci-protocol"
 python scripts/smoke_xmage_poc_eval.py --protocol-only --observation-format json --inject-invalid-replies --output "environments/xmage_poc/outputs/ci-json-protocol"
@@ -44,7 +46,7 @@ uv venv --python "$XMAGE_SMOKE_ROOT/.venv/bin/python" "$XMAGE_ARTIFACT_TMP/venv"
 uv pip install --python "$XMAGE_ARTIFACT_TMP/venv/bin/python" environments/xmage_poc/dist/*.whl
 (
   cd "$XMAGE_ARTIFACT_TMP"
-  PYTHONPATH="" "$XMAGE_ARTIFACT_TMP/venv/bin/python" -c "import xmage_poc; xmage_poc.load_environment()"
+  PYTHONPATH="" "$XMAGE_ARTIFACT_TMP/venv/bin/python" -c "import asyncio; from xmage_poc.environment import XMageEnv, XMageEnvConfig; asyncio.run(XMageEnv(XMageEnvConfig(taskset={'id': 'xmage-poc'})).start())"
   PYTHONPATH="" "$XMAGE_ARTIFACT_TMP/venv/bin/python" - <<'PY'
 import json, os, shutil, subprocess
 from xmage_poc.transport import ROOT
@@ -54,8 +56,7 @@ assert json.loads(result)['catalog_names'] > 30_000
 PY
 )
 
-if [[ -n "${PRIME_API_KEY:-}" ]]; then
-  python scripts/smoke_xmage_poc_eval.py --output "environments/xmage_poc/outputs/ci-prime-eval"
-else
-  echo "Prime eval smoke needs PRIME_API_KEY; standalone game and protocol tests completed."
-fi
+# The eval path needs no credentials: prime-rl's `uv run eval` (via scripts/prime_rl_eval.sh,
+# which needs uv, Python 3.12 and network) against a local scripted endpoint. The smoke
+# reads prime-rl's file monitor, since `uv run eval` exits 0 even when episodes error.
+python scripts/smoke_xmage_poc_eval.py --output "environments/xmage_poc/outputs/ci-prime-rl-eval"

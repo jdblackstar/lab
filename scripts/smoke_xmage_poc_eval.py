@@ -1,4 +1,4 @@
-"""Exercise prime eval run using a local scripted endpoint; no paid model calls."""
+"""Exercise prime-rl's eval using a local scripted endpoint; no paid model calls."""
 
 from __future__ import annotations
 
@@ -12,14 +12,38 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import verifiers as vf
-from xmage_poc import load_environment
-from xmage_poc.environment import DECK_CONTEXT_MARKER
+import verifiers.v1 as vf
+from xmage_poc.environment import DECK_CONTEXT_MARKER, XMageEnv, XMageEnvConfig
 from xmage_poc.render import render_observation
 from xmage_poc.transport import advance_action, is_pass_only_priority
 from xmage_poc.verify import read_lines, verify
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def prime_rl_episode(monitor: Path) -> dict:
+    """The run's only episode, after requiring every planned episode landed cleanly.
+
+    `uv run eval` exits 0 even when every rollout errors, so read its file monitor:
+    an errored episode can report num_errors=0 with ok=false.
+    """
+    plan = json.loads((monitor / "plan.json").read_text())
+    planned = sum(n for groups in plan.values() for n in groups.values())
+    index = read_lines(monitor / "traces/stream.index.jsonl")
+    bad = [e for e in index if not e["ok"] or e["num_errors"]]
+    assert len(index) == planned == 1 and not bad, (
+        f"prime-rl eval: {len(index)}/{planned} episodes landed; errored: {bad}"
+    )
+    episodes = [
+        json.loads(line)
+        for chunk in sorted((monitor / "traces/stream").glob("*.jsonl.zst"))
+        for line in subprocess.run(
+            ["zstd", "-dc", str(chunk)], check=True, capture_output=True, text=True
+        ).stdout.splitlines()
+        if line
+    ]
+    assert [e["id"] for e in episodes] == [index[0]["id"]], "Trace stream != index"
+    return episodes[0]
 
 
 def main():
@@ -51,7 +75,7 @@ def main():
     parser.add_argument(
         "--protocol-only",
         action="store_true",
-        help="Test the adapter/HTTP boundary locally; not a Prime evaluation",
+        help="Run one episode in-process instead of through prime-rl's eval",
     )
     parser.add_argument(
         "--inject-invalid-replies",
@@ -72,14 +96,26 @@ def main():
         def log_message(self, *_):
             pass
 
+        def do_GET(self):
+            # prime-rl's eval waits for /health and checks /v1/models first.
+            models = {"data": [{"id": "xmage-scripted-local", "object": "model"}]}
+            body = json.dumps(models if self.path == "/v1/models" else {}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_POST(self):
             try:
                 assert self.path == "/v1/chat/completions", self.path
                 payload = json.loads(
                     self.rfile.read(int(self.headers["Content-Length"]))
                 )
-                assert payload["max_completion_tokens"] == 4096
-                assert "max_tokens" not in payload
+                # The eval's sampling is authoritative; harness requests always stream.
+                assert payload["max_tokens"] == 4096
+                assert "max_completion_tokens" not in payload
+                assert payload["stream"] is True
                 observations = []
                 for message in payload["messages"]:
                     if message["role"] != "user":
@@ -163,32 +199,41 @@ def main():
                         completion = json.dumps(
                             {"action": len(observations[-1]["actions"])}
                         )
-                body = json.dumps(
+                chunks = [
+                    {"delta": {"role": "assistant", "content": completion}},
+                    {"delta": {"reasoning_content": "Choose the scripted action."}},
+                    {"delta": {}, "finish_reason": "stop"},
+                ]
+                events = [
+                    {"choices": [{"index": 0, "finish_reason": None, **chunk}]}
+                    for chunk in chunks
+                ] + [
                     {
-                        "id": f"local-{len(requests)}",
-                        "object": "chat.completion",
-                        "created": int(time.time()),
-                        "model": "xmage-scripted-local",
-                        "choices": [
-                            {
-                                "index": 0,
-                                "message": {
-                                    "role": "assistant",
-                                    "content": completion,
-                                    "reasoning_content": "Choose the scripted action.",
-                                },
-                                "finish_reason": "stop",
-                            }
-                        ],
+                        "choices": [],
                         "usage": {
                             "prompt_tokens": 1,
                             "completion_tokens": 1,
                             "total_tokens": 2,
                         },
                     }
-                ).encode()
+                ]
+                body = b"".join(
+                    b"data: "
+                    + json.dumps(
+                        {
+                            "id": f"local-{len(requests)}",
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": "xmage-scripted-local",
+                            **event,
+                        }
+                    ).encode()
+                    + b"\n\n"
+                    for event in events
+                )
+                body += b"data: [DONE]\n\n"
                 self.send_response(200)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -198,83 +243,63 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    env_args = {
-        "output_dir": str(output / "games"),
+    taskset_args = {
         "seed": args.seed,
-        "opponent": args.opponent,
         "pilot_seat": args.pilot_seat,
         "pilot_deck": args.pilot_deck,
         "pilot_play_order": args.pilot_play_order,
+    }
+    env_args = {
+        "output_dir": str(output / "games"),
+        "opponent": args.opponent,
         "auto_pass_priority": not args.no_auto_pass_priority,
         "observation_format": args.observation_format,
         "recording_mode": args.recording_mode,
     }
     if args.java_bin:
         env_args["java_bin"] = args.java_bin
+    url = f"http://127.0.0.1:{server.server_port}/v1"
+    os.environ["XMAGE_LOCAL_API_KEY"] = "local-scripted-smoke"
     try:
         if args.protocol_only:
 
-            async def exercise_adapter():
-                environment = load_environment(**env_args)
-                client = vf.ClientConfig(
-                    api_base_url=f"http://127.0.0.1:{server.server_port}/v1",
-                    api_key_var="XMAGE_LOCAL_API_KEY",
-                    max_retries=0,
-                )
-                state = await environment.rollout(
-                    environment.dataset[0],
-                    client,
-                    "xmage-scripted-local",
-                    {"max_tokens": 4096},
-                )
-                assert state.get("error") is None, state.get("error")
-                assert state.get("recording_audit", {}).get("privacy_passed")
-                assert state["pilot_deck"] == args.pilot_deck
-                assert state["pilot_play_order"] == args.pilot_play_order
-                assert (state["starting_player"] == args.pilot_seat) == (
-                    args.pilot_play_order == "play"
-                )
-                assert (
-                    state["game_result"]["starting_player"] == state["starting_player"]
-                )
-                await environment.rubric.score_rollout(state)
-                assert state["invalid_action_count"] == (
-                    5 if args.inject_invalid_replies else 0
-                )
-                assert state["unparseable_reply_count"] == int(
-                    args.inject_invalid_replies
-                )
-                assert state["fallback_action_count"] == int(
-                    args.inject_invalid_replies
-                )
-                assert state["model_action_attempts"] == len(requests)
-                if args.opponent == "self_play":
-                    assert state["reward"] == 1.0
-                else:
-                    outcome = next(
-                        p
-                        for p in state["game_result"]["players"]
-                        if p["name"] == args.pilot_seat
+            async def exercise():
+                env = XMageEnv(
+                    XMageEnvConfig(
+                        taskset={"id": "xmage-poc", **taskset_args}, **env_args
                     )
-                    assert state["reward"] == float(outcome["won"])
+                )
+                ctx = vf.ModelContext(
+                    model="xmage-scripted-local",
+                    client=vf.EvalClientConfig(
+                        base_url=url, api_key_var="XMAGE_LOCAL_API_KEY"
+                    ),
+                    sampling=vf.SamplingConfig(max_tokens=4096),
+                )
+                async with env.serving():
+                    return await env.run_episode(next(iter(env.taskset)), ctx)
 
-            os.environ["XMAGE_LOCAL_API_KEY"] = "local-scripted-smoke"
-            asyncio.run(exercise_adapter())
+            episode = asyncio.run(exercise()).model_dump(mode="json")
         else:
-            # Explicit localhost URL overrides the registry alias's default port.
+
+            def flags(prefix, values):
+                return [
+                    item
+                    for key, value in values.items()
+                    for item in (f"--{prefix}{key.replace('_', '-')}", str(value))
+                ]
+
             subprocess.run(
                 [
-                    "prime",
-                    "eval",
-                    "run",
+                    "bash",
+                    str(ROOT / "scripts/prime_rl_eval.sh"),
+                    str(ROOT / "environments/xmage_poc"),
                     "xmage-poc",
-                    "-e",
-                    "configs/endpoints.toml",
                     "-m",
                     "xmage-scripted-local",
-                    "-b",
-                    f"http://127.0.0.1:{server.server_port}/v1",
-                    "-k",
+                    "--client.base-url",
+                    url,
+                    "--client.api-key-var",
                     "XMAGE_LOCAL_API_KEY",
                     "-n",
                     "1",
@@ -282,26 +307,60 @@ def main():
                     "1",
                     "-c",
                     "1",
-                    "-t",
+                    "--sampling.max-tokens",
                     "4096",
-                    "-a",
-                    json.dumps(env_args),
-                    "-o",
-                    str(output / "eval"),
-                    "--disable-env-server",
-                    "--disable-tui",
-                    "-A",
-                    "--timeout",
+                    *flags("env.taskset.", taskset_args),
+                    *flags("env.", env_args),
+                    "--env.timeout.episode",
                     "300",
+                    "--output-dir",
+                    str(output),
+                    "--run.name",
+                    "eval",
+                    "--no-dashboard",
                 ],
                 cwd=ROOT,
-                env={**os.environ, "XMAGE_LOCAL_API_KEY": "local-scripted-smoke"},
                 check=True,
             )
+            episode = prime_rl_episode(output / "eval/monitors/file")
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+    assert not episode["errors"], episode["errors"]
+    traces = episode["traces"]
+    seats = {trace["info"]["seat"]: trace for trace in traces}
+    assert set(seats) == (
+        {"player_a", "player_b"} if args.opponent == "self_play" else {args.pilot_seat}
+    )
+    for trace in traces:
+        data, info = trace["task"]["data"], trace["info"]
+        assert not trace["errors"], trace["errors"]
+        assert info["recording_audit"]["privacy_passed"]
+        assert data["pilot_deck"] == args.pilot_deck
+        assert data["pilot_play_order"] == args.pilot_play_order
+        assert (data["starting_player"] == args.pilot_seat) == (
+            args.pilot_play_order == "play"
+        )
+        assert info["game_result"]["starting_player"] == data["starting_player"]
+        if args.opponent == "self_play":
+            assert trace["rewards"]["recording_validity"]["score"] == 1.0
+        else:
+            outcome = next(
+                p
+                for p in info["game_result"]["players"]
+                if p["name"] == args.pilot_seat
+            )
+            assert trace["rewards"]["pilot_win"]["score"] == float(outcome["won"])
+
+    def total(metric):
+        # Counters are per seat; the injected replies may land on either seat.
+        return sum(trace["metrics"][metric] for trace in traces)
+
+    assert total("invalid_action_count") == (5 if args.inject_invalid_replies else 0)
+    assert total("unparseable_reply_count") == int(args.inject_invalid_replies)
+    assert total("fallback_action_count") == int(args.inject_invalid_replies)
+    assert total("model_action_attempts") == len(requests)
     games = list((output / "games").iterdir())
     assert len(games) == 1
     audit = verify(games[0])
@@ -371,7 +430,7 @@ def main():
     audit["own_deck_context_passed"] = True
     if args.inject_invalid_replies:
         audit["invalid_reply_recovery_passed"] = True
-    audit["driver"] = "protocol_test" if args.protocol_only else "prime_eval"
+    audit["driver"] = "protocol_test" if args.protocol_only else "prime_rl_eval"
     audit["opponent"] = args.opponent
     audit["pilot_seat"] = args.pilot_seat if args.opponent != "self_play" else None
     audit["pilot_deck"] = args.pilot_deck

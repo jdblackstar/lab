@@ -1,11 +1,10 @@
-import asyncio
 import json
+from pathlib import Path
 
 import pytest
-import verifiers as vf
-from xmage_poc import load_environment
+from pydantic import ValidationError
 from xmage_poc.decklist import deck_context
-from xmage_poc.environment import DECK_CONTEXT_MARKER
+from xmage_poc.environment import DECK_CONTEXT_MARKER, XMageEnvConfig
 
 
 @pytest.mark.parametrize("history_decisions", [1, 2])
@@ -21,7 +20,7 @@ from xmage_poc.environment import DECK_CONTEXT_MARKER
     ],
 )
 def test_invalid_replies_retry_same_decision_then_fall_back_without_mixing_seats(
-    tmp_path, monkeypatch, history_decisions, opponent, fallback_kinds, fallback_index
+    play, history_decisions, opponent, fallback_kinds, fallback_index
 ):
     observations = [
         {
@@ -59,7 +58,10 @@ def test_invalid_replies_retry_same_decision_then_fall_back_without_mixing_seats
                     {
                         "type": "result",
                         "winner": "player_a",
-                        "players": [{"name": "player_a", "won": True}],
+                        "players": [
+                            {"name": "player_a", "won": True},
+                            {"name": "player_b", "won": False},
+                        ],
                     }
                 ]
             )
@@ -75,26 +77,8 @@ def test_invalid_replies_retry_same_decision_then_fall_back_without_mixing_seats
         def close(self):
             pass
 
-    monkeypatch.setattr("xmage_poc.environment.GameSession", Session)
-    monkeypatch.setattr("xmage_poc.environment.PilotSession", Session)
-    monkeypatch.setattr(
-        "xmage_poc.environment.verify", lambda _: {"privacy_passed": True}
-    )
-    env = load_environment(
-        java_bin="/bin/false",
-        output_dir=str(tmp_path),
-        opponent=opponent,
-        pilot_seat="player_a",
-        history_decisions=history_decisions,
-        observation_format="json",
-    )
-
-    async def exercise():
-        state = await env.init_state(env.dataset[0], vf.ClientConfig(), "unused")
-        await env.setup_state(state)
-        seen = {}
-        saved_prompts = []
-        replies = [
+    replies = iter(
+        [
             (1, "bad-player_a"),
             (1, '{"action": 2}'),
             (1, '{"action": 1}'),
@@ -107,52 +91,76 @@ def test_invalid_replies_retry_same_decision_then_fall_back_without_mixing_seats
             (4, "bad-player_a"),
             (4, '{"action": 1}'),
         ]
-        for number, reply in replies:
-            prompt = await env.get_prompt_messages(state)
-            # Repeated prompt assembly must not resend actions or count twice.
-            assert await env.env_response([], state) == prompt
-            obs = observations[number - 1]
-            seen.setdefault(obs["player"], {})[number] = obs
-            users = [json.loads(m.content) for m in prompt if m.role == "user"]
-            delivered = [m for m in users if "actions" in m]
-            assert delivered == list(seen[obs["player"]].values())[-history_decisions:]
-            assert all(
-                m["decision"] in {o["decision"] for o in delivered} for m in users
-            )
-            context = json.loads(prompt[0].content.split(DECK_CONTEXT_MARKER)[1])
-            assert context["player"] == obs["player"]
-            if opponent == "self_play" and obs["player"] == "player_a":
-                assert "bad-seat-2" not in str(prompt)
-            if "error" in users[-1]:
-                assert users[-1]["attempts_remaining"] in {1, 2}
-                assert users[-1]["decision"] == number
-            saved_prompts.append((prompt, [(m.role, m.content) for m in prompt]))
-            state["trajectory"].append(
-                {"completion": [vf.AssistantMessage(content=reply)]}
-            )
-        await env.get_prompt_messages(state)
-        assert state["final_env_response"]
-        assert state["invalid_action_count"] == 9
-        assert state["unparseable_reply_count"] == 3
-        assert state["model_action_attempts"] == 11
-        assert state["fallback_action_count"] == 2
-        assert submitted == [(1, 1), (2, 1), (3, fallback_index), (4, 1)]
-        assert all(
-            [(m.role, m.content) for m in prompt] == saved
-            for prompt, saved in saved_prompts
-        )
-        await env.rubric.score_rollout(state)
-        assert state["reward"] == 1.0  # Metrics must not change either scoring mode.
-        assert state["metrics"]["invalid_action_rate"] == pytest.approx(9 / 11)
-        assert state["metrics"]["invalid_action_count"] == 9
-        assert state["metrics"]["unparseable_reply_count"] == 3
-        assert state["metrics"]["fallback_action_count"] == 2
-        await env.close_game(state)
+    )
+    seen = {}
+    prompts = []
 
-    asyncio.run(exercise())
+    def reply(prompt):
+        number, content = next(replies)
+        obs = observations[number - 1]
+        seen.setdefault(obs["player"], {})[number] = obs
+        users = [json.loads(m["content"]) for m in prompt if m["role"] == "user"]
+        delivered = [m for m in users if "actions" in m]
+        assert delivered == list(seen[obs["player"]].values())[-history_decisions:]
+        assert all(m["decision"] in {o["decision"] for o in delivered} for m in users)
+        context = json.loads(prompt[0]["content"].split(DECK_CONTEXT_MARKER)[1])
+        assert context["player"] == obs["player"]
+        if opponent == "self_play" and obs["player"] == "player_a":
+            assert "bad-seat-2" not in str(prompt)
+        if "error" in users[-1]:
+            assert users[-1]["attempts_remaining"] in {1, 2}
+            assert users[-1]["decision"] == number
+        prompts.append(prompt)
+        return content
+
+    episode, requests = play(
+        Session,
+        reply,
+        taskset={"pilot_seat": "player_a"},
+        opponent=opponent,
+        history_decisions=history_decisions,
+        observation_format="json",
+    )
+    assert episode.ok, episode.errors
+    assert next(replies, None) is None
+    assert submitted == [(1, 1), (2, 1), (3, fallback_index), (4, 1)]
+    # The endpoint received exactly the prompts that were recorded for audit.
+    recording = Path(episode.traces[0].info["recording_path"])
+    recorded = [
+        json.loads(line)["messages"]
+        for line in (recording / "model-prompts.jsonl").read_text().splitlines()
+    ]
+    assert requests == prompts == recorded
+    traces = {trace.info["seat"]: trace for trace in episode.traces}
+    expected = {
+        # Seat-local counters; self-play splits the rejected replies across seats.
+        "player_a": (8, 6, 2, 1) if opponent == "self_play" else (11, 9, 3, 2),
+        "player_b": (3, 3, 1, 1),
+    }
+    assert set(traces) == (
+        {"player_a", "player_b"} if opponent == "self_play" else {"player_a"}
+    )
+    for seat, trace in traces.items():
+        attempts, invalid, unparseable, fallbacks = expected[seat]
+        assert trace.reward == 1.0  # Metrics must not change either scoring mode.
+        assert trace.metrics == pytest.approx(
+            {
+                "model_action_attempts": attempts,
+                "invalid_action_count": invalid,
+                "unparseable_reply_count": unparseable,
+                "invalid_action_rate": invalid / attempts,
+                "fallback_action_count": fallbacks,
+            }
+        )
 
 
 @pytest.mark.parametrize("bound", [0, -1, True, 1.5])
 def test_action_attempt_bound_must_be_a_positive_integer(bound):
-    with pytest.raises(ValueError, match="max_action_attempts"):
-        load_environment(max_action_attempts=bound)
+    with pytest.raises(ValidationError, match="max_action_attempts"):
+        XMageEnvConfig(max_action_attempts=bound)
+
+
+def test_cli_strings_parse_for_env_knobs():
+    # prime-rl's eval CLI passes --env.* values through as strings.
+    config = XMageEnvConfig(max_action_attempts="2", auto_pass_priority="false")
+    assert (config.max_action_attempts, config.auto_pass_priority) == (2, False)

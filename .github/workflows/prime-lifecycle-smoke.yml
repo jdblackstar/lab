@@ -23,7 +23,7 @@ jobs:
   xmage-smoke:
     name: XMage install, game, artifact, and controller isolation
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -34,13 +34,13 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v4
-      - name: Install the compatible Prime CLI stack and test tools
+      - name: Install the Prime CLI and test tools
+        # prime env install brings verifiers 0.4 with the environment; evals use prime-rl's
+        # `uv run eval`, which scripts/prime_rl_eval.sh sets up in its own cached venv.
         run: |
           uv venv --python 3.12
-          uv pip install 'prime==0.6.35' 'prime-sandboxes==0.2.41' pytest
+          uv pip install 'prime==0.14.0' pytest
       - name: Run XMage lifecycle smoke (local scripted controller)
-        env:
-          PRIME_API_KEY: ${{ github.ref == 'refs/heads/main' && secrets.PRIME_API_KEY || '' }}
         run: bash scripts/ci/smoke_xmage_poc.sh
 
   orb-setup-smoke:
