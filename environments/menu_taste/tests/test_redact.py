@@ -41,7 +41,6 @@ def test_scrub_keeps_numbers_that_belong_to_dishes(dish):
         "Sarah & James's wedding dinner",
         "In honor of Margaret",
         "Dinner for Mrs. Alvarez",
-        "Saturday, June 14, 2025",
         "Jack's 40th birthday",
     ],
 )
@@ -114,3 +113,8 @@ def test_item_whose_name_is_only_a_price_or_contact_is_dropped():
     )
     out = redact_menu(menu)
     assert [i.name for i in out.sections[0].items] == ["Halibut"]
+
+
+def test_exact_dates_are_removed_not_just_flagged():
+    text, n = scrub("Toast at dinner, June 14, 2025, champagne")
+    assert "2025" not in text and "June 14" not in text and n == 1

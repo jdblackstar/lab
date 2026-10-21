@@ -131,6 +131,10 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
     meta = load_meta(questions)
     k = meta.get("num_options") or len(next(iter(records.values()))["options"])
     labels = labels or [Path(r).stem for r in runs]
+    if len(labels) != len(runs) or len(set(labels)) != len(labels):
+        raise ValueError(
+            f"need one unique label per run: {len(runs)} run(s), labels {labels}"
+        )
     graded = {
         label: grade(records, load_run(path)) for label, path in zip(labels, runs)
     }
@@ -145,11 +149,14 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
         "| --- | --- | --- | --- | --- |",
     ]
     for label, g in graded.items():
-        acc, lo, hi = bootstrap(_by_menu(g, lambda x: float(x["correct"])))
         unparsed = sum(x["letter"] is None for x in g)
+        if g:
+            acc, lo, hi = bootstrap(_by_menu(g, lambda x: float(x["correct"])))
+            scores = f"{acc:.1%} | {lo:.1%}–{hi:.1%}"
+        else:  # an empty collected run has no accuracy to report
+            scores = "– | –"
         lines.append(
-            f"| {label} | {len(g)} of {len(records)} | {acc:.1%} | {lo:.1%}–{hi:.1%} "
-            f"| {unparsed} |"
+            f"| {label} | {len(g)} of {len(records)} | {scores} | {unparsed} |"
         )
     base = meta.get("baselines", {})
     for name in (

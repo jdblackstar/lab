@@ -115,3 +115,20 @@ def test_answers_written_per_batch_are_collected_and_scored(question_set, tmp_pa
     }
     text = report(str(question_set), [str(out)], ["run"])
     assert f"| run | {len(ids)} of {len(recs)} | 100.0% |" in text
+
+
+def test_an_empty_run_reports_zero_answered(question_set, tmp_path):
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    n = len(load_question_set(question_set))
+    assert f"| empty | 0 of {n} | – | – | 0 |" in report(
+        str(question_set), [str(empty)]
+    )
+
+
+@pytest.mark.parametrize("labels", [["a"], ["a", "a"]])
+def test_labels_must_be_unique_and_one_per_run(question_set, tmp_path, labels):
+    run = tmp_path / "run.jsonl"
+    run.write_text("")
+    with pytest.raises(ValueError, match="one unique label per run"):
+        report(str(question_set), [str(run), str(run)], labels)

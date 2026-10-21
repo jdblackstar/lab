@@ -1,7 +1,7 @@
 import json
 
 from menu_taste.corpus import load_menus
-from menu_taste.ingest.cli import main
+from menu_taste.ingest.cli import iter_files, main
 
 
 def _record(menu_id: str) -> dict:
@@ -36,3 +36,14 @@ def test_canonical_json_records_are_redacted(tmp_path):
 def test_rerunning_canonical_json_does_not_duplicate_menus(tmp_path):
     menus = _run_twice(tmp_path)
     assert sorted(m.menu_id for m in menus) == ["m1", "m2"]
+
+
+def test_symlinks_inside_a_menus_folder_are_not_loaded(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("private key")
+    menus = tmp_path / "menus"
+    menus.mkdir()
+    (menus / "real.txt").write_text("Halibut, peas")
+    (menus / "menu.txt").symlink_to(secret)
+    (menus / "linked_dir").symlink_to(tmp_path, target_is_directory=True)
+    assert iter_files([str(menus)]) == [menus / "real.txt"]

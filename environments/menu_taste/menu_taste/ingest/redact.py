@@ -30,6 +30,13 @@ CONTACT_PATTERNS = [
     re.compile(r"(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b"),
     re.compile(r"\bhttps?://\S+|\bwww\.\S+", re.IGNORECASE),
 ]
+# A full "Month D, YYYY" date is as unambiguous as a price, so it is removed too.
+DATE_PATTERNS = [
+    re.compile(
+        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b"
+    ),
+]
+
 FLAG_PATTERNS = [
     (re.compile(r"\b(?:Mr|Mrs|Ms|Mx|Dr)\.?\s+[A-Z][a-z]+"), "honorific + name"),
     (
@@ -79,19 +86,13 @@ FLAG_PATTERNS = [
         ),
         "billing language",
     ),
-    (
-        re.compile(
-            r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b"
-        ),
-        "exact date",
-    ),
 ]
 
 
 def scrub(text: str) -> tuple[str, int]:
-    """Remove prices and contact details. Returns the cleaned text and removal count."""
+    """Remove prices, contact details and exact dates. Returns the cleaned text and removal count."""
     count = 0
-    for pattern in PRICE_PATTERNS + CONTACT_PATTERNS:
+    for pattern in PRICE_PATTERNS + CONTACT_PATTERNS + DATE_PATTERNS:
         text, n = pattern.subn("", text)
         count += n
     text = re.sub(r"\s{2,}", " ", text).strip(" ,;|·•-–—")
@@ -129,6 +130,6 @@ def redact_menu(menu: Menu) -> Menu:
         # A name that was nothing but a price or contact is not a dish.
         section.items = [item for item in section.items if item.name]
     if removed:
-        warnings.insert(0, f"removed {removed} price/contact fragment(s)")
+        warnings.insert(0, f"removed {removed} price/contact/date fragment(s)")
     menu.warnings = list(dict.fromkeys(menu.warnings + warnings))
     return menu

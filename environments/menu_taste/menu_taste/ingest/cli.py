@@ -33,12 +33,20 @@ def iter_files(paths: list[str]) -> list[Path]:
     files: list[Path] = []
     for p in map(Path, paths):
         if p.is_dir():
-            files += sorted(
-                f
-                for f in p.rglob("*")
-                if f.is_file()
-                and not any(part.startswith(".") for part in f.relative_to(p).parts)
-            )
+            root = p.resolve()
+            for f in sorted(p.rglob("*")):
+                if any(part.startswith(".") for part in f.relative_to(p).parts):
+                    continue
+                # A link in a menus folder could point at any file the user can
+                # read, and its bytes would go to the model provider.
+                if f.is_symlink() or not f.resolve().is_relative_to(root):
+                    print(
+                        f"warning: skipping {f}: symlink or outside {p}",
+                        file=sys.stderr,
+                    )
+                    continue
+                if f.is_file():
+                    files.append(f)
         elif p.is_file():
             files.append(p)
         else:
