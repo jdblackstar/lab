@@ -1,10 +1,10 @@
 # DBT Debugger — Scenario JSON Schema (Authoritative Spec)
 
-This document defines the canonical structure for each gold scenario file under `scenarios/gold/`. All fields are designed to map later onto a `vf.StatefulToolEnv` rollout: materialized dbt workspace, hidden tool state, structured `submit_diagnosis`, and deterministic rubric checks.
+This document defines the canonical structure for each gold scenario file under `dbt_debugger/scenarios/gold/`. All fields map onto a verifiers v1 rollout: materialized dbt workspace, server-side tool context, structured `submit_diagnosis`, and deterministic scoring.
 
 ## File conventions
 
-- One scenario per file: `scenarios/gold/<scenario_id>.json`.
+- One scenario per file: `dbt_debugger/scenarios/gold/<scenario_id>.json`.
 - `scenario_id` MUST match the filename stem (without `.json`).
 - UTF-8, valid JSON. No Markdown code fences inside string values—use plain multiline strings for SQL.
 - Version the schema with `schema_version` (currently `1`).
@@ -194,12 +194,12 @@ Array of objects:
 
 ---
 
-## Mapping to Verifiers (preview)
+## Mapping to verifiers v1
 
-- **Dataset row**: `question` or `prompt` built from `symptom` + generic instructions only; do not expose `title`, `dag`, or exact debug-context filenames.
-- **`setup_state`**: Copy `dbt_project.files` (+ seeds/macros) into `workspace_root`; attach `ground_truth` / `rubric_hints` to state for scoring only.
+- **Task data**: the prompt is built from `symptom` + generic instructions only; do not expose `title`, `dag`, or exact debug-context filenames.
+- **Tool server `setup_task`**: Copy `dbt_project.files` (+ seeds/macros) into a temporary workspace; `ground_truth` / `rubric_hints` stay in the evaluator (task scoring) only.
 - **Tools**: See [runtime_mapping.md](runtime_mapping.md).
-- **Rubric**: Compare structured `submit_diagnosis` payload (`buggy_models`, etc.) to `rubric_hints.accepted_diagnoses` and grounded evidence requirements deterministically first.
+- **Scoring**: Compare the structured `submit_diagnosis` payload (`buggy_models`, etc.) to `rubric_hints.accepted_diagnoses` and grounded evidence requirements deterministically.
 
 ---
 

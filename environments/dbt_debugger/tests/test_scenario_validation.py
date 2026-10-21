@@ -7,14 +7,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from dbt_debugger.scenarios import GOLD_DIR
 from validation.validate_scenarios import _validate_one
 
-_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _scenario_path(name: str) -> Path:
     """Return the gold scenario path for one scenario id."""
-    return _ROOT / "scenarios" / "gold" / f"{name}.json"
+    return GOLD_DIR / f"{name}.json"
 
 
 def _spec(name: str) -> dict[str, Any]:

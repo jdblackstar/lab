@@ -39,7 +39,7 @@ This document lists checks beyond JSON Schema structure. Implementations should 
 
 ## Corpus coverage (gold set)
 
-When validating the whole `scenarios/gold/` directory:
+When validating the whole `dbt_debugger/scenarios/gold/` directory:
 
 17. **Category coverage**: At least one scenario must tag each of: `join`, `incremental`, `source_schema`, `logic`, `macro`, `config`, `no_bug`.
 18. **Tier targets**: The gold set should meet the `2/3/3/2` target for tiers `1/2/3/4`.
