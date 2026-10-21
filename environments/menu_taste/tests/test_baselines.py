@@ -1,7 +1,13 @@
 """The no-taste baselines must catch a cue that gives the answer away. All data invented."""
 
 import numpy as np
-from menu_taste.baselines import FEATURES, cross_validated_choice_model, report
+from menu_taste.baselines import (
+    BEST,
+    FEATURES,
+    cross_validated_choice_model,
+    report,
+    report_numbers,
+)
 from menu_taste.cloze import cloze_questions
 from menu_taste.corpus import load_menus, sample_corpus_path
 
@@ -29,3 +35,12 @@ def test_report_runs_on_the_sample_corpus():
     text = report(cloze_questions(menus), menus)
     assert "most words shared with the menu" in text
     assert "best combination of all cues" in text
+
+
+def test_one_menu_has_no_held_out_combination_score():
+    menus = load_menus(sample_corpus_path())
+    first = menus[0].menu_id
+    questions = [q for q in cloze_questions(menus) if q.menu.menu_id == first]
+    assert questions
+    assert BEST not in report_numbers(questions, menus)
+    assert f"| {BEST} | unavailable" in report(questions, menus)
