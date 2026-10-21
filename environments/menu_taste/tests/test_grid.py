@@ -287,3 +287,17 @@ def test_a_station_with_nothing_listed_under_it_is_the_dish():
         "Gyro Station",
         "Coffee and Tea Station",
     ]
+
+
+def test_import_reads_every_sheet_and_names_only_later_ones(tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.active.append(["SMALL BITES", "", "Deviled Eggs", "chive"])
+    wb.create_sheet().append(["DESSERT", "", "Lemon Tart", "meringue"])
+    path = tmp_path / "menus.xlsx"
+    wb.save(path)
+
+    menus, _ = import_grid(path, pair_columns=2)
+    assert [m.menu_id.split("-", 1)[1] for m in menus] == ["r1", "s2-r1"]
+    assert [next(m.items()).name for m in menus] == ["Deviled Eggs", "Lemon Tart"]

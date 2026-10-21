@@ -132,10 +132,19 @@ def cmd_run(args) -> int:
     done = {m.source.sha256 for m in existing if m.source}
     docs = load_docs(args.paths)
     todo, skipped = [], []
+    doc_notes: dict[str, list[str]] = {}
     for doc in docs:
         if doc.error:
             skipped.append(f"{doc.path}: {doc.error}")
         elif doc.sha256 in done and not args.force:
+            # Keep this document's extractor notes in the rewritten review file.
+            cache = (
+                Path(args.cache_dir) / f"{doc.sha256}.json" if args.cache_dir else None
+            )
+            if cache and cache.exists():
+                notes = json.loads(cache.read_text()).get("document_notes")
+                if notes:
+                    doc_notes[doc.path] = notes
             continue
         else:
             todo.append(doc)
@@ -159,7 +168,6 @@ def cmd_run(args) -> int:
         f"{len(skipped)} unreadable"
     )
     menus = list(existing)
-    doc_notes: dict[str, list[str]] = {}
     failures = list(skipped)
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(_process, d, args, client): d for d in todo}

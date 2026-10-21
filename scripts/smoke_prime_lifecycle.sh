@@ -24,6 +24,7 @@ OUT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/env_lifecycle_smoke.XXXXXX")"
 trap 'rm -rf "$OUT_ROOT"' EXIT
 
 # smoke_env <env id> <env dir under environments/> [vf-validate args...]
+# Set SMOKE_PRIME_MONITOR=0 to keep eval traces off the Prime platform.
 smoke_env() {
   local env_id="$1" env_dir="$ROOT/environments/$2"
   shift 2
@@ -46,12 +47,14 @@ if summary["valid_rate"] != 1.0:
 PY
 
   if [[ -n "${PRIME_API_KEY:-}" ]]; then
+    local monitor=(--monitors.prime)
+    [[ "${SMOKE_PRIME_MONITOR:-1}" == 1 ]] || monitor=()
     echo "==> prime-rl eval $env_id (minimal)"
     bash "$ROOT/scripts/prime_rl_eval.sh" "$env_dir" "$env_id" \
       -m deepseek/deepseek-v4-flash \
       -n 1 -r 1 -c 1 \
       --output-dir "$out_dir" --run.name eval \
-      --monitors.prime
+      "${monitor[@]}"
     # The eval exits 0 even when a rollout errors; require every planned episode to
     # land in the file monitor's trace index without errors.
     python - "$out_dir/eval/monitors/file" <<'PY'
@@ -75,7 +78,11 @@ PY
 }
 
 smoke_env dbt-debugger dbt_debugger --runtime.type subprocess
-# The bundled sample (synthetic menus) only; the private corpus never runs in CI.
-smoke_env menu-taste menu_taste --runtime.type subprocess
+# Traces hold whole menus: run the bundled synthetic sample even if these point at a
+# private corpus, and don't upload anything.
+(
+  unset MENU_TASTE_QUESTIONS MENU_TASTE_MENUS
+  SMOKE_PRIME_MONITOR=0 smoke_env menu-taste menu_taste --runtime.type subprocess
+)
 
 echo "==> OK"

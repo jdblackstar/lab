@@ -71,6 +71,10 @@ PY
 }
 
 smoke_artifact dbt_debugger dbt_debugger dbt-debugger --runtime.type subprocess -n 1
-smoke_artifact menu_taste menu_taste menu-taste --runtime.type subprocess -n 5
+# The bundled synthetic sample, even if these point at a private corpus.
+(
+  unset MENU_TASTE_QUESTIONS MENU_TASTE_MENUS
+  smoke_artifact menu_taste menu_taste menu-taste --runtime.type subprocess -n 5
+)
 
 echo "==> OK"

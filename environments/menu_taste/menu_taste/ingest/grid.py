@@ -485,19 +485,20 @@ def parse_row(
 
 def read_grid(
     path: str | Path, *, pair_columns: int | None = None
-) -> list[tuple[int, list[tuple[str, str]]]]:
+) -> list[tuple[int, int, list[tuple[str, str]]]]:
+    """(sheet number from 1, row number, pairs) for every non-empty row of every sheet."""
     from openpyxl import load_workbook
 
     wb = load_workbook(path, read_only=True, data_only=True)
-    ws = wb.worksheets[0]
     rows = []
-    for row_no, values in enumerate(ws.iter_rows(values_only=True), 1):
-        cells = ["" if v is None else str(v).strip() for v in values]
-        width = pair_columns * 2 if pair_columns else len(cells) + len(cells) % 2
-        cells += [""] * (width - len(cells))
-        pairs = [(cells[i], cells[i + 1]) for i in range(0, width, 2)]
-        if any(a or b for a, b in pairs):
-            rows.append((row_no, pairs))
+    for sheet_no, ws in enumerate(wb.worksheets, 1):
+        for row_no, values in enumerate(ws.iter_rows(values_only=True), 1):
+            cells = ["" if v is None else str(v).strip() for v in values]
+            width = pair_columns * 2 if pair_columns else len(cells) + len(cells) % 2
+            cells += [""] * (width - len(cells))
+            pairs = [(cells[i], cells[i + 1]) for i in range(0, width, 2)]
+            if any(a or b for a, b in pairs):
+                rows.append((sheet_no, row_no, pairs))
     return rows
 
 
@@ -513,13 +514,16 @@ def import_grid(
     menus: list[Menu] = []
     seen: dict[tuple, int] = {}
     report = Counter()
-    for row_no, pairs in read_grid(path, pair_columns=pair_columns):
+    for sheet_no, row_no, pairs in read_grid(path, pair_columns=pair_columns):
         key = tuple((a.lower(), b.lower()) for a, b in pairs if a or b)
         if key in seen:
             report["exact duplicate rows skipped"] += 1
             continue
         seen[key] = row_no
-        menu, _ = parse_row(pairs, menu_id=f"{sha[:8]}-r{row_no}", scrub=scrub)
+        # Only later sheets name theirs, so single-sheet imports keep their IDs.
+        sheet = f"-s{sheet_no}" if sheet_no > 1 else ""
+        menu_id = f"{sha[:8]}{sheet}-r{row_no}"
+        menu, _ = parse_row(pairs, menu_id=menu_id, scrub=scrub)
         if menu is None:
             report["rows with no dishes"] += 1
             continue

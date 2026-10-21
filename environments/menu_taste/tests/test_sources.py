@@ -2,6 +2,7 @@ import io
 import zipfile
 from email.message import EmailMessage
 
+import pytest
 from menu_taste.ingest.sources import MAX_IMAGE_EDGE, load_bytes, sniff
 from PIL import Image
 
@@ -133,3 +134,28 @@ def test_text_starting_with_bracket_is_not_mistaken_for_json():
 def test_unreadable_files_report_an_error_instead_of_raising():
     (doc,) = load_bytes(b"\xd0\xcf\x11\xe0" + b"\0" * 64, "old.msg")
     assert doc.error and ".eml" in doc.error
+
+
+@pytest.mark.parametrize(
+    "limit",
+    ["MAX_ARCHIVE_MEMBER_BYTES", "MAX_ARCHIVE_TOTAL_BYTES", "MAX_ARCHIVE_DEPTH"],
+)
+def test_archives_that_expand_past_a_limit_are_skipped_not_read(monkeypatch, limit):
+    from menu_taste.ingest import sources
+
+    monkeypatch.setattr(
+        sources, limit, 1 if limit == "MAX_ARCHIVE_DEPTH" else 1_000_000, raising=False
+    )
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bomb.txt", b"0" * 2_000_000)  # about 2 KB compressed
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("a-menu.txt", "Halibut, peas")
+        zf.writestr("inner.zip", inner.getvalue())
+    assert len(buf.getvalue()) < 10_000
+
+    docs = load_bytes(buf.getvalue(), "menus.zip")
+    assert docs[0].path == "menus.zip!a-menu.txt" and docs[0].error is None
+    assert all(not p.data or len(p.data) < 1_000_000 for d in docs for p in d.parts)
+    assert any(d.error for d in docs[1:])

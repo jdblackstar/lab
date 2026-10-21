@@ -31,6 +31,12 @@ from xml.etree import ElementTree
 MAX_PDF_BYTES = 30 * 1024 * 1024
 MAX_IMAGE_EDGE = 2400
 MAX_IMAGE_BYTES = 3_500_000
+# Archive limits, checked against each member's declared size before it is read.
+# Real menu archives are far smaller; these only stop zip bombs.
+MAX_ARCHIVE_MEMBER_BYTES = 100 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 500 * 1024 * 1024  # across all nested archives in one file
+MAX_ARCHIVE_MEMBERS = 5000
+MAX_ARCHIVE_DEPTH = 3  # a zip inside an email inside a zip is depth 3
 # Office files with less text than this are probably a pasted picture of a menu.
 SPARSE_TEXT_CHARS = 200
 
@@ -145,18 +151,38 @@ def _decode(data: bytes) -> str:
 
 def load_path(path: str | Path) -> list[SourceDoc]:
     path = Path(path)
-    return load_bytes(path.read_bytes(), str(path))
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        # Unreadable, or gone since the walk: record it as skipped, don't abort.
+        return [SourceDoc(path=str(path), sha256="", media_type="", error=str(e))]
+    return load_bytes(data, str(path))
 
 
-def load_bytes(data: bytes, name: str) -> list[SourceDoc]:
+@dataclass
+class _ArchiveBudget:
+    """What is left to expand from one top-level file, shared by its nested archives."""
+
+    bytes_left: int
+    members_left: int
+
+
+def load_bytes(
+    data: bytes, name: str, *, depth: int = 0, budget: _ArchiveBudget | None = None
+) -> list[SourceDoc]:
     media_type = sniff(data, name)
     sha = hashlib.sha256(data).hexdigest()
     doc = SourceDoc(path=name, sha256=sha, media_type=media_type)
+    budget = budget or _ArchiveBudget(MAX_ARCHIVE_TOTAL_BYTES, MAX_ARCHIVE_MEMBERS)
     try:
-        if media_type == "application/zip":
-            return _load_zip(data, name)
-        if media_type == "message/rfc822":
-            return _load_email(data, name, doc)
+        if media_type in ("application/zip", "message/rfc822"):
+            if depth >= MAX_ARCHIVE_DEPTH:
+                raise UnsupportedSource(
+                    f"nested more than {MAX_ARCHIVE_DEPTH} archives/emails deep"
+                )
+            if media_type == "application/zip":
+                return _load_zip(data, name, depth, budget)
+            return _load_email(data, name, doc, depth, budget)
         _fill(doc, data, media_type, name)
     except UnsupportedSource as e:
         doc.error = str(e)
@@ -401,7 +427,9 @@ def _json_records(text: str) -> list[dict]:
     return [json.loads(text)]
 
 
-def _load_zip(data: bytes, name: str) -> list[SourceDoc]:
+def _load_zip(
+    data: bytes, name: str, depth: int, budget: _ArchiveBudget
+) -> list[SourceDoc]:
     docs = []
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         for info in zf.infolist():
@@ -412,11 +440,33 @@ def _load_zip(data: bytes, name: str) -> list[SourceDoc]:
                 or "__MACOSX" in member.parts
             ):
                 continue
-            docs += load_bytes(zf.read(info), f"{name}!{info.filename}")
+            member_name = f"{name}!{info.filename}"
+            # zipfile stops at the declared size, so checking it bounds the read.
+            budget.members_left -= 1
+            budget.bytes_left -= info.file_size
+            if budget.members_left < 0 or budget.bytes_left < 0:
+                docs.append(
+                    _skipped(name, "archive expands past the size or file-count limit")
+                )
+                break
+            if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+                docs.append(
+                    _skipped(member_name, f"{info.file_size / 1e6:.0f} MB uncompressed")
+                )
+                continue
+            docs += load_bytes(
+                zf.read(info), member_name, depth=depth + 1, budget=budget
+            )
     return docs
 
 
-def _load_email(data: bytes, name: str, doc: SourceDoc) -> list[SourceDoc]:
+def _skipped(name: str, reason: str) -> SourceDoc:
+    return SourceDoc(path=name, sha256="", media_type="", error=f"skipped: {reason}")
+
+
+def _load_email(
+    data: bytes, name: str, doc: SourceDoc, depth: int, budget: _ArchiveBudget
+) -> list[SourceDoc]:
     msg = email.message_from_bytes(data, policy=email.policy.default)
     docs = []
     # Mail clients often send a stub plain-text part next to the real HTML body, so
@@ -434,7 +484,12 @@ def _load_email(data: bytes, name: str, doc: SourceDoc) -> list[SourceDoc]:
     for att in msg.iter_attachments():
         payload = att.get_payload(decode=True)
         if payload:
-            docs += load_bytes(payload, f"{name}!{att.get_filename() or 'attachment'}")
+            docs += load_bytes(
+                payload,
+                f"{name}!{att.get_filename() or 'attachment'}",
+                depth=depth + 1,
+                budget=budget,
+            )
     return docs
 
 
