@@ -209,6 +209,16 @@ def test_benchmark_audits_every_decision_and_replays_seeded_game(tmp_path):
 
     assert gameplay(original) == gameplay(replay.output)
 
+    # A finished game with no land play or damage (e.g. lost by decking) is valid.
+    events = original / "internal/events.jsonl"
+    kept = [
+        e
+        for e in read_lines(events)
+        if e.get("type") != "LAND_PLAYED" and "DAMAGE" not in e.get("type", "")
+    ]
+    events.write_text("".join(json.dumps(e) + "\n" for e in kept))
+    assert verify(original)["privacy_passed"]
+
     # Omitting checkpoints must not weaken the existing delivered-input audit.
     hidden = read_lines(original / "internal/states.jsonl")[1]["players"][0]["library"][
         0

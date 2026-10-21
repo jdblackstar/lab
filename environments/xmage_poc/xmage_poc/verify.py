@@ -368,20 +368,9 @@ def verify(output: Path, *, require_finished: bool = True) -> dict:
         require(result["decisions"] == len(decisions), "Recording invariant failed")
         require(result["snapshots"] == len(states), "Recording invariant failed")
         require(states[-1]["reason"] == "end", "Recording invariant failed")
+        # Land plays and damage are gameplay choices, not integrity invariants: a
+        # passive game that ends by decking is valid and must still be scored.
         require(any(s["turn"] > 1 for s in states), "No turns were played")
-        events = (
-            read_lines(output / "internal/events.jsonl")
-            if mode == "benchmark"
-            else [s["event"] for s in states]
-        )
-        require(
-            any(e.get("type") == "LAND_PLAYED" for e in events),
-            "No land play recorded",
-        )
-        require(
-            any("DAMAGE" in e.get("type", "") for e in events),
-            "No damage recorded",
-        )
     audit = {
         "privacy_passed": True,
         "recording_mode": mode,
