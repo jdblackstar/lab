@@ -23,3 +23,6 @@ external/
 .amp/portals/*
 
 *.log
+
+# Real menu corpora and raw extractions stay local (shared under NDA).
+environments/menu_taste/private/

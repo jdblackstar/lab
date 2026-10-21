@@ -20,17 +20,23 @@ if [[ -d "$ROOT/.venv/bin" ]]; then
   export PATH="$ROOT/.venv/bin:$PATH"
 fi
 
-OUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dbt_debugger_lifecycle_smoke.XXXXXX")"
-trap 'rm -rf "$OUT_DIR"' EXIT
+OUT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/env_lifecycle_smoke.XXXXXX")"
+trap 'rm -rf "$OUT_ROOT"' EXIT
 
-echo "==> prime env install dbt-debugger"
-prime env install dbt-debugger
+# smoke_env <env id> <env dir under environments/> [vf-validate args...]
+smoke_env() {
+  local env_id="$1" env_dir="$ROOT/environments/$2"
+  shift 2
+  local out_dir="$OUT_ROOT/$env_id"
+  mkdir -p "$out_dir"
 
-echo "==> vf-validate dbt-debugger (local subprocess runtime)"
-vf-validate dbt-debugger --runtime.type subprocess \
-  --output-dir "$OUT_DIR" --run.dir validate
-# vf-validate exits 0 even when checks fail; require every task to validate.
-python - "$OUT_DIR/validate/summary.json" <<'PY'
+  echo "==> prime env install $env_id"
+  prime env install "$env_id"
+
+  echo "==> vf-validate $env_id (local subprocess runtime)"
+  vf-validate "$env_id" "$@" --output-dir "$out_dir" --run.dir validate
+  # vf-validate exits 0 even when checks fail; require every task to validate.
+  python - "$out_dir/validate/summary.json" <<'PY'
 import json
 import sys
 
@@ -39,16 +45,16 @@ if summary["valid_rate"] != 1.0:
     sys.exit(f"vf-validate: not every task is valid: {summary['checks']}")
 PY
 
-if [[ -n "${PRIME_API_KEY:-}" ]]; then
-  echo "==> prime-rl eval (minimal)"
-  bash "$ROOT/scripts/prime_rl_eval.sh" "$ROOT/environments/dbt_debugger" dbt-debugger \
-    -m deepseek/deepseek-v4-flash \
-    -n 1 -r 1 -c 1 \
-    --output-dir "$OUT_DIR" --run.name eval \
-    --monitors.prime
-  # The eval exits 0 even when a rollout errors; require every planned episode to
-  # land in the file monitor's trace index without errors.
-  python - "$OUT_DIR/eval/monitors/file" <<'PY'
+  if [[ -n "${PRIME_API_KEY:-}" ]]; then
+    echo "==> prime-rl eval $env_id (minimal)"
+    bash "$ROOT/scripts/prime_rl_eval.sh" "$env_dir" "$env_id" \
+      -m deepseek/deepseek-v4-flash \
+      -n 1 -r 1 -c 1 \
+      --output-dir "$out_dir" --run.name eval \
+      --monitors.prime
+    # The eval exits 0 even when a rollout errors; require every planned episode to
+    # land in the file monitor's trace index without errors.
+    python - "$out_dir/eval/monitors/file" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -63,8 +69,13 @@ if len(episodes) != planned or bad:
     sys.exit(f"prime-rl eval: {len(episodes)}/{planned} episodes landed; errored: {bad}")
 print(f"prime-rl eval: {len(episodes)}/{planned} episodes landed without errors")
 PY
-else
-  echo "==> skip prime-rl eval (set PRIME_API_KEY to include eval smoke)"
-fi
+  else
+    echo "==> skip prime-rl eval for $env_id (set PRIME_API_KEY to include eval smoke)"
+  fi
+}
+
+smoke_env dbt-debugger dbt_debugger --runtime.type subprocess
+# The bundled sample (synthetic menus) only; the private corpus never runs in CI.
+smoke_env menu-taste menu_taste --runtime.type subprocess
 
 echo "==> OK"
