@@ -29,3 +29,6 @@ environments/xmage_poc/bridge/target/
 environments/xmage_poc/xmage_poc/runtime/*.jar
 environments/xmage_poc/xmage_poc/runtime/build.json
 environments/xmage_poc/xmage_poc/runtime/*.pending
+
+# Real menu corpora and raw extractions stay local (shared under NDA).
+environments/menu_taste/private/
