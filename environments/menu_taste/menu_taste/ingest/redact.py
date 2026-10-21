@@ -123,9 +123,11 @@ def redact_menu(menu: Menu) -> Menu:
     for section in menu.sections:
         section.heading = clean(section.heading, "heading")
         for item in section.items:
-            item.name = clean(item.name, "item name") or item.name
+            item.name = clean(item.name, "item name") or ""
             item.description = clean(item.description, f"description of {item.name!r}")
             item.pairing = clean(item.pairing, f"pairing for {item.name!r}")
+        # A name that was nothing but a price or contact is not a dish.
+        section.items = [item for item in section.items if item.name]
     if removed:
         warnings.insert(0, f"removed {removed} price/contact fragment(s)")
     menu.warnings = list(dict.fromkeys(menu.warnings + warnings))

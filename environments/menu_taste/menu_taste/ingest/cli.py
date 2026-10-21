@@ -77,7 +77,7 @@ def _menus_from_json(doc: SourceDoc) -> list[Menu]:
             "source",
             {"sha256": doc.sha256, "media_type": doc.media_type, "index_in_source": i},
         )
-        menus.append(Menu.model_validate(record))
+        menus.append(redact_menu(Menu.model_validate(record)))
     return menus
 
 
@@ -163,7 +163,10 @@ def cmd_run(args) -> int:
                 failures.append(f"{doc.path}: {type(e).__name__}: {e}")
                 print(f"FAIL  {doc.path}: {e}", file=sys.stderr)
                 continue
-            menus += new
+            # Replace, not append: canonical JSON keeps its records' original
+            # provenance, so a rerun can't tell it was done and reprocesses it.
+            ids = {m.menu_id for m in new}
+            menus = [m for m in menus if m.menu_id not in ids] + new
             if notes:
                 doc_notes[doc.path] = notes
             print(f"done  {doc.path}: {len(new)} menu(s)")

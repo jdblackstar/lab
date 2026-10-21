@@ -92,3 +92,25 @@ def test_redact_menu_cleans_every_text_field_and_records_warnings():
     assert out.notes == ["Call with changes"]
     assert any("family name" in w for w in out.warnings)
     assert menu.sections[0].heading == "Entrées $85 per person"  # input untouched
+
+
+def test_item_whose_name_is_only_a_price_or_contact_is_dropped():
+    menu = Menu.model_validate(
+        {
+            "menu_id": "m",
+            "kind": "event",
+            "service": "plated",
+            "sections": [
+                {
+                    "course": "main",
+                    "items": [
+                        {"name": "Halibut"},
+                        {"name": "$125"},
+                        {"name": "john@example.com"},
+                    ],
+                }
+            ],
+        }
+    )
+    out = redact_menu(menu)
+    assert [i.name for i in out.sections[0].items] == ["Halibut"]
