@@ -16,6 +16,18 @@ ENV = ROOT / "environments/xmage_poc"
 REVISION = "afab346e06c4960882cf148acc57754c1c50a007"
 
 
+def bridge_source_sha256() -> str:
+    """Identify the bridge sources a runtime was built from, to catch stale releases."""
+    digest = hashlib.sha256()
+    bridge = ENV / "bridge"
+    files = [bridge / "pom.xml", *sorted((bridge / "src").rglob("*"))]
+    for path in files:
+        if path.is_file():
+            digest.update(path.relative_to(bridge).as_posix().encode() + b"\0")
+            digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
 def run(command: list[str], **kwargs) -> None:
     subprocess.run(command, check=True, **kwargs)
 
@@ -120,6 +132,7 @@ def main() -> None:
         json.dumps(
             {
                 "xmage_revision": REVISION,
+                "bridge_source_sha256": bridge_source_sha256(),
                 "card_module": "org.mage:mage-sets:1.4.62",
                 "card_module_sha256": hashlib.sha256(
                     card_module.read_bytes()

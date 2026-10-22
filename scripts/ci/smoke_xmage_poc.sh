@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
-# Build and exercise the real engine, package contents, and local controller boundary.
+# Install the released runtime, then exercise the real engine, package contents, and
+# local controller boundary.
 set -euo pipefail
 XMAGE_SMOKE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$XMAGE_SMOKE_ROOT"
 export PATH="$XMAGE_SMOKE_ROOT/.venv/bin:$PATH"
 
-python scripts/build_xmage_poc.py
+# Installing downloads the JAR pinned in release.json and verifies its checksum.
 prime env install xmage-poc --no-upgrade --plain
+# The pinned release must be built from this checkout's bridge and XMage revision;
+# otherwise cut a new xmage-runtime-v* release and pin it.
+python - <<'PY'
+import json, sys
+sys.path.insert(0, 'scripts')
+from build_xmage_poc import REVISION, bridge_source_sha256
+build = json.loads(open('environments/xmage_poc/xmage_poc/runtime/build.json').read())
+assert build['xmage_revision'] == REVISION, build['xmage_revision']
+assert build['bridge_source_sha256'] == bridge_source_sha256(), (
+    'release.json pins a runtime built from other bridge sources; release and pin a new one'
+)
+PY
 # Resolve the v1 plugin, then check Java and the bridge as an eval's startup does.
 vf-validate xmage-poc --runtime.type subprocess -n 1 -o environments/xmage_poc/outputs/ci-validate
 python -c "import asyncio; from xmage_poc.environment import XMageEnv, XMageEnvConfig; asyncio.run(XMageEnv(XMageEnvConfig(taskset={'id': 'xmage-poc'})).start())"
@@ -37,7 +50,10 @@ with zipfile.ZipFile(next(dist.glob('*.whl'))) as archive:
         assert 'mage/player/ai/ComputerPlayer7.class' in engine.namelist()
     assert json.loads(archive.read('xmage_poc/runtime/build.json'))['catalog_names'] > 30_000
 with tarfile.open(next(dist.glob('*.tar.gz'))) as archive:
-    assert any(n.endswith('/xmage_poc/runtime/xmage-poc.jar') for n in archive.getnames())
+    # The sdist carries the pin and hook; building its wheel downloads the JAR.
+    assert not any(n.endswith('/xmage_poc/runtime/xmage-poc.jar') for n in archive.getnames())
+    assert any(n.endswith('/xmage_poc/runtime/release.json') for n in archive.getnames())
+    assert any(n.endswith('/hatch_build.py') for n in archive.getnames())
     assert not any('/outputs/' in n or '/target/' in n for n in archive.getnames())
 PY
 XMAGE_ARTIFACT_TMP="$(mktemp -d)"

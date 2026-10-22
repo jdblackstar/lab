@@ -39,7 +39,9 @@ class GameSession:
         jar = ROOT / "runtime" / "xmage-poc.jar"
         if not java or not jar.is_file():
             raise RuntimeError(
-                "Build the bridge with scripts/build_xmage_poc.py and provide Java 21 on PATH or XMAGE_JAVA_BIN."
+                "XMage runtime missing: reinstall with `prime env install xmage-poc` to download "
+                "the pinned JAR (or build it with scripts/build_xmage_poc.py), and provide "
+                "Java 21 on PATH or XMAGE_JAVA_BIN."
             )
         build_manifest = ROOT / "runtime/build.json"
         if build_manifest.is_file():

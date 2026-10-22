@@ -12,7 +12,7 @@ from xmage_poc.verify import read_lines, verify
 
 @pytest.mark.skipif(
     os.environ.get("XMAGE_INTEGRATION") != "1",
-    reason="Set XMAGE_INTEGRATION=1 after building the Java bridge",
+    reason="Set XMAGE_INTEGRATION=1 with the XMage runtime installed and Java 21",
 )
 def test_full_card_module_and_native_name_lookup():
     java = os.environ.get("XMAGE_JAVA_BIN") or shutil.which("java")
@@ -52,7 +52,7 @@ def test_full_card_module_and_native_name_lookup():
 
 @pytest.mark.skipif(
     os.environ.get("XMAGE_INTEGRATION") != "1",
-    reason="Set XMAGE_INTEGRATION=1 after building the Java bridge",
+    reason="Set XMAGE_INTEGRATION=1 with the XMage runtime installed and Java 21",
 )
 @pytest.mark.parametrize(
     "opponent,seat,starting_player",
@@ -157,7 +157,7 @@ def test_real_game_private_views_and_engine_roundtrip(
 
 @pytest.mark.skipif(
     os.environ.get("XMAGE_INTEGRATION") != "1",
-    reason="Set XMAGE_INTEGRATION=1 after building the Java bridge",
+    reason="Set XMAGE_INTEGRATION=1 with the XMage runtime installed and Java 21",
 )
 def test_benchmark_audits_every_decision_and_replays_seeded_game(tmp_path):
     original = tmp_path / "original"

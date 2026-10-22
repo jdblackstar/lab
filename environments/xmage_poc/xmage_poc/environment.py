@@ -112,7 +112,9 @@ def resolve_java(java_bin: str | None = None) -> str:
     java = java_bin or os.environ.get("XMAGE_JAVA_BIN") or shutil.which("java")
     if not java or not (ROOT / "runtime/xmage-poc.jar").is_file():
         raise RuntimeError(
-            "Build scripts/build_xmage_poc.py first and provide Java 21 (XMAGE_JAVA_BIN or PATH)"
+            "XMage runtime missing: reinstall with `prime env install xmage-poc` to download "
+            "the pinned JAR (or build it with scripts/build_xmage_poc.py), and provide "
+            "Java 21 (XMAGE_JAVA_BIN or PATH)"
         )
     return java
 

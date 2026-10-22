@@ -26,4 +26,7 @@ jobs:
           cache-dependency-glob: environments/**/uv.lock
 
       - name: Run environment tests
+        # Unit tests stub the XMage runtime; the lifecycle smoke installs the real one.
+        env:
+          XMAGE_POC_SKIP_DOWNLOAD: "1"
         run: bash scripts/ci/run_environment_pytests.sh
