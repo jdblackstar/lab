@@ -1,75 +1,222 @@
 ---
 name: evaluate-environments
-description: Runs and analyzes verifiers 0.4 environment evaluations using the repo's pinned prime-rl runner. Use for smoke tests, model comparisons, benchmark sweeps, resuming runs, and sample-level failure analysis.
+description: Run and evaluate verifiers tasksets. Set up the necessary config files and observe the runs and their results.
 ---
 
-# Evaluate environments
+# Evaluate Tasksets
 
-Read `environments/AGENTS.md` and the package README. These packages use verifiers v1;
-the old Prime eval command/config examples are not their eval path.
+## Goal
 
-## Validate before spending model calls
+Set up an evaluation for a taskset in the correct way to reproduce results from others or evaluate a model and harness combination on a given taskset.
 
-Use the environment's own project/venv. From its directory:
+## Canonical path
 
-```bash
-uv sync --extra dev
-uv run vf-validate <taskset-id> --runtime.type subprocess
-```
-
-Require `valid_rate == 1.0` in the saved `summary.json`. Validation checks tasksets, not
-env defaults, so the explicit local runtime matters. Run package-specific tests/validators
-when changing behavior. Never interpret menu-taste's bundled synthetic smoke data as a
-real benchmark; use a frozen question set for real model comparisons.
-
-## Run with pinned prime-rl
-
-From the repo root:
+Use the `eval` entrypoint
 
 ```bash
-scripts/prime_rl_eval.sh environments/dbt_debugger dbt-debugger \
-  -m deepseek/deepseek-v4-flash -n 2 -r 1 -c 2 \
-  --output-dir outputs/dbt-debugger --run.name smoke
+uv run vf-eval <MY_ENV>
 ```
 
-The wrapper checks out pinned prime-rl, syncs its Python 3.12 venv, installs the environment
-there, and runs `uv run eval`. It works independently of the root environment's verifiers
-version. `vf-eval` is deprecated in favor of this runner.
+## Core workflow
 
-- Start small, inspect samples/errors, then scale within the authorized budget.
-- `-n` limits tasks, `-r` sets rollouts per task, `-c` bounds concurrency, and `-s`
-  shuffles task selection under `--select.seed`. `-s` does not enable saving.
-- Pass typed flags: `--env.taskset.difficulty-tier 2`,
-  `--env.taskset.questions-path <absolute-path>`, `--env.taskset.rotation 2`, or
-  `--env.agent.max-turns 25`. Validation uses `--taskset.*` instead.
-- Filter named tasks with `--select.include.ids '["join_fanout_exec_revenue"]'`.
-- Use canonical provider model IDs. The wrapper does not read `configs/endpoints.toml`;
-  don't assume an `endpoint_id` alias is a model ID. Check the pinned runner's `--help`
-  for client/endpoint configuration before using another provider.
-- For config files and sweeps, use the pinned runner's schema and `@ file.toml` syntax,
-  not the generated v0 `[[eval]]`/`[[ablation]]` examples. Dry-run configs before model calls.
-- Resume with the same output directory, run identity, and config using `--resume`.
-- Concurrent wrapper invocations need distinct `PRIME_RL_DIR`s: each invocation syncs
-  and reinstalls its package into that checkout's venv.
+1. Resolve and validate config without model calls:
 
-## Save, inspect, and protect results
+```bash
+uv run vf-eval <MY_ENV> --dry-run
+```
 
-Prime-rl's file monitor saves locally under `<output-dir>/<run.name>/`. Inspect:
+2. Run model-free validation. Each task gets two checks in independent runtimes: gold (`setup`, then `validate` applies and checks the reference answer; unchecked when the task has no `validate`) and noop (`setup`, then `finalize` and the task's full scoring, configured judges included, on the untouched task; invalid when its reward already reaches 1.0, unchecked when it has no reward). `--only-gold` / `--only-noop` run one; `--only-setup` only checks that `setup` completes:
 
-- `configs/` for resolved settings and `logs/latest/eval.log` for errors;
-- `monitors/file/plan.json` for the planned episodes and
-  `monitors/file/traces/stream.index.jsonl` for landed episodes: require every planned
-  episode, `ok: true`, and `num_errors: 0`;
-- the compressed trace stream under `monitors/file/traces/stream/` for actual replies,
-  tool calls, and scoring. A zero process exit status does not guarantee clean rollouts.
+```bash
+uv run vf-validate <MY_ENV> --runtime.type subprocess
+```
 
-Uploading is opt-in with `--monitors.prime`; do not promise automatic uploads or that
-prime-rl files appear in the old eval TUI. Never upload private menu traces. Keep private
-corpora, validation outputs, and eval outputs in `environments/menu_taste/private/`, and
-confirm permission to send their contents to the inference provider. Follow the package
-README's export/scoring commands for frozen question sets and rotations.
+3. Do a small run to see whether it works correctly:
 
-Report the exact command/config, model, data selection, sampling, error rate, metrics,
-and representative failures. Keep these fixed across comparisons; use pass@k only for
-binary rewards and don't overinterpret tiny samples. Publication is not required for
-local runs and needs separate approval.
+```bash
+uv run vf-eval <MY_ENV> -m deepseek/deepseek-v4-flash -n 3 -r 1
+```
+
+4. Inspect successful, zero-reward, and errored traces.
+5. Scale only after task loading, harness capability, runtime lifecycle, and scoring are correct.
+
+When the user requests a full run, do not restrict the number of tasks. Ask for the appropriate harness to use (if not specified)
+
+## IDs and plugin resolution
+
+A plugin id names an installed package (e.g. `my-taskset`); verifiers imports it and never installs anything itself.
+
+The leading ID is shorthand for `--env.taskset.id`. A harness belongs to an agent — `--env.agent.harness.*` on the single-agent env, `--env.<agent>.harness.*` on a multi-agent one (there is no run-level `--harness.*`):
+
+```bash
+uv run vf-eval my-task-v1 --env.agent.harness.id codex --env.agent.runtime.type prime
+```
+
+The env — the control flow between agents — owns the whole `[env]` block. Empty `--env.id`
+keeps the taskset's own story (its exported `Env` subclass, else the single-agent
+env); `--env.id` pairs a reusable env with any taskset, its knobs typed under `--env.*`:
+
+```bash
+uv run vf-eval my-task-v1 --env.id best-of-n --env.n 8      # pass@k / rejection sampling
+uv run vf-eval my-task-v1 --env.id agentic-judge \
+  --env.judge.runtime.type docker                           # a judge agent verifies each attempt in a sandbox
+```
+
+## Disabling tools
+
+Almost every harness comes with a `disabled_tools` list, which can be used to disable one or multiple tools:
+
+```toml
+[env.agent.harness]
+disabled_tools = ["shell_tool"]
+```
+
+The names of these tools are set by the respective harness. Research the relevant first party documentation for the given harness for the relevant name(s). Some harnesses do not offer support to disable tools.
+
+## Config discovery
+
+The CLI help is generated from the current config classes. Include the taskset and env ids you plan to use before `--help` so their concrete config fields are loaded:
+
+```bash
+uv run vf-eval my-task-v1 \
+  --env.id best-of-n \
+  --help
+```
+
+For implementation details and defaults, start at `verifiers/v1/configs/cli/eval.py` and follow its fields into `verifiers/v1/configs/`. Client configs live in `verifiers/v1/configs/client.py`, sampling in `verifiers/v1/types.py`, and runtime- and harness-specific configs next to their implementations in `verifiers/v1/runtimes/` and `verifiers/v1/harnesses/`. Custom taskset and env config fields live next to those implementations.
+
+## Typed taskset overrides
+
+Taskset settings:
+
+```bash
+uv run vf-eval my-task-v1 --env.taskset.split test --env.taskset.difficulty hard
+```
+
+Harness and runtime settings:
+
+```bash
+uv run vf-eval my-task-v1 \
+  --env.agent.harness.id rlm \
+  --env.agent.runtime.type docker \
+  --env.agent.runtime.cpu 4 \
+  --env.agent.runtime.memory 8
+```
+
+Sampling:
+
+```bash
+uv run vf-eval my-task-v1 \
+  --sampling.temperature 0.7 \
+  --sampling.top-p 0.95 \
+  --sampling.max-tokens 2048 \
+  --sampling.reasoning-effort medium
+```
+
+Always research the correct sampling parameters first. This is one of the most important settings, so make sure to find the correct values. For open models, you can find them on Hugging Face in the README and/or in the generation config.
+
+Your parameter selection or settings should leave room for full runs, and you should not restrict things like tokens or number of turns unless specified by the user.
+
+Leave optional settings unset unless the user asks for them. Always confirm the harness, runtime, and sampling parameters before running an evaluation.
+
+## Reproducible TOML
+
+You can also use a TOML:
+
+```toml
+model = "openai/gpt-5-mini"
+
+[env.taskset]
+id = "my-task-v1"
+split = "test"
+
+[env.agent]
+runtime = { type = "subprocess" }
+
+[env.agent.harness]
+id = "bash"
+
+[sampling]
+temperature = 0.7
+```
+
+```bash
+uv run vf-eval @ configs/my-eval.toml
+```
+
+## Retries
+
+Whole-rollout retry is off by default (`max_retries = 0`). Each retry starts a fresh rollout. Setting only `max_retries` retries any captured error up to that cap. Use `env.retries` for whole-episode retries or `env.agent.retries` for the agent alone.
+
+Ordered rules override the default budget for matching errors. With a zero default, only explicitly enabled errors retry. For example:
+
+```toml
+[env.agent.retries]
+max_retries = 0
+
+[[env.agent.retries.rules]]
+type = "ProviderError"
+status_code = [429, "5xx"]
+max_retries = 3
+
+[[env.agent.retries.rules]]
+type = "SandboxError"
+message = 'temporarily unavailable|connection reset'
+max_retries = 2
+```
+
+Fields within a rule must all match. `type` matches the exact recorded exception name, `status_code` matches any listed status or status class, and `message` is a regex search (plain text matches a substring). Invalid regexes fail config validation. Omitted match fields match anything. Each rule must explicitly provide `max_retries`; an omitted budget fails validation.
+
+The first matching rule wins for each error; zero retries excludes it, and exhausted rules never fall through. Unmatched errors share the default `max_retries` budget. Each retry consumes only the matching rule's budget, or the default budget when no rule matches. Budgets persist across the entire run; the default is not a global cap. An empty rules list uses only the default budget. When an attempt captures multiple errors, the first eligible error triggers the retry; a denied error does not veto other errors. Successful traces' recovered errors do not trigger episode retries.
+
+## Output and resume
+
+A run writes to `output_dir / run.dir` (`-o` sets `output_dir`, default `outputs`; `run.dir` defaults to the auto-generated run name):
+
+```text
+outputs/<env>--<model>--<harness>--<short-id>/
+├── configs/eval.json
+├── logs/eval.log
+└── traces.jsonl
+```
+
+`configs/eval.json` is the run's resolved config, re-runnable via `@`. `traces.jsonl` is one **episode** per line — the episode's traces plus their shared standing — appended after each episode finishes, so an episode is durable whole or not at all (a torn last line is the whole episode redone on resume).
+
+Resume in place by re-running the run's own saved config with `--resume` (it re-runs only the missing/errored rollouts; any config drift from the saved run is refused):
+
+```bash
+uv run vf-eval @ <run-dir>/configs/eval.json --resume
+```
+
+To overwrite a run dir and start fresh instead, use `--clean`.
+
+## Trace inspection
+
+For each representative sample inspect:
+
+- `task` and prompt fields;
+- `branches`, assistant messages, tool messages, and stop condition;
+- named `rewards`, aggregate `reward`, and `metrics`;
+- persisted `info` artifacts;
+- `error`/`errors` and boundary type;
+- per-call `calls` records (model, sampling, finish reason, usage, timing, error) linked to the graph;
+- usage and stage timing;
+- token/mask/logprob fields when using the training client.
+
+Classify outcomes:
+
+1. Valid completion and correct reward.
+2. Valid completion with low reward (model/task outcome).
+3. Truncated completion (budget outcome).
+4. Captured rollout error (provider, harness, tool, user, runtime, task, or interception).
+
+Do not average these categories together without reporting failure rate.
+
+## Metrics interpretation
+
+- Binary rewards support solve rate and pass@k-style analysis.
+- Continuous rewards need distributions, quantiles, and per-task/group comparisons.
+- Group rewards must be interpreted with their comparison rule and group size.
+- Always inspect samples before attributing a delta to model quality.
+- Keep taskset, harness, runtime, sampling, and selected task indices fixed across variants.
+- Do not overinterpret a tiny smoke run.
