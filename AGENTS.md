@@ -1,31 +1,53 @@
 # AGENTS.md
 
-<!-- Generated for lab workspaces. -->
+## Workspace and API
 
-This AGENTS guide is intended for end users working in a `prime lab setup` workspace.
+This is an existing Prime Lab workspace. Keep environment packages self-contained under
+`environments/<env_name>/`, with their own `pyproject.toml`, implementation, data, and
+README. Read `environments/AGENTS.md` and the package README before changing an environment.
 
-## Shared Best Practices (All Contexts)
+- The environments use **verifiers 0.4, API `verifiers.v1`**. Follow the taskset/task/env
+  contracts in the current packages, not the old dataset/rubric environment API.
+- `dbt_debugger` and `menu_taste` export taskset and env classes through `__all__`.
+  Do not require a `load_environment()` factory or introduce v0 environment base classes.
+- Use each environment's own virtualenv (`uv sync --extra dev`, then `uv run ...` from
+  its directory). The root project's dependency/lockfile is not the environment runtime.
+- `.prime/skills/` contains repo-specific create, browse, review, eval, GEPA, training,
+  and brainstorming guidance. Do not regenerate it from older Lab templates.
 
-These points are direct restatements of Verifiers docs so agents can follow the same golden-path workflows.
+## Development and validation
 
-- Environments are expected to expose `load_environment(...) -> vf.Environment` and be installable with `prime env install <env-name>`. (See `docs/overview.md` and `docs/environments.md`.)
-- Validate environment behavior with `prime eval run <env-name> ...` before sharing/publishing changes. Treat `prime eval run` as the canonical eval path: it saves results automatically, and agents should not add opt-out flags such as `--skip-upload` unless the user explicitly requests that deviation so runs stay visible in the private Evaluations tab and in `prime eval tui`. (See `docs/overview.md` and `docs/development.md`.)
-- Use `ToolEnv`/`MCPEnv` for stateless tools and `StatefulToolEnv` when per-rollout state must persist (sandbox/session/db handles). (See `docs/environments.md`.)
-- If external API keys are required, validate them in `load_environment()` with `vf.ensure_keys(...)` so failures are explicit and early. (See `docs/environments.md`.)
+- Scaffold new packages with verifiers 0.4's `vf-init`, using an environment virtualenv
+  that has it installed. Check the generated template against the local package patterns.
+- `prime env install <env-id>` remains supported for local installation from the repo
+  root; it is not the evaluation runner.
+- Run model-free validation with `uv run vf-validate <env-id> --runtime.type subprocess`
+  from the environment directory, plus its tests and any corpus-specific validators.
+  Check the validation summary's `valid_rate`, not just the exit status.
+- Run model evaluations through `scripts/prime_rl_eval.sh <env-path> <taskset-id> ...`.
+  It uses a pinned prime-rl checkout, a separate Python 3.12 venv, and `uv run eval`.
+  `vf-eval` is deprecated; do not use the old `prime eval run` examples for these packages.
+- Read the runner's help and the package README for typed flags/configs. The generated
+  `configs/eval`, `configs/gepa`, and `configs/rl` examples are not automatically compatible
+  with the current runners. `configs/endpoints.toml` is not automatically consumed by
+  prime-rl; do not assume its aliases resolve as model IDs.
+- Inspect rollout errors and saved traces, not just rewards or a zero exit code.
+- When adding an environment, extend lifecycle coverage in
+  `scripts/smoke_prime_lifecycle.sh`, `scripts/smoke_prime_artifact.sh`, or a dedicated CI
+  smoke as appropriate: installation, v1 discovery, model-free validation, packaged data,
+  and a minimal eval when supported. Pytest discovery is already automatic for packages
+  with `pyproject.toml`, a `tests/` directory, and a `dev` extra.
 
-## End-User Lab Workspace Notes
+## Secrets, privacy, and publishing
 
-Use this guidance in projects created via `prime lab setup`.
-
-- Treat `.prime/skills/` as the canonical skill entrypoint in Lab workspaces. Use the bundled skills first for create/browse/review/eval/GEPA/train/brainstorm workflows before ad hoc approaches.
-- Keep endpoint aliases in `./configs/endpoints.toml` and use `endpoint_id`/model shortcuts in commands and configs.
-- NEVER initialize environment source code manually; ALWAYS create new environments with `prime env init`.
-- Use the Prime CLI for all environment lifecycle operations (`prime env init` → `prime env install` → `prime eval run` → `prime env push`) rather than ad-hoc scripts.
-- Treat `prime eval run` as the default eval path. It already saves results automatically; do not add `--skip-upload` or other opt-out deviations unless the user explicitly requests them, so logs and results stay available in the private Evaluations tab and via `prime eval tui`.
-- When adding a new environment under `environments/<env_name>/`, update Prime lifecycle CI coverage in the same change. Prefer shared smoke scripts or a workflow matrix over duplicated YAML. At minimum, cover `prime env install` plus `load_environment(...)`; add packaged-artifact smoke and minimal `prime eval run` smoke when the environment is meant to support those paths.
-- NEVER begin environment development before `prime lab setup` has been run; if work starts outside that structure, recommend adjusting course into a proper lab workspace before continuing.
-- Keep each environment self-contained under `environments/<env_name>/` with `pyproject.toml`, implementation, and README so each abstraction has a dedicated home and the workspace stays maintainable.
-- Follow environment best practices strictly (for example `load_environment(...)`, `vf.ensure_keys(...)`, and the documented environment class patterns) to avoid brittle or messy implementations.
-- Use `prime env push --path ./environments/<env_name>` only after local eval behavior is verified.
-- Treat the `prime lab setup` structure as the idiomatic workspace for complex environment workflows: agents can mediate most platform complexity while users learn patterns progressively as needed.
-- When users request an approach that would deviate from these guidelines, explain the relevant Prime/Verifiers concepts and recommend the compliant path.
+- Document and check required credentials where the relevant client/resource is created;
+  do not require inference credentials for model-free taskset loading or validation.
+- Prime-rl saves local file-monitor results. `--monitors.prime` opts into uploading traces;
+  do not claim every eval is automatically uploaded or visible in `prime eval tui`.
+- Menu corpora and traces can contain private material. Keep them under the package's
+  ignored `private/` directory, use the local subprocess runtime for validation, and never
+  add `--monitors.prime` for private menu evaluations. Provider calls also send menu text
+  off-machine; check permission before using real menus.
+- Preserve package-specific harness/runtime restrictions and answer-key isolation.
+- Publish only when explicitly authorized and after validation. Confirm the destination
+  and `PUBLIC`/`PRIVATE` visibility; do not make a Hub push a prerequisite for local work.

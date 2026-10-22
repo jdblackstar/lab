@@ -1,151 +1,75 @@
 ---
 name: evaluate-environments
-description: Run and analyze evaluations for verifiers environments using prime eval. Use when asked to smoke-test environments, run benchmark sweeps, resume interrupted evaluations, compare models, inspect sample-level outputs, or produce evaluation summaries suitable for deciding next steps.
+description: Runs and analyzes verifiers 0.4 environment evaluations using the repo's pinned prime-rl runner. Use for smoke tests, model comparisons, benchmark sweeps, resuming runs, and sample-level failure analysis.
 ---
 
-# Evaluate Environments
+# Evaluate environments
 
-## Goal
-Run reliable environment evaluations and produce actionable summaries, not raw logs.
+Read `environments/AGENTS.md` and the package README. These packages use verifiers v1;
+the old Prime eval command/config examples are not their eval path.
 
-## Canonical Eval Path
-1. Use `prime eval run` as the default way to run evaluations.
-2. Do not add `--skip-upload` or other opt-out flags unless the user explicitly requests that deviation.
-3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval tui`.
+## Validate before spending model calls
 
-## Core Loop
-1. Run a smoke evaluation first (do not require pre-install):
+Use the environment's own project/venv. From its directory:
+
 ```bash
-prime eval run my-env -m openai/gpt-4.1-mini -n 5
-```
-2. Use owner/env slug directly when evaluating Hub environments:
-```bash
-prime eval run owner/my-env -m openai/gpt-4.1-mini -n 5
-```
-3. Scale only after smoke pass:
-```bash
-prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
-```
-4. Treat ownerless env ids as local-first. If not found locally, rely on Prime resolution for your remote env where applicable.
-
-## Endpoint Shortcuts And Model Family Choice
-1. Encourage users to define endpoint aliases in `configs/endpoints.toml` so model, base URL, and key wiring stay reusable.
-2. For `prime eval run -m`, prefer the provider's canonical model id (for example `openai/gpt-4.1-mini` or `qwen/qwen3-30b-a3b-instruct-2507`) rather than a short alias.
-3. Use `endpoint_id` values only in contexts that explicitly accept registry ids; do not assume short `endpoint_id` aliases resolve on the CLI.
-4. For direct calls to OpenAI’s `api.openai.com`, pass `-b`/`-k` and the provider’s short model name instead of relying on Prime Inference registry rows.
-5. Ask users explicitly whether they want an instruct or reasoning model before non-trivial evaluations.
-6. Instruct go-tos for quick behavior checks: `gpt-4.1` series and `qwen3` instruct series.
-7. Reasoning go-tos for deeper test coverage: `gpt-5` series, `qwen3` thinking series, and `glm` series.
-8. Example endpoint registry:
-```toml
-[[endpoint]]
-endpoint_id = "openai/gpt-4.1-mini"
-model = "openai/gpt-4.1-mini"
-url = "https://api.pinference.ai/api/v1"
-key = "PRIME_API_KEY"
-type = "openai_chat_completions"
-
-[[endpoint]]
-endpoint_id = "qwen3-30b-i"
-model = "qwen/qwen3-30b-a3b-instruct-2507"
-url = "https://api.pinference.ai/api/v1"
-key = "PRIME_API_KEY"
-type = "openai_chat_completions"
+uv sync --extra dev
+uv run vf-validate <taskset-id> --runtime.type subprocess
 ```
 
-## Publish Gate Before Large Runs
-1. After smoke tests pass and results look stable, proactively suggest pushing the environment to Hub before large eval sweeps or RL work.
-2. Ask the user explicitly: should visibility be `PUBLIC` or `PRIVATE`?
-3. Push with chosen visibility:
+Require `valid_rate == 1.0` in the saved `summary.json`. Validation checks tasksets, not
+env defaults, so the explicit local runtime matters. Run package-specific tests/validators
+when changing behavior. Never interpret menu-taste's bundled synthetic smoke data as a
+real benchmark; use a frozen question set for real model comparisons.
+
+## Run with pinned prime-rl
+
+From the repo root:
+
 ```bash
-prime env push my-env --visibility PUBLIC
-```
-or
-```bash
-prime env push my-env --visibility PRIVATE
-```
-4. For hosted eval workflows, prefer running large jobs against the Hub slug:
-```bash
-prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
+scripts/prime_rl_eval.sh environments/dbt_debugger dbt-debugger \
+  -m deepseek/deepseek-v4-flash -n 2 -r 1 -c 2 \
+  --output-dir outputs/dbt-debugger --run.name smoke
 ```
 
-## Prefer Config-Driven Evals Beyond Smoke Tests
-1. For anything beyond quick checks, nudge the user to create an eval TOML config.
-2. Use config files to run multiple evals in one command and keep runs reproducible:
-```bash
-prime eval run configs/eval/my-benchmark.toml
-```
-3. Make config files the default for benchmark sweeps, multi-model comparisons, and recurring reports.
+The wrapper checks out pinned prime-rl, syncs its Python 3.12 venv, installs the environment
+there, and runs `uv run eval`. It works independently of the root environment's verifiers
+version. `vf-eval` is deprecated in favor of this runner.
 
-## Common Evaluation Patterns
-1. Pass args to `load_environment()`:
-```bash
-prime eval run my-env -a '{"difficulty":"hard"}'
-```
-2. Override constructor kwargs:
-```bash
-prime eval run my-env -x '{"max_turns":20}'
-```
-3. Save extra state columns:
-```bash
-prime eval run my-env -s -C "judge_response,parsed_answer"
-```
-4. Resume interrupted runs:
-```bash
-prime eval run my-env -n 1000 -s --resume
-```
-5. Use TUI mode for live evaluation display:
-```bash
-prime eval run my-env -u
-```
-6. Run multi-environment TOML suites:
-```bash
-prime eval run configs/eval/my-benchmark.toml
-```
-7. Use abbreviated summary for large comparison runs:
-```bash
-prime eval run my-env -n 1000 -A
-```
-8. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
-```toml
-[[ablation]]
-env_id = "my-env"
+- Start small, inspect samples/errors, then scale within the authorized budget.
+- `-n` limits tasks, `-r` sets rollouts per task, `-c` bounds concurrency, and `-s`
+  shuffles task selection under `--select.seed`. `-s` does not enable saving.
+- Pass typed flags: `--env.taskset.difficulty-tier 2`,
+  `--env.taskset.questions-path <absolute-path>`, `--env.taskset.rotation 2`, or
+  `--env.agent.max-turns 25`. Validation uses `--taskset.*` instead.
+- Filter named tasks with `--select.include.ids '["join_fanout_exec_revenue"]'`.
+- Use canonical provider model IDs. The wrapper does not read `configs/endpoints.toml`;
+  don't assume an `endpoint_id` alias is a model ID. Check the pinned runner's `--help`
+  for client/endpoint configuration before using another provider.
+- For config files and sweeps, use the pinned runner's schema and `@ file.toml` syntax,
+  not the generated v0 `[[eval]]`/`[[ablation]]` examples. Dry-run configs before model calls.
+- Resume with the same output directory, run identity, and config using `--resume`.
+- Concurrent wrapper invocations need distinct `PRIME_RL_DIR`s: each invocation syncs
+  and reinstalls its package into that checkout's venv.
 
-[ablation.sweep]
-temperature = [0.0, 0.5, 1.0]
+## Save, inspect, and protect results
 
-[ablation.sweep.env_args]
-difficulty = ["easy", "hard"]
-```
-This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.
+Prime-rl's file monitor saves locally under `<output-dir>/<run.name>/`. Inspect:
 
-## Inspect Saved Results
-1. Browse locally saved runs:
-```bash
-prime eval tui
-```
-2. Inspect platform-visible runs when needed:
-```bash
-prime eval list
-prime eval get <eval-id>
-prime eval samples <eval-id>
-```
+- `configs/` for resolved settings and `logs/latest/eval.log` for errors;
+- `monitors/file/plan.json` for the planned episodes and
+  `monitors/file/traces/stream.index.jsonl` for landed episodes: require every planned
+  episode, `ok: true`, and `num_errors: 0`;
+- the compressed trace stream under `monitors/file/traces/stream/` for actual replies,
+  tool calls, and scoring. A zero process exit status does not guarantee clean rollouts.
 
-## Metrics Interpretation
-1. Treat binary and continuous rewards differently.
-2. Use pass@k-style interpretation only when rewards are effectively binary.
-3. For continuous rewards, focus on distribution shifts and per-task means.
-4. Always inspect samples before concluding regressions.
+Uploading is opt-in with `--monitors.prime`; do not promise automatic uploads or that
+prime-rl files appear in the old eval TUI. Never upload private menu traces. Keep private
+corpora, validation outputs, and eval outputs in `environments/menu_taste/private/`, and
+confirm permission to send their contents to the inference provider. Follow the package
+README's export/scoring commands for frozen question sets and rotations.
 
-## Reliability Rules
-1. Keep environment/model/config fixed while comparing variants.
-2. Record exact command lines and key flags in the report.
-3. Call out missing credentials, endpoint mismatches, and dependency errors directly.
-4. Do not overinterpret tiny sample runs.
-
-## Output Format
-Return:
-1. Run configuration table.
-2. Aggregate metrics and key deltas.
-3. Sample-level failure themes.
-4. Clear recommendation: proceed, iterate environment, or retune model/sampling.
+Report the exact command/config, model, data selection, sampling, error rate, metrics,
+and representative failures. Keep these fixed across comparisons; use pass@k only for
+binary rewards and don't overinterpret tiny samples. Publication is not required for
+local runs and needs separate approval.

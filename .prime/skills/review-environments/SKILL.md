@@ -1,58 +1,47 @@
 ---
 name: review-environments
-description: Review verifiers environments for correctness, robustness, and ecosystem compatibility. Use when asked for environment code review, quality audit, migration validation, or release readiness checks for local environments or environments pulled from the Hub.
+description: Reviews verifiers 0.4 taskset/env packages for correctness, robustness, privacy, and compatibility. Use for code review, migration validation, quality audits, or release readiness checks.
 ---
 
-# Review Environments
+# Review environments
 
-## Goal
-Find correctness risks and regressions first, then assess maintainability and ecosystem compliance.
+Read `AGENTS.md`, `environments/AGENTS.md`, and the package README. Review the v1 contract,
+not whether the code follows the old factory/dataset/rubric API.
 
-## Review Input Modes
-1. Local environment module in `./environments/<env_name>`.
-2. Pulled Hub environment via `prime env pull owner/name`.
-3. Installed package under active workspace.
+## Review workflow
 
-## Review Workflow
-1. Identify environment contract:
-- `load_environment(...)`
-- base class and rollout behavior
-- rubric and metrics
-2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval tui`:
-```bash
-prime env install <env>
-prime eval run <env> -m openai/gpt-4.1-mini -n 5
-```
-3. Trace reward pipeline and validate scoring semantics.
-4. Run targeted checks for tool/stateful behavior where applicable.
+1. Identify exported taskset/env/harness classes (`__all__`), typed configs, task loading,
+   model-visible data, and private evaluator state. Check dependency requirements against
+   `verifiers>=0.4.0` and the actual installed runtime.
+2. Trace the task's `@vf.reward`, `@vf.metric`, `@vf.stop`, `validate(runtime)`, and
+   `finalize` behavior. Check scoring from persisted traces, not only in-memory state.
+   For ports, compare prompts, tools, termination boundaries, and scoring to the source.
+3. Check per-task resources in `Toolset.setup_task`, typed shared state, async execution,
+   and cleanup on failure/cancellation. Check custom env/harness protocols on their own
+   terms rather than forcing single-agent defaults.
+4. Check answer-key isolation: code-running harnesses must not expose host-side keys or
+   private corpora. Preserve dbt-debugger/menu-taste's explicit harness restrictions.
+5. Check packaged source/data outside the checkout, required system dependencies, and
+   clear credential failures at the resource boundary. Inference keys should not be
+   required for model-free validation.
+6. Run the package's tests/validators and
+   `uv run vf-validate <taskset-id> --runtime.type subprocess` from its directory.
+   Verify `valid_rate == 1.0`, not just exit code. Use `prime env install` and artifact
+   smoke where packaging/discovery is in scope.
+7. Use `evaluate-environments` for a small model eval through `scripts/prime_rl_eval.sh`
+   when needed and authorized; inspect planned vs. landed episodes and trace errors.
+   Report missing runtime/model coverage rather than substituting old eval commands.
 
-## Endpoint And Model Selection Nudge
-1. Encourage endpoint alias setup in `configs/endpoints.toml` for reproducible review runs.
-2. Ask whether review coverage should prioritize instruct or reasoning behavior.
-3. Instruct go-tos: `gpt-4.1` series, `qwen3` instruct series.
-4. Reasoning go-tos: `gpt-5` series, `qwen3` thinking series, `glm` series.
+## Critical criteria
 
-## Critical Review Criteria
-1. Reward correctness:
-- Prefer deterministic, explicit checks or LLM judges.
-- Flag best-effort keyword or style heuristics unless explicitly approved.
-2. Environment self-containment:
-- Flag any requirement for user-managed background services before `load_environment()`.
-- Require environment-managed lifecycle for sandboxes/sessions.
-3. Migration fidelity:
-- For ports, verify one-to-one equivalence of prompts, tool traces, and scoring logic.
-- Flag any assumptions made without user decision.
-4. Secrets handling:
-- Ensure required keys are validated in `load_environment()` with `vf.ensure_keys(...)`.
-5. Performance and scaling:
-- Identify obvious bottlenecks in dataset loading, rubric calls, or tool execution.
+- Rewards must reflect the task contract; flag false positives, answer leakage, shortcuts,
+  and metrics confused with the primary objective.
+- Real menu evals need frozen questions and private output paths. Neither validation nor
+  evaluation may silently upload private material; never add `--monitors.prime` for it.
+- New packages need lifecycle/artifact coverage, not only unit tests. A passing CLI exit
+  alone does not establish successful validation or error-free rollouts.
+- Don't assume old generated eval/GEPA/training configs or hosted integrations support v1.
+  Check the selected tool/version before claiming compatibility.
 
-## Findings Format
-Return findings first, sorted by severity:
-1. `P0/P1` bugs and behavioral mismatches.
-2. `P2` quality risks and maintainability issues.
-3. Test gaps and missing eval coverage.
-Include file paths, exact lines, impact, and concrete fix direction.
-
-## If No Findings
-State explicitly that no defects were found, then list residual risk and untested areas.
+Return actionable findings first, ordered by severity, with file/line references, impact,
+and fix direction. If none are found, say so and identify residual risk and untested areas.

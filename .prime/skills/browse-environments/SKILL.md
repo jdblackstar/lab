@@ -1,93 +1,48 @@
 ---
 name: browse-environments
-description: Discover and inspect verifiers environments through the Prime ecosystem. Use when asked to find environments on the Hub, compare options, inspect metadata, check action status, pull local copies for inspection, or choose environment starting points before evaluation, training, or migration work.
+description: Discovers and inspects Prime Hub environments for this verifiers 0.4 workspace. Use to find candidates, compare task and reward contracts, inspect source or metadata, and choose a compatible starting point.
 ---
 
-# Browse Environments
+# Browse environments
 
-## Goal
+## Discover and inspect
 
-Use Prime ecosystem commands to discover environments quickly, inspect quality signals, and pick the right starting point.
-
-## Primary Discovery Workflow
-
-1. List candidate environments:
+Use the installed Prime CLI's help when flags differ. Start with metadata/source reads:
 
 ```bash
-prime env list --search "math" --owner primeintellect --show-actions
+prime env list --search "math" --owner primeintellect --plain
+prime env info owner/name --plain
+prime env status owner/name --plain
+prime env inspect owner/name --plain
 ```
 
-2. Narrow results with owner, tags, mine, or starred filters:
+Pull source only when deeper inspection is needed (`prime env pull --help` gives the
+current destination flags). Review dependencies and code before installing third-party
+packages or running their setup.
 
-```bash
-prime env list --owner primeintellect --tag tools --tag sandbox
-prime env list --mine
-prime env list --starred
-```
+## Compare compatibility, not just version labels
 
-3. Prioritize quality and freshness signals:
-  - Prefer environments published by `primeintellect` first.
-  - Keep only candidates with passing latest action/CI status from `--show-actions` or `prime env status`.
-  - Prefer candidates updated in roughly the last 2 months.
-  - Prefer candidates on version `v0.1.8` or newer.
-4. Inspect details for shortlisted candidates:
+For each candidate record task type/horizon, prompts/tools, rewards/metrics, data/license,
+system dependencies, secrets, runtime/harness, and any CI/recency evidence available.
+Distinguish the **environment package version** from its **verifiers API requirement**:
+a package named/versioned `0.1.x` may still use a different API. Inspect imports, exports,
+and config contracts for `verifiers.v1` compatibility with this repo's verifiers 0.4 stack.
+Do not use an old minimum package-version threshold as an API compatibility test.
 
-```bash
-prime env info owner/name
-prime env status owner/name
-```
+If a candidate is v0-only, report the migration work; don't recommend it as directly
+usable here. Prefer good existing options, but do not hide compatibility or privacy costs.
 
-5. Pull source for deep inspection when needed:
+## Validate a shortlist
 
-```bash
-prime env pull owner/name -t ./tmp-env
-```
+After source review, install into an appropriate isolated project/venv with
+`prime env install owner/name`. For model-free checks use `vf-validate` with an explicitly
+chosen runtime; local packages here use `--runtime.type subprocess`. Confirm prerequisites
+and `valid_rate`, not just process exit status.
 
-## Compare Candidates
+Follow `evaluate-environments` for model checks. Hub metadata/installation does not prove
+the package works with the pinned prime-rl runner: verify v1 discovery and run a small
+eval before recommending it for larger jobs. The wrapper needs a local package path, not
+just a Hub slug. Do not assume `configs/endpoints.toml` aliases resolve in that runner.
 
-For each candidate, collect:
-
-1. Task type and horizon: single-turn, multi-turn, tool, sandbox.
-2. Reward type: binary, continuous, judge-based, mixed.
-3. Dependencies and secrets requirements.
-4. Latest action status and version signal.
-5. Recency signal: last updated date (target within ~2 months).
-6. Fit to user goal: eval-only, GEPA, RL, or benchmark migration.
-
-## Endpoint And Model Selection Nudge
-
-1. Encourage users to configure endpoint aliases in `configs/endpoints.toml` before comparison evals.
-2. Ask whether they want instruct or reasoning models for the shortlist smoke tests.
-3. Instruct go-tos: `gpt-4.1` series, `qwen3` instruct series.
-4. Reasoning go-tos: `gpt-5` series, `qwen3` thinking series, `glm` series.
-
-## Prefer Official Ecosystem Paths
-
-1. Prefer Hub and Prime CLI workflows before manual third-party setup.
-2. Use install + smoke eval to validate real usability. Treat `prime eval run` as the canonical eval path and do not add `--skip-upload` unless the user explicitly requests that deviation:
-
-```bash
-prime env install owner/name
-prime eval run owner/name -m openai/gpt-4.1-mini -n 5
-```
-
-3. For examples in the verifiers repository, use repo install path when available:
-
-```bash
-prime env install reverse-text --from-repo
-```
-
-## Anti-Patterns
-
-1. Do not recommend building from scratch if a strong ecosystem option exists.
-2. Do not rely on README claims without running at least one quick eval.
-3. Do not hide incompatibilities or missing dependencies.
-
-## Output Format
-
-Return:
-
-1. Ranked shortlist with one-line rationale per environment.
-2. Exact commands to install and run each shortlisted option.
-3. Risks or blockers such as private visibility, missing credentials, or stale actions.
-
+Return a ranked shortlist, compatibility evidence, exact tested install/eval commands,
+and blockers (credentials, data access, runtime, API migration, or missing coverage).

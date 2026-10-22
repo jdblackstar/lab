@@ -1,115 +1,54 @@
 ---
 name: create-environments
-description: Create or migrate verifiers environments for the Prime Lab ecosystem. Use when asked to build a new environment from scratch, port an eval or benchmark from papers or other libraries, start from an environment on the Hub, or convert existing tasks into a package that exposes load_environment and installs cleanly with prime env install.
+description: Creates or migrates verifiers 0.4 taskset/env packages in this Lab workspace. Use when building a new environment, porting a benchmark, or adapting Hub source to the repo's v1 API.
 ---
 
-# Create Environments
+# Create environments
 
-## Goal
-Build production-quality verifiers environments that work immediately in the Prime ecosystem: install, load, evaluate, and train without hidden setup.
+Read `AGENTS.md`, `environments/AGENTS.md`, and the closest package README first.
+Use **`import verifiers.v1 as vf`**, not the v0 dataset/rubric/factory API.
 
-## Start With Ecosystem Paths
-1. Prefer ecosystem-native setup before custom scaffolding.
-2. Use this default loop:
+## Scaffold and implement
+
+1. Use verifiers 0.4's `vf-init`. From the repo root, the existing menu-taste project
+   provides the tool without relying on the root venv:
+   ```bash
+   uv run --project environments/menu_taste vf-init my-env --path environments
+   ```
+   Check `vf-init --help` for toolset (`-T`) or custom harness (`-H`) scaffolding.
+   Do not rerun Lab setup over this workspace or overwrite existing packages.
+2. Define the contract before coding: visible prompts, private answer keys, allowed
+   actions, stop conditions, scoring, metrics, and data splits. For a port, map the
+   source's prompts, tool I/O, termination, and scoring explicitly and preserve them.
+3. Implement typed `TaskData`, `TaskConfig`/`TasksetConfig`, a `Task`, and `Taskset.load()`.
+   Put rewards/metrics/stops on the task with v1 decorators and implement a meaningful
+   `validate(runtime)` gold check. Use `Trace` for replies, state, and persisted info.
+4. Export taskset/env classes through `__all__`. Pin intentional defaults in typed env
+   and agent config; use `SingleAgentEnv` for standard loops or a custom env/harness for
+   other protocols. Preserve answer-key isolation; don't grant a model host-shell access.
+5. Put stateful tools in a `Toolset` with `@vf.tool`, per-task setup, typed shared state,
+   and cleanup. Follow `dbt_debugger/toolset.py`, not hidden v0 tool-argument injection.
+6. Declare `verifiers>=0.4.0` and other dependencies; package required data in wheel and
+   sdist. Document system prerequisites and secrets at their resource boundary. Model-free
+   loading/validation should not need inference credentials.
+
+## Verify and hand off
+
+From the new package directory:
+
 ```bash
-prime env init my-env
-prime env install my-env
-prime eval run my-env -m openai/gpt-4.1-mini -n 5
-```
-3. Treat `prime eval run` as the canonical eval path. It saves results automatically, so do not add `--skip-upload` unless the user explicitly requests that deviation.
-4. Prefer an existing environment as a starting point when possible:
-```bash
-prime env list --search "keyword"
-prime env info owner/name
-prime env install owner/name
-```
-5. For repository examples, use repo install when available:
-```bash
-prime env install math-python --from-repo
-```
-6. Encourage users to keep endpoint aliases in `configs/endpoints.toml` so smoke tests can switch models quickly.
-7. Ask users whether they want instruct or reasoning models for validation.
-8. Instruct-first smoke choices: `gpt-4.1` series, `qwen3` instruct series.
-9. Reasoning validation choices: `gpt-5` series, `qwen3` thinking series, `glm` series.
-
-## Build Modes
-
-### 1. Build From Scratch
-1. Define task contract first: prompt shape, allowed tools, stop conditions, rubric outputs, metrics.
-2. Select the smallest correct base class:
-- `SingleTurnEnv` for one-response tasks.
-- `MultiTurnEnv` for custom interaction loops.
-- `ToolEnv` or `MCPEnv` for stateless tools.
-- `StatefulToolEnv` for per-rollout resources.
-3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
-4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
-
-### 2. Port From Another Library, Project, or Paper
-1. Create a strict source-to-target mapping before coding:
-- dataset rows and splits
-- prompt rendering and role ordering
-- tool I/O schema and stop logic
-- scoring math and aggregation
-- pass/fail thresholds and special cases
-2. Preserve one-to-one logical equivalence for what the model sees and what gets scored.
-3. Never invent unresolved formatting decisions. Ask the user to decide explicitly.
-4. Benchmark runtime and remove avoidable bottlenecks before handoff.
-
-### 3. Start From Hub Environment
-1. Install or pull the closest baseline:
-```bash
-prime env install owner/name
-prime env pull owner/name -t ./tmp-env
-```
-2. Keep proven interfaces stable unless a migration is deliberate and explicit.
-3. Re-run smoke evals after each major change.
-
-## Non-Negotiable Quality Rules
-1. Use deterministic, well-defined reward checks or LLM judges.
-2. Avoid best-effort deterministic heuristics such as keyword style checks except as an explicit last resort with user sign-off.
-3. Make environments self-contained after install. Do not require users to run background servers before `load_environment()`.
-4. Manage external resources inside the environment lifecycle.
-5. Validate required secrets in `load_environment()` via `vf.ensure_keys(...)`.
-6. Surface feature limits directly. Do not ship hacky workarounds without explicit user approval.
-
-## Verification Gate
-Run these before claiming completion:
-```bash
-prime env install my-env
-prime eval run my-env -m openai/gpt-4.1-mini -n 5
-prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 1 -s
-```
-If multi-turn or tool-heavy, also run with higher rollouts:
-```bash
-prime eval run my-env -m openai/gpt-4.1-mini -n 30 -r 3 -s
+uv sync --extra dev
+uv run pytest tests/ -q
+uv run vf-validate my-env --runtime.type subprocess
 ```
 
-## Publish Gate Before Large Evals Or Training
-1. After smoke tests pass and behavior is stable, recommend pushing to Hub before large evals or RL training.
-2. Ask the user explicitly whether visibility should be `PUBLIC` or `PRIVATE`.
-3. Use:
-```bash
-prime env push my-env --visibility PUBLIC
-```
-or
-```bash
-prime env push my-env --visibility PRIVATE
-```
-4. For hosted or large-scale workflows, prefer running with the Hub slug after push:
-```bash
-prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
-```
+From the repo root, verify `prime env install my-env`, then run the package through
+`scripts/prime_rl_eval.sh environments/my_env my-env -m <provider/model> -n 5 -r 1 -c 2`.
+Inspect the validation summary and eval trace index, not just exit codes. Follow
+`evaluate-environments` for flags, privacy, and result inspection.
 
-## Synthetic Data
-1. Ask users for preferences on which LLMs to use for synthetic data generation and curation before implementation.
-2. Prefer generating synthetic data from raw source documents whenever possible instead of relying only on hand-authored prompts.
-3. Use LLM orchestration (planner/generator/validator loops) to improve sample quality and diversity.
-4. Use back-translation: start from complete materials and decompose them into incomplete tasks, criteria, or partial artifacts that the model must reconstruct.
-5. Use fan-out subtopic sampling from LLMs to expand coverage and avoid overfitting to a narrow slice of the domain.
-
-## Deliverable Format
-Report:
-1. Environment ID and path.
-2. Exact install and eval commands used.
-3. Port-equivalence notes if migrated.
-4. Any unresolved user decisions that block strict fidelity.
+Add lifecycle/artifact smoke coverage alongside the environment; pytest discovery alone
+doesn't check discovery or shipped assets. Report exact checks and any unavailable eval
+coverage. Do not promise training compatibility without checking the selected trainer.
+Publish only with explicit authorization of destination and visibility after validation;
+a Hub push is not a prerequisite for local evals. Never bundle private menu data for upload.

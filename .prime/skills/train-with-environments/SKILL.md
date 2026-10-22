@@ -1,98 +1,51 @@
 ---
 name: train-with-environments
-description: Train models with verifiers environments using hosted RL or prime-rl. Use when asked to configure RL runs, tune key hyperparameters, diagnose instability, set up difficulty filtering and oversampling, or create practical train and eval loops for new environments.
+description: Plans and validates RL training with this repo's verifiers 0.4 taskset/env packages. Use for trainer compatibility checks, run configuration, reward diagnostics, and train/eval experiment design.
 ---
 
-# Train With Environments
+# Train with environments
 
-## Goal
-Run stable RL training loops with environment-aware hyperparameter choices and clear diagnostics.
+Read `environments/AGENTS.md`, the package README, and the chosen trainer's current
+documentation/config schema. These packages use `verifiers.v1`; the generated
+`configs/rl/*.toml` files are not validated training recipes for them.
 
-## Preferred Training Paths
-1. By default, assume users intend to use Hosted Training unless they explicitly ask for self-managed training.
-2. Hosted Training service path from lab setup:
-```bash
-prime lab setup
-```
-3. Self-managed `prime-rl` workflow:
-```bash
-prime lab setup --prime-rl
-uv run prime-rl configs/prime-rl/wiki-search.toml
-```
-4. Treat `prime-rl` as a power-user path and assume users are comfortable working with GPU infrastructure and troubleshooting.
-5. Runtime expectation:
-- Hosted Training is intended to be launched from a CPU machine.
-- Local `prime-rl` training requires local GPU access.
+## Compatibility before launch
 
-## Endpoint Shortcuts And Model Family Choice
-1. Encourage users to maintain endpoint aliases in `configs/endpoints.toml` for eval and train loops.
-2. Ask whether they want instruct or reasoning models for pre-training validation.
-3. Instruct go-tos for behavior checks: `gpt-4.1` series, `qwen3` instruct series.
-4. Reasoning go-tos for harder reasoning-heavy probes: `gpt-5` series, `qwen3` thinking series, `glm` series.
+1. Establish which trainer/service the user wants and its resource/budget constraints.
+   Do not assume Hosted Training supports the package's API, harness, local resources,
+   or data restrictions. Check the selected integration before promising compatibility.
+2. Validate the package with its tests and local `vf-validate`, then establish a small
+   baseline through `scripts/prime_rl_eval.sh` (see `evaluate-environments`). Inspect
+   reward distributions and errored episodes, not only the aggregate mean.
+3. The eval wrapper pins and installs prime-rl for **evaluation**; it does not provision
+   GPUs or launch training. For self-managed training, inspect the trainer checkout's
+   documented entrypoint, config examples, GPU requirements, and verifiers dependency.
+   Do not rerun Lab setup or copy old CLI/config fields as a compatibility workaround.
+4. Verify exported taskset/env discovery, harness restrictions, resource setup/cleanup,
+   trace/scoring behavior, and packaged data on the actual training runtime.
 
-## First-Run Protocol
-1. Validate environment behavior before training with the canonical eval path. Keep the default save behavior and do not add `--skip-upload` unless the user explicitly requests that deviation:
-```bash
-prime env install my-env
-prime eval run my-env -m openai/gpt-4.1-mini -n 20 -r 3 -s
-```
-2. Confirm reward diversity exists at baseline.
-3. Start with conservative run length and inspect samples early.
+## Experiment design
 
-## Publish Gate Before RL
-1. Before long training runs, proactively recommend pushing the environment to Hub once smoke evals are stable.
-2. Ask the user explicitly whether visibility should be `PUBLIC` or `PRIVATE`.
-3. Push with chosen visibility:
-```bash
-prime env push my-env --visibility PUBLIC
-```
-or
-```bash
-prime env push my-env --visibility PRIVATE
-```
-4. For hosted RL and shared workflows, prefer Hub IDs after push (for example `owner/my-env` in config `[[env]].id`).
+- Reserve held-out tasks/data and define success, budget, and stop conditions before
+  training. Keep model, sampling, and eval selection stable across comparisons.
+- Confirm the trainer's units for batch size, rollout groups, concurrency, and async lag
+  before choosing values. Do not copy old filtering/oversampling field names or formulas
+  without checking the current schema.
+- For binary rewards, examine solved/unsolved task balance; for continuous rewards,
+  inspect per-task distributions rather than assuming pass/fail filtering applies.
+- For flat rewards, investigate difficulty, scoring, prompt/tool mismatch, and runtime
+  errors before scaling. For instability, inspect optimizer settings, rollout grouping,
+  off-policy lag, and resource pressure in the selected trainer.
+- Treat `dbt-debugger`'s grounded evidence and `menu-taste`'s fixed question keys as part
+  of the contract, not signals to weaken until training appears to improve.
 
-## Hyperparameter Rules Of Thumb
-1. Use `rollouts_per_example` and `batch_size` together.
-2. Treat `batch_size` as total rollout samples per step, not number of groups.
-3. Keep `batch_size` divisible by `rollouts_per_example`.
-4. Quick tests or simpler environments:
-- `rollouts_per_example = 8`
-- `batch_size = 128` (or lower)
-5. More complex or longer-horizon environments:
-- `rollouts_per_example = 16`
-- `batch_size = 512` (common strong starting point)
-6. Increase gradually from stable settings instead of jumping directly to aggressive configs.
+## Privacy and delivery
 
-## Difficulty Filtering And Oversampling
-1. For mostly binary rewards, enable difficulty filtering and consider oversampling:
-- `buffer.online_difficulty_filtering = true`
-- `oversampling_factor > 1` (for example `2.0`)
-2. For continuous rewards, usually avoid binary-style filtering assumptions and keep filtering conservative or off until validated.
-3. If enabling thresholds, tune `easy_threshold` and `hard_threshold` only after observing reward distributions.
+Do not upload private corpora/traces or enable upload monitors implicitly. Training and
+evaluation providers receive task content; confirm permission for real menu data.
+Hub publication is not required for local work; a push or hosted run requires explicit
+authorization, destination/visibility, and validation of the intended artifact/runtime.
 
-## Stability Constraints From Prime-RL
-1. Ensure `max_concurrent >= rollouts_per_example * workers_per_env`.
-2. Keep async level explicit (`max_async_level`) and monitor off-policy drift.
-3. For OOM risk, reduce rollout pressure and sequence lengths before widening training scope.
-
-## Failure Diagnosis
-1. Flat reward near zero:
-- Task too hard, rubric mismatch, or prompt/tool contract mismatch.
-2. Unstable reward swings:
-- Lower learning rate, increase rollout group size, reduce async aggressiveness.
-3. Slow learning despite stability:
-- Revisit task difficulty and reward shaping before increasing risk knobs.
-
-## Non-Negotiable Environment Quality During Training
-1. Use deterministic robust checks or LLM judges for rewards.
-2. Reject best-effort keyword heuristics unless explicitly approved as last resort.
-3. Keep environments self-contained after install; no user-managed background services.
-4. Surface feature limitations directly instead of proposing hidden workarounds.
-
-## Deliverable
-Return:
-1. Config deltas applied.
-2. Why each delta was chosen.
-3. Observed metrics and failure signatures.
-4. Next tuning step with stop conditions.
+Return the chosen trainer/version, verified compatibility, config changes and rationale,
+observed metrics/failures, and remaining blockers. Label proposed settings as untested
+until run; do not claim training support from an eval-only smoke.
