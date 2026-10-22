@@ -159,3 +159,16 @@ def test_archives_that_expand_past_a_limit_are_skipped_not_read(monkeypatch, lim
     assert docs[0].path == "menus.zip!a-menu.txt" and docs[0].error is None
     assert all(not p.data or len(p.data) < 1_000_000 for d in docs for p in d.parts)
     assert any(d.error for d in docs[1:])
+
+
+def test_a_corrupt_zip_member_does_not_discard_the_readable_ones():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("a-menu.txt", "Halibut, peas")
+        zf.writestr("b-menu.txt", "Duck, cherries")
+    data = buf.getvalue().replace(b"Duck, cherries", b"Duck, cherriez")  # bad CRC
+
+    docs = load_bytes(data, "menus.zip")
+    assert [d.path for d in docs] == ["menus.zip!a-menu.txt", "menus.zip!b-menu.txt"]
+    assert docs[0].error is None and docs[0].parts[0].data == "Halibut, peas"
+    assert "CRC" in docs[1].error

@@ -30,11 +30,20 @@ CONTACT_PATTERNS = [
     re.compile(r"(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b"),
     re.compile(r"\bhttps?://\S+|\bwww\.\S+", re.IGNORECASE),
 ]
-# A full "Month D, YYYY" date is as unambiguous as a price, so it is removed too.
+
+_MONTH = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?"
+    r"|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?"
+)
+# An exact date with a year is as unambiguous as a price, so it is removed too.
 DATE_PATTERNS = [
-    re.compile(
-        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b"
-    ),
+    # "June 14, 2025", "Oct. 21 2025", "JUNE 14TH, 2025"
+    re.compile(rf"\b{_MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b", re.IGNORECASE),
+    # "14 June 2025", "21 Oct. 2025"
+    re.compile(rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+{_MONTH},?\s+\d{{4}}\b", re.IGNORECASE),
+    # "10/21/2025", "10-21-2025", "10.21.2025", "10/21/25", "2025-10-21"
+    re.compile(r"\b\d{1,2}([/.-])\d{1,2}\1\d{4}\b|\b\d{1,2}/\d{1,2}/\d{2}\b"),
+    re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),
 ]
 
 FLAG_PATTERNS = [

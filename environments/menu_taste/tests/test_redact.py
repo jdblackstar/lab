@@ -115,6 +115,26 @@ def test_item_whose_name_is_only_a_price_or_contact_is_dropped():
     assert [i.name for i in out.sections[0].items] == ["Halibut"]
 
 
-def test_exact_dates_are_removed_not_just_flagged():
-    text, n = scrub("Toast at dinner, June 14, 2025, champagne")
-    assert "2025" not in text and "June 14" not in text and n == 1
+@pytest.mark.parametrize(
+    "date",
+    [
+        "June 14, 2025",
+        "JUNE 14, 2025",
+        "Oct. 21, 2025",
+        "Sept 3rd 2025",
+        "14 June 2025",
+        "10/21/2025",
+        "10/21/25",
+        "10.21.2025",
+        "2025-10-21",
+    ],
+)
+def test_exact_dates_are_removed_not_just_flagged(date):
+    text, n = scrub(f"Toast at dinner, {date}, champagne")
+    assert n == 1 and text.startswith("Toast at dinner,") and text.endswith("champagne")
+    assert not any(c.isdigit() for c in text)
+
+
+def test_dish_numbers_that_are_not_dates_survive():
+    text, n = scrub("Oysters, 1/2 dozen; May wine; 12 June peas; 2025 vintage")
+    assert n == 0 and text == "Oysters, 1/2 dozen; May wine; 12 June peas; 2025 vintage"
