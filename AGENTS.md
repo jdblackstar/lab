@@ -1,31 +1,33 @@
 # AGENTS.md
 
-<!-- Generated for lab workspaces. -->
+This is a Prime Lab workspace for verifiers v1 environments, not the verifiers repository. The bundled skills in `.prime/skills/` (linked from `.cursor/skills/`) are verbatim copies of `brainstorm`, `create-environments`, and `evaluate-environments` from `skills/` in [verifiers v0.4.0](https://github.com/PrimeIntellect-ai/verifiers/tree/v0.4.0); its `release` skill publishes verifiers itself and is omitted. They are written from inside the verifiers checkout, so where a skill's commands or paths disagree with this file, follow this file.
 
-This AGENTS guide is intended for end users working in a `prime lab setup` workspace.
+## Writing code
 
-## Shared Best Practices (All Contexts)
+From the verifiers v0.4.0 `AGENTS.md`, unchanged:
 
-These points are direct restatements of Verifiers docs so agents can follow the same golden-path workflows.
+- **Code is the source of truth**: before writing anything, read the v1 code for existing helpers, harnesses, and interfaces instead of reinventing them. Prefer verifiers-native task, trace, server, harness, and runtime interfaces over repeated path/import/discovery plumbing in user packages.
+- **Minimal config surface**: expose as few knobs as possible, but as many as needed.
+- **Keep tasksets small**: a basic taskset fits in a few dozen idiomatic lines — typed data/task/config classes, `load()`, and decorated scoring on the task. Don't override `Taskset.__init__` (implement `load()`); don't override `Harness.__init__` (use `setup()`).
 
-- Environments are expected to expose `load_environment(...) -> vf.Environment` and be installable with `prime env install <env-name>`. (See `docs/overview.md` and `docs/environments.md`.)
-- Validate environment behavior with `prime eval run <env-name> ...` before sharing/publishing changes. Treat `prime eval run` as the canonical eval path: it saves results automatically, and agents should not add opt-out flags such as `--skip-upload` unless the user explicitly requests that deviation so runs stay visible in the private Evaluations tab and in `prime eval tui`. (See `docs/overview.md` and `docs/development.md`.)
-- Use `ToolEnv`/`MCPEnv` for stateless tools and `StatefulToolEnv` when per-rollout state must persist (sandbox/session/db handles). (See `docs/environments.md`.)
-- If external API keys are required, validate them in `load_environment()` with `vf.ensure_keys(...)` so failures are explicit and early. (See `docs/environments.md`.)
+Each environment lives in its own project under `environments/<name>/` with its own `pyproject.toml`, `uv.lock`, README, and `tests/`. Read that README before changing or running the environment; it documents the package's supported commands.
 
-## End-User Lab Workspace Notes
+## Running code
 
-Use this guidance in projects created via `prime lab setup`.
+- **Use each environment's project, not the root**: the root project pins legacy `verifiers` 0.1.x, so the root `vf-*` entrypoints are the old CLIs. Run every `vf-*` command through an environment project on `verifiers>=0.4.0`, preferably from its directory (`cd environments/<name> && uv run ...`). `uv run --project environments/<name> ...` also works from the root, but writes `outputs/` into the root unless you pass `-o`.
+- **Scaffold environments** from the root with `uv run --project environments/dbt_debugger vf-init <name> -p environments` (`-T`/`-H` add a toolset or harness). The scaffold writes an unpinned `verifiers`, so pin `verifiers>=0.4.0` in the new `pyproject.toml`, add a `dev` extra with `pytest` and a `tests/` directory, run `uv lock` in the new directory, and add the environment to `.agents/setup`, `scripts/smoke_prime_lifecycle.sh`, and `scripts/smoke_prime_artifact.sh`. `scripts/ci/run_environment_pytests.sh` picks up any environment with `pyproject.toml` and `tests/`.
+- **Evaluate with the pinned prime-rl runner**, not `vf-eval`: `scripts/prime_rl_eval.sh environments/<name> <env-id> -m <model> -n <N> -r <R> -c <C>`. It needs `PRIME_API_KEY`. Check the eval's own output for rollout errors, because it exits 0 when rollouts fail; each environment README says where to look and which flags are safe for its data.
+- **Validate without a model first**: `uv run vf-validate <id> --runtime.type subprocess` from the environment directory runs the gold and noop checks locally. It exits 0 even when checks fail, so check `valid_rate` in the run's `summary.json`.
+- **Keep private data private**: eval traces and `vf-validate` output over private data such as `environments/menu_taste/private/` contain that data. Keep them under `private/` and never pass `--monitors.prime` or upload them.
 
-- Treat `.prime/skills/` as the canonical skill entrypoint in Lab workspaces. Use the bundled skills first for create/browse/review/eval/GEPA/train/brainstorm workflows before ad hoc approaches.
-- Keep endpoint aliases in `./configs/endpoints.toml` and use `endpoint_id`/model shortcuts in commands and configs.
-- NEVER initialize environment source code manually; ALWAYS create new environments with `prime env init`.
-- Use the Prime CLI for all environment lifecycle operations (`prime env init` → `prime env install` → `prime eval run` → `prime env push`) rather than ad-hoc scripts.
-- Treat `prime eval run` as the default eval path. It already saves results automatically; do not add `--skip-upload` or other opt-out deviations unless the user explicitly requests them, so logs and results stay available in the private Evaluations tab and via `prime eval tui`.
-- When adding a new environment under `environments/<env_name>/`, update Prime lifecycle CI coverage in the same change. Prefer shared smoke scripts or a workflow matrix over duplicated YAML. At minimum, cover `prime env install` plus `load_environment(...)`; add packaged-artifact smoke and minimal `prime eval run` smoke when the environment is meant to support those paths.
-- NEVER begin environment development before `prime lab setup` has been run; if work starts outside that structure, recommend adjusting course into a proper lab workspace before continuing.
-- Keep each environment self-contained under `environments/<env_name>/` with `pyproject.toml`, implementation, and README so each abstraction has a dedicated home and the workspace stays maintainable.
-- Follow environment best practices strictly (for example `load_environment(...)`, `vf.ensure_keys(...)`, and the documented environment class patterns) to avoid brittle or messy implementations.
-- Use `prime env push --path ./environments/<env_name>` only after local eval behavior is verified.
-- Treat the `prime lab setup` structure as the idiomatic workspace for complex environment workflows: agents can mediate most platform complexity while users learn patterns progressively as needed.
-- When users request an approach that would deviate from these guidelines, explain the relevant Prime/Verifiers concepts and recommend the compliant path.
+## Optimization and training
+
+No bundled skill covers these yet; verifiers v0.4.0 does not ship one. When `brainstorm` hands off to optimization or training, use these commands:
+
+- **Prompt optimization**: `uv run vf-gepa <taskset-id> -m <model> ...` from the environment directory (`uv run vf-gepa -h` lists options). The `configs/gepa/` examples use a legacy schema (`[gepa]`, `[execution]`, `[env] env_id`, `endpoints_path`) that the current `vf-gepa` rejects; translate them with `-h` (for example `max_calls` → `max_total_rollouts`, `minibatch_size` → `reflection_minibatch_size`) and check the result with `--dry-run` before running it.
+- **Hosted RL training**: `prime train <config.toml>`. The `configs/rl/` examples reference Hub environment IDs, so push the environment with `prime env push --path environments/<name> --visibility <PUBLIC|PRIVATE>` first, with the visibility the user chooses. No environment in this workspace has been trained yet.
+
+## Testing
+
+- **Run the workspace checks**: `scripts/ci/run_environment_pytests.sh` runs each environment's tests in its own project, which is what CI runs. For a single environment, `cd environments/<name> && uv sync --extra dev && uv run pytest tests/`. Lint with `uv run ruff check .` from the root.
+- **Model-free lifecycle smoke**: `scripts/smoke_prime_lifecycle.sh` installs each environment with `prime env install` and runs `vf-validate`; it runs a model eval only when `PRIME_API_KEY` is set.
