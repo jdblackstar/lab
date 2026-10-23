@@ -22,12 +22,18 @@ xmage-poc = "xmage_poc.transport:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build]
-artifacts = ["xmage_poc/runtime/*.jar", "xmage_poc/runtime/build.json"]
-
 [tool.hatch.build.targets.wheel]
 packages = ["xmage_poc"]
+# hatch_build.py downloads the pinned runtime from its GitHub Release before packaging.
+artifacts = ["xmage_poc/runtime/*.jar", "xmage_poc/runtime/build.json"]
 
+[tool.hatch.build.targets.wheel.hooks.custom]
+
+# The sdist ships the pin and the hook, not the JAR: building its wheel downloads it.
 [tool.hatch.build.targets.sdist]
-include = ["/xmage_poc", "/bridge/pom.xml", "/bridge/src", "/examples", "/README.md", "/pyproject.toml"]
+include = ["/xmage_poc", "/hatch_build.py", "/bridge/pom.xml", "/bridge/src", "/examples", "/README.md", "/pyproject.toml"]
 exclude = ["/outputs/**", "/bridge/target/**", "/dist/**", "**/__pycache__/**"]
+
+# Rebuild the (editable) install when the pin changes or the runtime goes missing.
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "hatch_build.py" }, { file = "xmage_poc/runtime/release.json" }, { file = "xmage_poc/runtime/xmage-poc.jar" }]

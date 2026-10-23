@@ -24,7 +24,8 @@ jobs:
   xmage-smoke:
     name: XMage install, game, artifact, and controller isolation
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Installing downloads the prebuilt runtime; xmage-runtime-release.yml builds it.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
