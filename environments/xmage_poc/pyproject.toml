@@ -32,7 +32,7 @@ artifacts = ["xmage_poc/runtime/*.jar", "xmage_poc/runtime/build.json"]
 # The sdist ships the pin and the hook, not the JAR: building its wheel downloads it.
 [tool.hatch.build.targets.sdist]
 include = ["/xmage_poc", "/hatch_build.py", "/bridge/pom.xml", "/bridge/src", "/examples", "/README.md", "/pyproject.toml"]
-exclude = ["/outputs/**", "/bridge/target/**", "/dist/**", "**/__pycache__/**"]
+exclude = ["/outputs/**", "/bridge/target/**", "/dist/**", "**/__pycache__/**", "/xmage_poc/runtime/*.jar", "/xmage_poc/runtime/build.json", "/xmage_poc/runtime/.*.pending"]
 
 # Rebuild the (editable) install when the pin changes or the runtime goes missing.
 [tool.uv]
