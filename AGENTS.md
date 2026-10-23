@@ -24,7 +24,7 @@ Each environment lives in its own project under `environments/<name>/` with its 
 
 No bundled skill covers these yet; verifiers v0.4.0 does not ship one. When `brainstorm` hands off to optimization or training, use these commands:
 
-- **Prompt optimization**: `uv run vf-gepa <taskset-id> -m <model> ...` from the environment directory (`uv run vf-gepa -h` lists options). The `configs/gepa/` examples use a legacy schema (`[gepa]`, `[execution]`, `[env] env_id`, `endpoints_path`) that the current `vf-gepa` rejects; translate them with `-h` (for example `max_calls` → `max_total_rollouts`, `minibatch_size` → `reflection_minibatch_size`) and check the result with `--dry-run` before running it.
+- **Prompt optimization**: `uv run vf-gepa <taskset-id> -m <model> ...` from the environment directory (`uv run vf-gepa -h` lists options). `configs/gepa/base.toml` is a `vf-gepa` example for `menu-taste`; check any config with `--dry-run` before running it, for example `cd environments/menu_taste && uv run vf-gepa @ ../../configs/gepa/base.toml --dry-run`. GEPA needs an installed single-agent taskset whose tasks set `system_prompt` (or pass `--initial-prompt`); multi-agent envs such as `textarena` (Wordle) are eval-only.
 - **Hosted RL training**: `prime train <config.toml>`. The `configs/rl/` examples reference Hub environment IDs, so push the environment with `prime env push --path environments/<name> --visibility <PUBLIC|PRIVATE>` first, with the visibility the user chooses. No environment in this workspace has been trained yet.
 
 ## Testing

@@ -1,21 +1,25 @@
+# GEPA over menu-taste, which sets Task.system_prompt for GEPA to optimize.
+# Run from the environment project (the root pins legacy verifiers):
+#
+#   cd environments/menu_taste
+#   uv run vf-gepa @ ../../configs/gepa/base.toml --dry-run
+#
+# Without a question set this loads the 93 bundled synthetic questions, so num_train +
+# num_val stays under 93. With private questions (MENU_TASTE_QUESTIONS), pass
+# `-o private/outputs` so traces stay under private/.
 model = "openai/gpt-4.1-mini"
 reflection_model = "openai/gpt-4.1-mini"
-endpoints_path = "../endpoints.toml"
-
-[env]
-env_id = "primeintellect/wiki-search"
-env_args = {}
-extra_env_kwargs = {}
-
-[gepa]
-max_calls = 500
-num_train = 100
-num_val = 50
-minibatch_size = 3
-# perfect_score = 1.0
-# state_columns = ["tool_calls"]
-
-[execution]
+num_train = 60
+num_val = 30
+max_total_rollouts = 500
+reflection_minibatch_size = 3
 max_concurrent = 32
 seed = 0
-# sampling_args = { max_tokens = 512, temperature = 0.7 }
+# reflection_columns = ["course", "target"]
+
+[env.taskset]
+id = "menu-taste"
+
+# [sampling]
+# max_tokens = 512
+# temperature = 0.7
