@@ -1,0 +1,13 @@
+# White tempo: deploy threats or hold up protection, evasion, and removal.
+# 24 lands / 20 creatures / 16 other spells; no format-legality claim.
+# Draw goes straight to hand: no library search, look, or reveal choices.
+24 Plains
+4 Savannah Lions
+4 Youthful Knight
+4 Healer's Hawk
+4 Priest of Ancient Lore
+4 Serra Angel
+4 Mighty Leap
+4 Shelter
+4 Pacifism
+4 Reprisal

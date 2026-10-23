@@ -1,0 +1,68 @@
+{
+  "controller": "Codex interactive choices in this chat; not a separate API model benchmark",
+  "pilot_seat": "player_a",
+  "opponent": "scripted_v1",
+  "seed": 17,
+  "result": {
+    "type": "result",
+    "ended": true,
+    "winner": "Player player_b is the winner",
+    "errors": 0,
+    "technical_failure": null,
+    "decisions": 587,
+    "snapshots": 2419,
+    "players": [
+      {
+        "id": "646a8350-ed83-4fc7-9ea3-2eb045a62bd6",
+        "name": "player_a",
+        "won": false,
+        "lost": true
+      },
+      {
+        "id": "409ded9c-ac5c-4b39-bf28-84a6de9cca9b",
+        "name": "player_b",
+        "won": true,
+        "lost": false
+      }
+    ]
+  },
+  "final_turn": 22,
+  "final_life": {
+    "player_a": 0,
+    "player_b": 13
+  },
+  "pilot_choices": 63,
+  "forced_pilot_choices": 228,
+  "opponent_choices": 296,
+  "recording_validity": 1.0,
+  "pilot_win": 0.0,
+  "checkpoints_restored": 2419,
+  "decision_views_reconstructed": 587,
+  "hidden_state_counterfactual_seats": 2,
+  "selected_pilot_action_kinds": {
+    "target": 10,
+    "no": 1,
+    "pass": 234,
+    "land": 11,
+    "cast": 6,
+    "mana": 10,
+    "attack": 8,
+    "block": 10,
+    "attack_all": 1
+  },
+  "local_output": "outputs/pilot-walkthrough-seed17",
+  "notes": [
+    "Opponent hands and both library orders were retained in internal records; walkthrough used only player_a observations.",
+    "This historical run advanced all single-option pilot prompts automatically; its separate API baseline still requested every pilot prompt. Current API evaluations skip pass-only priority prompts.",
+    "The setup check measures protocol correctness; one game cannot measure model strength."
+  ],
+  "validation": {
+    "python_tests_passed": 15,
+    "java_tests_passed": 3,
+    "single_seat_http_requests": 169,
+    "single_seat_http_game_decisions": 310,
+    "opponent_history_isolation_passed": true,
+    "live_multi_amount_decisions": 4,
+    "live_multi_block_game_completed_without_errors": true
+  }
+}

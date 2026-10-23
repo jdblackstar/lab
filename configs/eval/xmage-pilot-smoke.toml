@@ -1,0 +1,36 @@
+# Run: scripts/prime_rl_eval.sh environments/xmage_poc @ configs/eval/xmage-pilot-smoke.toml -m <model>
+# One seed × two decks × two seats × play/draw; a behavior smoke, not a win-rate estimate.
+# prime-rl's `uv run eval` exits 0 even when episodes error: check that every episode in
+# monitors/file/plan.json landed in monitors/file/traces/stream.index.jsonl with ok=true
+# and num_errors=0. It counts pilot max_turns stops as truncated.
+group_size = 1
+# Keep run directories with the ignored environment outputs.
+output_dir = "environments/xmage_poc/outputs/evals"
+
+[concurrency]
+# Games run one at a time; each launches its own JVM.
+min_inflight = 1
+max_inflight = 1
+
+[sampling]
+# OpenAI chat includes hidden reasoning in this per-decision completion budget.
+max_tokens = 4096
+
+[env]
+# Wall-clock timeout per complete game, not per model request (seconds).
+timeout.episode = 7200
+
+[[source]]
+env.taskset.id = "xmage-poc"
+env.taskset.num_games = 8
+env.taskset.seed = 7
+env.taskset.pilot_seat = "alternate"
+env.taskset.pilot_deck = "balanced"
+env.taskset.pilot_play_order = "balanced"
+env.opponent = "scripted"
+env.history_decisions = 4
+env.auto_pass_priority = true
+# Audit every decision projection; choose full_audit for restoration/counterfactual checks.
+env.recording_mode = "benchmark"
+# Model attempts for the pilot seat, including invalid-reply retries.
+env.pilot.max_turns = 4000

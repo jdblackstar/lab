@@ -1,0 +1,39 @@
+[project]
+name = "xmage-poc"
+description = "Fixture-limited XMage pilot protocol and private-state recording proof of concept"
+readme = "README.md"
+tags = ["mtg", "xmage", "eval"]
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27,<1",
+    "openai>=2.54,<3",
+    "pydantic>=2.12,<3",
+    "verifiers>=0.4.0,<0.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.11"]
+
+[project.scripts]
+xmage-poc = "xmage_poc.transport:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["xmage_poc"]
+# hatch_build.py downloads the pinned runtime from its GitHub Release before packaging.
+artifacts = ["xmage_poc/runtime/*.jar", "xmage_poc/runtime/build.json"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+
+# The sdist ships the pin and the hook, not the JAR: building its wheel downloads it.
+[tool.hatch.build.targets.sdist]
+include = ["/xmage_poc", "/hatch_build.py", "/bridge/pom.xml", "/bridge/src", "/examples", "/README.md", "/pyproject.toml"]
+exclude = ["/outputs/**", "/bridge/target/**", "/dist/**", "**/__pycache__/**", "/xmage_poc/runtime/*.jar", "/xmage_poc/runtime/build.json", "/xmage_poc/runtime/.*.pending"]
+
+# Rebuild the (editable) install when the pin changes or the runtime goes missing.
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "hatch_build.py" }, { file = "xmage_poc/runtime/release.json" }, { file = "xmage_poc/runtime/xmage-poc.jar" }]

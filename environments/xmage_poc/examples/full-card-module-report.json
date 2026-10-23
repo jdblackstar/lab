@@ -1,0 +1,63 @@
+{
+  "xmage_revision": "afab346e06c4960882cf148acc57754c1c50a007",
+  "checkout": "external/xmage",
+  "card_module": "org.mage:mage-sets:1.4.62",
+  "catalog_names": 32174,
+  "runnable_jar_bytes": 82706411,
+  "integration_game": {
+    "type": "result",
+    "ended": true,
+    "winner": "Player player_b is the winner",
+    "errors": 0,
+    "technical_failure": null,
+    "decisions": 286,
+    "snapshots": 1224,
+    "final_turn": 11,
+    "new_card_choices": [
+      {
+        "decision": 7,
+        "card": "Lightning Bolt",
+        "kind": "cast"
+      },
+      {
+        "decision": 29,
+        "card": "Elite Vanguard",
+        "kind": "cast"
+      },
+      {
+        "decision": 98,
+        "card": "Lightning Bolt",
+        "kind": "cast"
+      },
+      {
+        "decision": 244,
+        "card": "Elite Vanguard",
+        "kind": "cast"
+      },
+      {
+        "decision": 269,
+        "card": "Lightning Bolt",
+        "kind": "cast"
+      }
+    ],
+    "local_output": "outputs/full-module-tests/test_real_game_private_views_a0/game"
+  },
+  "validation": {
+    "tests_passed": 12,
+    "all_game_checkpoints_restored": true,
+    "all_decision_views_reconstructed": true,
+    "hidden_state_counterfactual_seats": 2,
+    "wheel_and_sdist_include_full_module": true,
+    "isolated_wheel_catalog_load_passed": true
+  },
+  "adapter_protocol_test": {
+    "privacy_passed": true,
+    "decisions": 289,
+    "snapshots": 1224,
+    "players": 2,
+    "endpoint_requests": 289,
+    "model_history_isolation_passed": true,
+    "driver": "protocol_test"
+  },
+  "limits": "Card availability expanded; general combat/search/reveal decision coverage and fixture-focused audit coverage still require further work."
+}
