@@ -244,10 +244,11 @@ def _all_predictions(questions, menus, seed):
     X = feature_tensor(questions, menus)
     y = np.array([q.answer_index for q in questions])
     preds = rule_predictions(X, seed)
-    combo, weights = cross_validated_choice_model(
-        X, y, [q.menu.menu_id for q in questions], seed=seed
-    )
-    preds[BEST] = combo
+    groups = [q.menu.menu_id for q in questions]
+    if len(set(groups)) > 1:
+        preds[BEST], weights = cross_validated_choice_model(X, y, groups, seed=seed)
+    else:  # with one menu there is nothing to hold out, so no honest score exists
+        _, weights = fit_choice_model(X, y)
     return X, y, preds, weights
 
 
@@ -270,7 +271,7 @@ def report_numbers(
 
 def report(questions: list[ClozeQuestion], menus: list[Menu], seed: int = 0) -> str:
     X, y, preds, weights = _all_predictions(questions, menus, seed)
-    combo = preds[BEST]
+    combo = preds.get(BEST)
     k = X.shape[1]
     lines = [
         (
@@ -284,19 +285,21 @@ def report(questions: list[ClozeQuestion], menus: list[Menu], seed: int = 0) -> 
     for name, pred in preds.items():
         p, lo, hi = interval(pred == y)
         lines.append(f"| {name} | {p:.1%} | {lo:.1%}–{hi:.1%} |")
-
-    lines += [
-        "",
-        "Combination by course:",
-        "",
-        "| Course | Questions | Accuracy |",
-        "| --- | --- | --- |",
-    ]
-    by_course = defaultdict(list)
-    for i, q in enumerate(questions):
-        by_course[q.course.value].append(combo[i] == y[i])
-    for course, hits in sorted(by_course.items(), key=lambda kv: -len(kv[1])):
-        lines.append(f"| {course} | {len(hits)} | {np.mean(hits):.1%} |")
+    if combo is None:
+        lines.append(f"| {BEST} | unavailable: needs at least two menus | |")
+    else:
+        lines += [
+            "",
+            "Combination by course:",
+            "",
+            "| Course | Questions | Accuracy |",
+            "| --- | --- | --- |",
+        ]
+        by_course = defaultdict(list)
+        for i, q in enumerate(questions):
+            by_course[q.course.value].append(combo[i] == y[i])
+        for course, hits in sorted(by_course.items(), key=lambda kv: -len(kv[1])):
+            lines.append(f"| {course} | {len(hits)} | {np.mean(hits):.1%} |")
 
     lines += ["", "What the combination leans on (weight per standard deviation):", ""]
     std = X.reshape(-1, k and X.shape[-1]).std(0)

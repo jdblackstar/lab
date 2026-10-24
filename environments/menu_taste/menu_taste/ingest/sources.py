@@ -454,9 +454,12 @@ def _load_zip(
                     _skipped(member_name, f"{info.file_size / 1e6:.0f} MB uncompressed")
                 )
                 continue
-            docs += load_bytes(
-                zf.read(info), member_name, depth=depth + 1, budget=budget
-            )
+            try:
+                member_data = zf.read(info)
+            except Exception as e:  # noqa: BLE001 - an encrypted or corrupt member
+                docs.append(_skipped(member_name, f"{type(e).__name__}: {e}"))
+                continue
+            docs += load_bytes(member_data, member_name, depth=depth + 1, budget=budget)
     return docs
 
 
