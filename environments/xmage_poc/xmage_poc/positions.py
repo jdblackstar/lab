@@ -52,11 +52,15 @@ def rollout(recording: Path, decision: int, *, java: str, jar: Path, **options) 
 
 
 def paired(best: str, other: str) -> tuple[float, float]:
-    """Mean and standard error of per-playout score differences (common random numbers)."""
+    """Mean and standard error of per-playout score differences (common random numbers).
+
+    A failed playout's outcome is unknown, so it counts against the best
+    candidate: a loss for it and a win for the alternative. Errors then can
+    only withhold an answer, never create one.
+    """
     diffs = [
-        SCORE[a] - SCORE[b]
+        (0.0 if a == "E" else SCORE[a]) - (1.0 if b == "E" else SCORE[b])
         for a, b in zip(best, other, strict=True)
-        if "E" not in (a, b)
     ]
     if len(diffs) < 2:
         return 0.0, math.inf

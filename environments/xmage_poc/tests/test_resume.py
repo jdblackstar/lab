@@ -37,6 +37,10 @@ def test_label_needs_a_paired_margin_over_every_alternative():
     }
     verdict = label(close, z=2)
     assert verdict["answer"] is None and verdict["runner_up"] == 2
+    # Failed playouts are unknown outcomes, not dropped worlds: two wins and
+    # 62 errors must not beat 64 losses.
+    errors = {"candidates": [candidate(0, "WW" + "E" * 62), candidate(1, "L" * 64)]}
+    assert label(errors, z=2)["answer"] is None
 
 
 def test_empty_stack_boundary_skips_responses_and_unresumable_prompts():
