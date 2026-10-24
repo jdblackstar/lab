@@ -26,6 +26,16 @@ scripts/prime_rl_eval.sh environments/xmage_poc @ configs/eval/xmage-real-model-
 
 `configs/eval/xmage-pilot-smoke.toml` and `scripts/smoke_xmage_poc_eval.py` drive the same path with a scripted local endpoint and make no paid model calls.
 
+## Resuming checkpoints and labeling positions
+
+A `full_audit` recording keeps a restorable engine checkpoint at every decision. The bridge can continue a game from one, the way XMage's own AIs continue copied games (`Game.resume()`). Only decisions the turn structure asks directly can be re-asked: priority, and the first declare-attackers or declare-blockers ask of a step. A choice made mid-cast (a target, a mana payment) or partway through a combat selection cannot.
+
+- `java -cp xmage_poc/runtime/xmage-poc.jar lab.xmage.PocMain replay <recording> <decision>...|resumable` resumes each decision with the recorded answers and reports whether every later observation, every later engine event, and the winner match the original game. Only engine bookkeeping may differ: `gameCycle`, `totalEffectsCount`, `statesSavedSize`, fresh object IDs, and the events the resume itself fires (`PHASE_CHANGED`, plus the step's main event when resuming at priority).
+- `... PocMain rollout <recording> <decision> [--playouts=N --seed=S --policy=greedy|random|mad --turn-cap=T]` lists every complete candidate action (a spell with its targets, an attacker subset, a blocker assignment) and plays each out from the same resampled hidden worlds. The actor's hidden information is resampled the way XMage's MCTS AI does it: the opponent's hand is shuffled into their library and redrawn, and both libraries are shuffled. `checks` confirms that the rollout seats see the recorded observation.
+- `python -m xmage_poc.positions --recording <dir> --output questions.jsonl` turns those rollouts into "best move" questions. Each item has the seat's rendered board, the candidates and their win rates, and an `answer` only when the best candidate beats every alternative by a paired margin (`--z`, default 2 standard errors).
+
+Rollout labels are only as good as the rollout policy: `greedy` and `random` are fast heuristic players, and `mad` (XMage's search AI) is far slower. A playout takes about a second on these fixture decks.
+
 ## Changing the runtime
 
 The runtime is built from source only in CI. To change the bridge or the XMage pin:
