@@ -30,6 +30,15 @@ def resumable(observation: dict) -> bool:
     )
 
 
+def at_boundary(observation: dict, boundary: str) -> bool:
+    """Whether a decision is a question position: `any` resumable prompt, or
+    (`empty-stack`) one with nothing on the stack, so it needs no
+    "in response to" context."""
+    if not resumable(observation):
+        return False
+    return boundary == "any" or not observation["view"].get("stack")
+
+
 def rollout(recording: Path, decision: int, *, java: str, jar: Path, **options) -> dict:
     flags = [f"--{key.replace('_', '-')}={value}" for key, value in options.items()]
     result = subprocess.run(
@@ -77,7 +86,9 @@ def label(result: dict, z: float) -> dict:
     }
 
 
-def question(recording: Path, record: dict, result: dict, verdict: dict) -> dict:
+def question(
+    recording: Path, record: dict, result: dict, verdict: dict, boundary: str
+) -> dict:
     observation = dict(record["observation"])
     observation["actions"] = [
         {
@@ -125,6 +136,7 @@ def question(recording: Path, record: dict, result: dict, verdict: dict) -> dict
             for c in result["candidates"]
         ],
         **verdict,
+        "boundary": boundary,
         "rollout": {
             key: result[key]
             for key in (
@@ -144,7 +156,7 @@ def main():
     parser.add_argument("--recording", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--decisions", type=int, nargs="*", help="Default: every resumable decision"
+        "--decisions", type=int, nargs="*", help="Default: every decision at --boundary"
     )
     parser.add_argument("--playouts", type=int, default=64)
     parser.add_argument("--seed", type=int, default=1)
@@ -154,6 +166,12 @@ def main():
     parser.add_argument("--turn-cap", type=int, default=20)
     parser.add_argument(
         "--z", type=float, default=2.0, help="Paired margin, in standard errors"
+    )
+    parser.add_argument(
+        "--boundary",
+        choices=["empty-stack", "any"],
+        default="empty-stack",
+        help="Which resumable decisions become questions",
     )
     parser.add_argument("--java-bin")
     parser.add_argument("--jar", type=Path, default=ROOT / "runtime/xmage-poc.jar")
@@ -172,7 +190,7 @@ def main():
                 continue
             # Skip forced choices; the bridge offers pass alongside every real option.
             if (
-                not resumable(record["observation"])
+                not at_boundary(record["observation"], args.boundary)
                 or len(record["observation"]["actions"]) < 2
             ):
                 continue
@@ -190,7 +208,8 @@ def main():
                 result["checks"][k] for k in ("seat_view_matches", "sources_match")
             ):
                 continue
-            item = question(args.recording, record, result, label(result, args.z))
+            verdict = label(result, args.z)
+            item = question(args.recording, record, result, verdict, args.boundary)
             out.write(json.dumps(item) + "\n")
             out.flush()
             print(

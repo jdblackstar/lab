@@ -4,7 +4,7 @@ import shutil
 import subprocess
 
 import pytest
-from xmage_poc.positions import label, resumable
+from xmage_poc.positions import at_boundary, label, resumable
 from xmage_poc.transport import ROOT, run
 from xmage_poc.verify import read_lines
 
@@ -37,6 +37,22 @@ def test_label_needs_a_paired_margin_over_every_alternative():
     }
     verdict = label(close, z=2)
     assert verdict["answer"] is None and verdict["runner_up"] == 2
+
+
+def test_empty_stack_boundary_skips_responses_and_unresumable_prompts():
+    def obs(stack, kinds=("cast", "pass"), query="SELECT"):
+        return {
+            "query_type": query,
+            "view": {"stack": stack},
+            "actions": [{"kind": k} for k in kinds],
+        }
+
+    responding = obs({"spell-id": {"name": "Shock"}})
+    assert at_boundary(obs({}), "empty-stack")
+    assert not at_boundary(responding, "empty-stack")
+    assert at_boundary(responding, "any")
+    assert not at_boundary(obs({}, query="PICK_TARGET"), "any")
+    assert not at_boundary(obs({}, kinds=("remove_attacker", "pass")), "empty-stack")
 
 
 @pytest.fixture(scope="module")
