@@ -24,7 +24,9 @@ OUT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/env_lifecycle_smoke.XXXXXX")"
 trap 'rm -rf "$OUT_ROOT"' EXIT
 
 # smoke_env <env id> <env dir under environments/> [vf-validate args...]
-# Set SMOKE_PRIME_MONITOR=0 to keep eval traces off the Prime platform.
+# Set SMOKE_PRIME_MONITOR=0 to keep eval traces off the Prime platform, SMOKE_EVAL=0 to
+# skip the eval, and SMOKE_ALLOW_UNCHECKED=1 to accept tasks that have no gold or noop
+# checks.
 smoke_env() {
   local env_id="$1" env_dir="$ROOT/environments/$2"
   shift 2
@@ -37,16 +39,20 @@ smoke_env() {
   echo "==> vf-validate $env_id (local subprocess runtime)"
   vf-validate "$env_id" "$@" --output-dir "$out_dir" --run.dir validate
   # vf-validate exits 0 even when checks fail; require every task to validate.
-  python - "$out_dir/validate/summary.json" <<'PY'
+  SMOKE_ALLOW_UNCHECKED="${SMOKE_ALLOW_UNCHECKED:-0}" python - "$out_dir/validate/summary.json" <<'PY'
 import json
+import os
 import sys
 
 summary = json.load(open(sys.argv[1]))
-if summary["valid_rate"] != 1.0:
+unchecked = summary["total"] > 0 and summary["outcomes"]["unchecked"] == summary["total"]
+if summary["valid_rate"] != 1.0 and not (os.environ["SMOKE_ALLOW_UNCHECKED"] == "1" and unchecked):
     sys.exit(f"vf-validate: not every task is valid: {summary['checks']}")
 PY
 
-  if [[ -n "${PRIME_API_KEY:-}" ]]; then
+  if [[ "${SMOKE_EVAL:-1}" != 1 ]]; then
+    echo "==> skip prime-rl eval for $env_id (SMOKE_EVAL=0)"
+  elif [[ -n "${PRIME_API_KEY:-}" ]]; then
     local monitor=(--monitors.prime)
     [[ "${SMOKE_PRIME_MONITOR:-1}" == 1 ]] || monitor=()
     echo "==> prime-rl eval $env_id (minimal)"
@@ -84,5 +90,13 @@ smoke_env dbt-debugger dbt_debugger --runtime.type subprocess
   unset MENU_TASTE_QUESTIONS MENU_TASTE_MENUS
   SMOKE_PRIME_MONITOR=0 smoke_env menu-taste menu_taste --runtime.type subprocess
 )
+# xmage-poc needs Python 3.12+ and, to play, Java 21. Here it only installs (downloading
+# the pinned runtime) and resolves; it has no gold or noop checks. The xmage-smoke CI job
+# (scripts/ci/smoke_xmage_poc.sh) plays games and runs its eval.
+if python -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+  SMOKE_EVAL=0 SMOKE_ALLOW_UNCHECKED=1 smoke_env xmage-poc xmage_poc --runtime.type subprocess
+else
+  echo "==> skip xmage-poc: it needs Python 3.12+, but $(command -v python) is $(python -V)"
+fi
 
 echo "==> OK"
