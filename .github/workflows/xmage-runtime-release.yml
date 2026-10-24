@@ -1,0 +1,57 @@
+# Build the pinned XMage runtime from source once and publish it as a GitHub Release, so
+# installing xmage_poc downloads a checksum-verified JAR instead of needing Maven and the
+# ~4 GB XMage source build. Push a tag such as `xmage-runtime-v2` to publish; then pin
+# the new release in the environment (see environments/xmage_poc/README.md).
+
+name: XMage runtime release
+
+on:
+  push:
+    tags: ["xmage-runtime-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build XMage, the bridge, and its Java tests
+        run: python scripts/build_xmage_poc.py
+      - name: Write the release pin
+        working-directory: environments/xmage_poc/xmage_poc/runtime
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          assets = ["xmage-poc.jar", "build.json"]
+          pin = {
+              "tag": os.environ["TAG"],
+              "url": f"https://github.com/{os.environ['REPO']}/releases/download/{os.environ['TAG']}",
+              "sha256": {a: hashlib.sha256(Path(a).read_bytes()).hexdigest() for a in assets},
+          }
+          Path("release.json").write_text(json.dumps(pin, indent=2) + "\n")
+          PY
+          cat release.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish the release
+        working-directory: environments/xmage_poc/xmage_poc/runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        # `gh release create` refuses an existing tag's release, so assets stay immutable.
+        run: |
+          gh release create "$TAG" xmage-poc.jar build.json release.json \
+            --title "XMage runtime $TAG" \
+            --notes "Prebuilt xmage_poc runtime from $GITHUB_SHA. Pin it with: gh release download $TAG -p release.json -D environments/xmage_poc/xmage_poc/runtime --clobber"

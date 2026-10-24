@@ -1,0 +1,125 @@
+{
+  "scope": "Fixture protocol validation; not a model-performance benchmark",
+  "implementation_commit": "64bd62ae338875e9cc2a9f41da9269a953c8ee9d",
+  "runtime": {
+    "xmage_revision": "afab346e06c4960882cf148acc57754c1c50a007",
+    "card_module": "org.mage:mage-sets:1.4.62",
+    "card_module_sha256": "ab8da74a8e4528d498c5468a6705238cd24eba3dcf0d02e6039d7ebdc6f955d2",
+    "card_module_classes": 43938,
+    "catalog_names": 32174,
+    "jar_sha256": "357bc6bf0fdf6b84bfc8910319f2d63d04f7cdf2c479d91b12d39ecedea6b8d7"
+  },
+  "framework": {
+    "verifiers": "0.2.0",
+    "python": "3.12"
+  },
+  "python_validation": {
+    "tests_passed": 23,
+    "tests_skipped": 0,
+    "integration_enabled": true,
+    "checkpoint_audit_recording": "outputs/pilot-walkthrough-seed17",
+    "checkpoints_restored": 2419,
+    "decision_views_reconstructed": 587,
+    "hidden_state_counterfactual_seats": 2
+  },
+  "java_validation": {
+    "tests_passed": 3,
+    "failures": 0,
+    "errors": 0
+  },
+  "artifact_validation": {
+    "wheel_and_sdist_built": true,
+    "full_card_module_and_own_deck_context_included": true,
+    "game_outputs_and_maven_targets_excluded": true,
+    "isolated_wheel_load_and_engine_start_passed": true,
+    "isolated_wheel_pilot_own_deck_context_passed": true
+  },
+  "http_protocol_runs": [
+    {
+      "local_output": "outputs/deck-context-pilot-protocol",
+      "seed": 7,
+      "controller": "Local scripted HTTP endpoint; no paid model calls",
+      "policy": {
+        "opponent": "scripted",
+        "pilot_seat": "player_b",
+        "auto_pass_priority": true
+      },
+      "audit": {
+        "privacy_passed": true,
+        "decisions": 379,
+        "snapshots": 1597,
+        "players": 2,
+        "endpoint_requests": 52,
+        "auto_passed_priority": 140,
+        "model_history_isolation_passed": true,
+        "own_deck_context_passed": true,
+        "driver": "protocol_test",
+        "opponent": "scripted",
+        "pilot_seat": "player_b"
+      },
+      "winner": "Player player_b is the winner",
+      "final_turn": 14,
+      "final_life": {
+        "player_a": -1,
+        "player_b": 6
+      }
+    },
+    {
+      "local_output": "outputs/deck-context-selfplay-protocol",
+      "seed": 7,
+      "controller": "Local scripted HTTP endpoint; no paid model calls",
+      "policy": {
+        "opponent": "self_play",
+        "pilot_seat": "player_a",
+        "auto_pass_priority": true
+      },
+      "audit": {
+        "privacy_passed": true,
+        "decisions": 600,
+        "snapshots": 2474,
+        "players": 2,
+        "endpoint_requests": 122,
+        "auto_passed_priority": 478,
+        "model_history_isolation_passed": true,
+        "own_deck_context_passed": true,
+        "driver": "protocol_test",
+        "opponent": "self_play",
+        "pilot_seat": null
+      },
+      "winner": "Player player_b is the winner",
+      "final_turn": 24,
+      "final_life": {
+        "player_a": 0,
+        "player_b": 3
+      }
+    }
+  ],
+  "earlier_priority_opt_out_smoke": {
+    "note": "Captured before registered-deck context was added; verifies only opt-out routing and private history.",
+    "local_output": "outputs/automatic-priority-disabled-protocol",
+    "audit": {
+      "privacy_passed": true,
+      "decisions": 312,
+      "snapshots": 1329,
+      "players": 2,
+      "endpoint_requests": 145,
+      "auto_passed_priority": 0,
+      "model_history_isolation_passed": true,
+      "driver": "protocol_test",
+      "opponent": "scripted",
+      "pilot_seat": "player_b"
+    }
+  },
+  "canonical_eval": {
+    "status": "blocked_missing_prime_api_key",
+    "attempted": true,
+    "paid_model_calls": 0,
+    "platform_evaluation_completed": false
+  },
+  "notes": [
+    "Every automatic pass remains in the engine recording; automatic priority prompts are omitted from model history.",
+    "Each endpoint request was matched against that seat's engine observations and registered deck context.",
+    "Smoke endpoint token usage is fabricated and cannot be used to estimate inference costs.",
+    "Seeds do not guarantee identical UUIDs, action ordering, or game traces."
+  ]
+}

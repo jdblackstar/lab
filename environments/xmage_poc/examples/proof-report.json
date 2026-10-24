@@ -1,0 +1,37 @@
+{
+  "xmage_revision": "afab346e06c4960882cf148acc57754c1c50a007",
+  "manual_then_scripted_game": {
+    "seed": 7,
+    "winner": "player_a",
+    "final_turn": 15,
+    "final_life": {"player_a": 2, "player_b": -3},
+    "decisions": 370,
+    "snapshots": 1610,
+    "engine_errors": 0,
+    "technical_failure": null,
+    "recording_bytes": 158925703,
+    "checkpoints_restored": 1610,
+    "counterfactual_seats": 2,
+    "player_transcripts_audited": true,
+    "local_output": "outputs/interactive-seed7-v4"
+  },
+  "http_adapter_protocol_test": {
+    "seed": 7,
+    "decisions": 324,
+    "snapshots": 1394,
+    "endpoint_requests": 324,
+    "model_history_isolation_passed": true,
+    "paid_model_calls": 0,
+    "driver": "protocol_test",
+    "local_output": "outputs/adapter-smoke-seed7"
+  },
+  "prime_lifecycle": {
+    "scaffold": "prime env init xmage-poc",
+    "install": "prime env install xmage-poc --no-upgrade --plain",
+    "install_and_load_passed": true,
+    "wheel_and_sdist_include_runtime": true,
+    "isolated_wheel_engine_start_passed": true,
+    "eval_status": "Attempted canonical Prime eval with a local scripted endpoint; requires a configured Prime API key, unavailable during this proof"
+  },
+  "scope": "Two fixture decks and supported decision families; recording validity, not pilot performance"
+}
