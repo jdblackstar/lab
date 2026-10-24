@@ -21,7 +21,17 @@ assert build['bridge_source_sha256'] == bridge_source_sha256(), (
 )
 PY
 # Resolve the v1 plugin, then check Java and the bridge as an eval's startup does.
-vf-validate xmage-poc --runtime.type subprocess -n 1 -o environments/xmage_poc/outputs/ci-validate
+vf-validate xmage-poc --runtime.type subprocess -n 1 -o environments/xmage_poc/outputs/ci-validate --run.dir validate --clean
+# vf-validate exits 0 even when the run fails. XMage has no gold or noop checks, so a
+# healthy run reports every task "unchecked" (valid_rate null); fail on anything else.
+python - environments/xmage_poc/outputs/ci-validate/validate/summary.json <<'PY'
+import json, sys
+summary = json.load(open(sys.argv[1]))
+outcomes = summary['outcomes']
+ok = outcomes['valid'] + outcomes['unchecked']
+if not (summary['total'] > 0 and summary['owed'] == 0 and ok == summary['terminal'] == summary['total']):
+    sys.exit(f'vf-validate xmage-poc failed: {summary}')
+PY
 python -c "import asyncio; from xmage_poc.environment import XMageEnv, XMageEnvConfig; asyncio.run(XMageEnv(XMageEnvConfig(taskset={'id': 'xmage-poc'})).start())"
 XMAGE_INTEGRATION=1 python -m pytest environments/xmage_poc/tests -q
 python scripts/smoke_xmage_poc_eval.py --protocol-only --output "environments/xmage_poc/outputs/ci-protocol"
