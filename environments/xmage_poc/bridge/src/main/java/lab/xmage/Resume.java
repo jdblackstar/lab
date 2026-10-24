@@ -48,7 +48,7 @@ final class Resume {
         final List<JsonObject> decisions = new ArrayList<>();
         Recording(Path run) throws IOException {
             internal = run.resolve("internal");
-            manifest = JsonParser.parseString(Files.readString(internal.resolve("manifest.json"))).getAsJsonObject();
+            manifest = JsonParser.parseString(read(internal.resolve("manifest.json"))).getAsJsonObject();
             if (!manifest.get("recording_mode").getAsString().equals("full_audit")) {
                 throw new IllegalArgumentException("Resuming needs recording_mode=full_audit checkpoints");
             }
@@ -109,7 +109,7 @@ final class Resume {
      * Card implementations listening to a main step event would see it twice.
      */
     static List<String> resumePrelude(Step step, boolean priorityPart) {
-        List<String> types = new ArrayList<>(List.of("PHASE_CHANGED"));
+        List<String> types = new ArrayList<>(Collections.singletonList("PHASE_CHANGED"));
         if (priorityPart) {
             // CombatDamageStep.priority fires its own event first; core rules never read it.
             if (step instanceof CombatDamageStep) types.add("COMBAT_DAMAGE_STEP_PRIORITY");
@@ -180,7 +180,7 @@ final class Resume {
         StringBuilder answers = new StringBuilder();
         for (JsonObject d : rec.decisions.subList(number - 1, rec.decisions.size())) answers.append(JSON.toJson(d.get("response"))).append('\n');
         Channel channel = new Channel(new BufferedReader(new StringReader(answers.toString())),
-            new PrintStream(OutputStream.nullOutputStream()));
+            new PrintStream(new ByteArrayOutputStream()));
         channel.decision = number - 1;
         List<UUID> seats = new ArrayList<>();
         for (JsonElement id : rec.manifest.getAsJsonArray("players")) seats.add(UUID.fromString(id.getAsString()));
@@ -196,7 +196,7 @@ final class Resume {
         JsonObject report = object("decision", number, "query_type", start.getAsJsonObject("observation").get("query_type"),
             "message", start.getAsJsonObject("observation").get("message"), "resumable", resumable(start.getAsJsonObject("observation")));
         long prelude = -1;
-        List<String> expectedPrelude = List.of();
+        List<String> expectedPrelude = Collections.emptyList();
         try (Recorder recorder = new Recorder(out, game, "benchmark")) {
             channel.recorder = recorder;
             game.recorder = recorder;
@@ -254,7 +254,7 @@ final class Resume {
         report.addProperty("matched_events", eventsMatched);
         report.addProperty("first_event_mismatch", firstEventMismatch);
         report.addProperty("fresh_ids_mapped", fresh.size());
-        JsonObject original = JsonParser.parseString(Files.readString(rec.internal.resolve("result.json"))).getAsJsonObject();
+        JsonObject original = JsonParser.parseString(read(rec.internal.resolve("result.json"))).getAsJsonObject();
         boolean sameResult = game.hasEnded() && Objects.equals(game.getWinner(), original.get("winner").getAsString());
         report.addProperty("expected_decisions", rec.decisions.size() - number + 1);
         report.addProperty("matched_decisions", compared);
@@ -336,7 +336,7 @@ final class Resume {
         }
         if (!e.isJsonObject()) return e;
         List<Map.Entry<String, JsonElement>> entries = new ArrayList<>();
-        for (Map.Entry<String, JsonElement> m : e.getAsJsonObject().entrySet()) entries.add(Map.entry(m.getKey(), canonical(m.getValue())));
+        for (Map.Entry<String, JsonElement> m : e.getAsJsonObject().entrySet()) entries.add(new AbstractMap.SimpleEntry<>(m.getKey(), canonical(m.getValue())));
         entries.sort(Comparator.comparing(m -> UUID_TEXT.matcher(m.getKey() + JSON.toJson(m.getValue())).replaceAll("U")));
         JsonObject out = new JsonObject();
         for (Map.Entry<String, JsonElement> m : entries) out.add(m.getKey(), m.getValue());
@@ -457,7 +457,7 @@ final class Resume {
             for (ActivatedAbility a : getPlayable(game, false)) {
                 if (a.isManaActivatedAbility()) continue;
                 List<Ability> options = getPlayableOptions(a, game);
-                for (Ability option : options.isEmpty() ? List.<Ability>of(a) : options) all.putIfAbsent(key(option), option);
+                for (Ability option : options.isEmpty() ? Collections.<Ability>singletonList(a) : options) all.putIfAbsent(key(option), option);
             }
             // Same-named cards in hand are interchangeable (permanents may differ):
             // keep the lowest-keyed copy of each such action.
@@ -496,7 +496,7 @@ final class Resume {
             blockers.sort(Comparator.comparing(p -> p.getId().toString()));
             List<UUID> attackers = new ArrayList<>(game.getCombat().getAttackers());
             attackers.sort(Comparator.comparing(UUID::toString));
-            List<String> keys = new ArrayList<>(List.of("")), labels = new ArrayList<>(List.of(""));
+            List<String> keys = new ArrayList<>(Collections.singletonList("")), labels = new ArrayList<>(Collections.singletonList(""));
             for (Permanent b : blockers) {
                 List<String> nextKeys = new ArrayList<>(), nextLabels = new ArrayList<>();
                 for (int i = 0; i < keys.size(); i++) {
@@ -550,12 +550,15 @@ final class Resume {
 
     /** Replace inline IDs with player or object names. */
     static String named(String withIds, Game game) {
-        return UUID_TEXT.matcher(withIds).replaceAll(m -> {
+        java.util.regex.Matcher m = UUID_TEXT.matcher(withIds);
+        StringBuffer out = new StringBuffer();
+        while (m.find()) {
             UUID id = UUID.fromString(m.group());
             Player player = game.getPlayer(id);
             MageObject object = game.getObject(id);
-            return java.util.regex.Matcher.quoteReplacement(player != null ? player.getName() : object != null ? object.getName() : m.group());
-        });
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(player != null ? player.getName() : object != null ? object.getName() : m.group()));
+        }
+        return m.appendTail(out).toString();
     }
 
     static void setPlayerId(PlayerImpl player, UUID id) {
@@ -618,7 +621,7 @@ final class Resume {
         seatView.add("view", playerView(probe, actor));
         stripCounters(recordedView); stripCounters(seatView);
         // Who controls a seat (isHuman, user preferences) is not game state.
-        for (JsonObject v : List.of(recordedView, seatView)) {
+        for (JsonObject v : Arrays.asList(recordedView, seatView)) {
             for (JsonElement p : v.getAsJsonObject("view").getAsJsonArray("players")) {
                 p.getAsJsonObject().remove("isHuman");
                 p.getAsJsonObject().remove("userData");
@@ -728,10 +731,17 @@ final class Resume {
         } else out.add(path + ": " + a + " -> " + b);
     }
 
+    /** Files.readString is Java 11; the bridge compiles with --release 8. */
+    static String read(Path file) throws IOException {
+        return new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+    }
+
     static void deleteTree(Path root) throws IOException {
-        try (var paths = Files.walk(root)) {
-            for (Path p : paths.sorted(Comparator.reverseOrder()).toList()) Files.delete(p);
+        List<Path> paths;
+        try (java.util.stream.Stream<Path> walk = Files.walk(root)) {
+            paths = walk.sorted(Comparator.reverseOrder()).collect(java.util.stream.Collectors.toList());
         }
+        for (Path p : paths) Files.delete(p);
     }
 
     static void main(String[] args) throws Exception {
