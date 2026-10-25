@@ -34,7 +34,7 @@ This document defines the canonical structure for each gold scenario file under 
 ### Visibility legend
 
 - **tool**: May appear in prompts, tool-visible file trees, or structured tool results (subject to `artifact_manifest`).
-- **evaluator**: Loaded into rollout state for `update_tool_args` / rubric only; MUST NOT be leaked in user-facing prompts.
+- **evaluator**: Read only by the tool server process and by scoring (`rubric_hints`, `ground_truth`); MUST NOT be leaked in user-facing prompts or tool results.
 
 ---
 
@@ -75,13 +75,7 @@ Materialization rules:
 - `files` is an array of `{ "path": "models/...", "content": "..." }` using forward slashes.
 - MUST include at minimum: `dbt_project.yml`, `packages.yml` (can be empty deps), and every model referenced in `dag.models`.
 - SQL is **plain text** inside JSON strings (no ``` fences).
-
-Optional nested objects (if used):
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `macros` | `object[]` | `{ "path": "macros/...", "content": "..." }` |
-| `seeds` | `object[]` | `{ "path": "seeds/...", "content": "csv..." }` |
+- Macros and seeds are ordinary `files` entries under `macros/` and `seeds/`; `files` is the only key `dbt_project` accepts.
 
 ---
 
@@ -144,7 +138,7 @@ Before the final diagnosis, the agent stores grounded evidence with dedicated to
 
 | Tool | Purpose |
 |------|---------|
-| `add_file_evidence(path, start_line, end_line)` | Store a `file_span` citation for one project file under `dbt_project.files` / `macros` / `seeds`. |
+| `add_file_evidence(path, start_line, end_line)` | Store a `file_span` citation for one project file under `dbt_project.files`. |
 | `add_sample_rows_evidence(table, match_json, min_rows)` | Store a `sample_rows` citation based on rows from `debug_context/sample_data.json`. |
 | `add_run_history_evidence(record_type, ...)` | Store a `run_history` citation based on facts from `debug_context/run_history.json`. |
 | `list_collected_evidence()` | Inspect the evidence stored so far in rollout state. |
@@ -194,12 +188,11 @@ Array of objects:
 
 ---
 
-## Mapping to verifiers v1
+## How the runtime uses these fields
 
-- **Task data**: the prompt is built from `symptom` + generic instructions only; do not expose `title`, `dag`, or exact debug-context filenames.
-- **Tool server `setup_task`**: Copy `dbt_project.files` (+ seeds/macros) into a temporary workspace; `ground_truth` / `rubric_hints` stay in the evaluator (task scoring) only.
-- **Tools**: See [runtime_mapping.md](runtime_mapping.md).
-- **Scoring**: Compare the structured `submit_diagnosis` payload (`buggy_models`, etc.) to `rubric_hints.accepted_diagnoses` and grounded evidence requirements deterministically.
+- **Task data**: the prompt is built from `symptom` + generic instructions only; `title`, `dag`, and exact debug-context filenames are not exposed.
+- **Tool server `setup_task`**: writes `dbt_project.files`, `debug_context/` (`sample_data`, `run_history`), and the DuckDB source tables into a temporary workspace; `ground_truth` and `rubric_hints` are read only by scoring and the validator.
+- **Tools and scoring**: see [runtime_mapping.md](runtime_mapping.md). The structured `submit_diagnosis` payload is compared to `rubric_hints.accepted_diagnoses`, the stored evidence to `required_evidence`, and the text to `forbidden_claims`, all deterministically.
 
 ---
 
