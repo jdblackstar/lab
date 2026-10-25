@@ -8,22 +8,13 @@ structured diagnosis, which is scored deterministically against the scenario's
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
 import verifiers.v1 as vf
-from dbt_debugger import tools
-from dbt_debugger.scenarios import (
-    build_prompt,
-    gold_paths,
-    load_scenario_spec,
-    model_names,
-)
+from dbt_debugger.scenarios import build_prompt, gold_paths, load_scenario_spec
 from dbt_debugger.scoring import score_diagnosis
 from dbt_debugger.toolset import DbtDebuggerState, DbtDebuggerToolset
-from dbt_debugger.types import RolloutStateKeys
-from dbt_debugger.workspace import cleanup_workspace, materialize_scenario_workspace
 
 MAX_TURNS = 20
 """Default model-turn cap per rollout (v0's ``max_turns``)."""
@@ -106,41 +97,30 @@ class DbtDebuggerTask(
 
     async def validate(self, runtime: vf.Runtime) -> bool:
         """Gold check: collect the required evidence and submit the documented ground
-        truth through the real tool functions; the stored diagnosis must strictly pass."""
+        truth through the real tools; the stored diagnosis must strictly pass."""
         spec = self.spec
-        workspace = await asyncio.to_thread(materialize_scenario_workspace, spec)
-        try:
-            state: dict[str, Any] = {RolloutStateKeys.SCENARIO_SPEC: spec}
-            names = model_names(spec)
+        toolset = DbtDebuggerToolset(vf.ToolsetConfig())
+        async with toolset._exit_stack:
+            await toolset.setup_task(self.data)
             for requirement in spec["rubric_hints"]["required_evidence"]:
-                result = await _collect_gold_evidence(
-                    requirement, str(workspace.project_root), names, state
-                )
-                if json.loads(result)["status"] != "accepted":
+                result = await _collect_gold_evidence(toolset, requirement)
+                if result.startswith("Error:"):
                     raise ValueError(f"gold evidence rejected: {result}")
             truth = spec["ground_truth"]
-            result = await tools.submit_diagnosis(
+            result = await toolset.submit_diagnosis(
                 bool(spec["has_bug"]),
                 str(truth["root_cause"]),
                 list(truth.get("affected_models") or []),
                 str(truth["fix"]),
-                scenario_id=self.data.scenario_id,
-                valid_model_names=names,
-                rollout_state=state,
             )
             if result.startswith("Error:"):
                 raise ValueError(f"gold diagnosis rejected: {result}")
-            audit = score_diagnosis(state[RolloutStateKeys.SUBMITTED_DIAGNOSIS], spec)
+            audit = score_diagnosis(toolset.state.submitted_diagnosis, spec)
             return audit["strict_pass"] == 1.0
-        finally:
-            await asyncio.to_thread(cleanup_workspace, workspace.workspace_root)
 
 
 async def _collect_gold_evidence(
-    requirement: dict[str, Any],
-    project_root: str,
-    valid_model_names: list[str],
-    state: dict[str, Any],
+    toolset: DbtDebuggerToolset, requirement: dict[str, Any]
 ) -> str:
     """Store the evidence ref that satisfies one ``required_evidence`` entry."""
     kind = requirement["kind"]
@@ -150,33 +130,25 @@ async def _collect_gold_evidence(
         content = next(
             entry["content"]
             for key in ("files", "macros", "seeds")
-            for entry in state[RolloutStateKeys.SCENARIO_SPEC]["dbt_project"].get(key)
-            or []
+            for entry in toolset.workspace.spec["dbt_project"].get(key) or []
             if entry["path"] == path
         )
-        return await tools.add_file_evidence(
-            path,
-            1,
-            max(1, len(content.splitlines())),
-            project_root=project_root,
-            rollout_state=state,
+        return await toolset.add_file_evidence(
+            path, 1, max(1, len(content.splitlines()))
         )
     if kind == "sample_rows":
-        return await tools.add_sample_rows_evidence(
+        return await toolset.add_sample_rows_evidence(
             requirement["table"],
             json.dumps(requirement["match"]),
             int(requirement.get("min_rows", 1)),
-            rollout_state=state,
         )
     if kind == "run_history":
-        return await tools.add_run_history_evidence(
+        return await toolset.add_run_history_evidence(
             requirement["record_type"],
             str(requirement.get("model", "")),
             str(requirement.get("name", "")),
             str(requirement.get("status", "")),
             str(requirement.get("contains", "")),
-            valid_model_names=valid_model_names,
-            rollout_state=state,
         )
     raise ValueError(f"unknown required_evidence kind {kind!r}")
 

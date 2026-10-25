@@ -38,8 +38,7 @@ This environment is intentionally opinionated about what a good agentic eval sho
 `dbt-debugger` is a native verifiers v1 package (`verifiers>=0.4.0`). The important implementation pieces are:
 
 - `dbt_debugger/taskset.py`: `DbtDebuggerTaskset` (one task per gold scenario), the task's stop condition, deterministic reward/metrics, the `vf-validate` gold check, and `DbtDebuggerEnv`, which pins the run defaults.
-- `dbt_debugger/toolset.py`: `DbtDebuggerToolset`, the per-rollout MCP tool server that materializes the dbt workspace and exposes the tools, plus the shared `DbtDebuggerState`.
-- `dbt_debugger/tools.py`: scoped filesystem/dbt tools plus interactive evidence collection.
+- `dbt_debugger/toolset.py`: `DbtDebuggerToolset`, the per-rollout MCP tool server that materializes the dbt workspace and implements the scoped filesystem/dbt tools and interactive evidence collection, plus the shared `DbtDebuggerState`.
 - `dbt_debugger/scoring.py`: deterministic root-cause/fix/model/evidence scoring and no-bug guardrails.
 - `validation/validate_scenarios.py`: schema validation plus custom checks that catch impossible evidence and gold/rubric drift.
 - `dbt_debugger/scenarios/gold/*.json`: compact incident corpus spanning joins, incremental drift, source schema issues, macros/config, business-definition gaps, and no-bug cases.
@@ -62,8 +61,8 @@ Local execution uses **`dbt-duckdb`** and bundled `sample_data` loaded into Duck
 | `pyproject.toml`                      | Package metadata and dependencies (verifiers, dbt, duckdb, pyyaml)         |
 | `dbt_debugger/__init__.py`            | Exports `DbtDebuggerTaskset` and `DbtDebuggerEnv` via `__all__`            |
 | `dbt_debugger/taskset.py`             | Task data, task (stop, scoring, gold check), taskset, env defaults         |
-| `dbt_debugger/toolset.py`             | Per-rollout MCP tool server and shared rollout state                       |
-| `dbt_debugger/tools.py`, `workspace.py`, `scoring.py` | Tool implementations, workspace materialization, scoring   |
+| `dbt_debugger/toolset.py`             | Per-rollout MCP tool server: the tools and shared rollout state            |
+| `dbt_debugger/paths.py`, `workspace.py`, `scoring.py` | Manifest glob matching, workspace materialization, scoring |
 | `dbt_debugger/scenarios/gold/*.json`  | Reviewed scenarios (shipped in the wheel)                                  |
 | `spec/scenario_schema.md`             | Canonical JSON field definitions                                           |
 | `spec/authoring_guide.md`             | How to write new scenarios                                                 |
