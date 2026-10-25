@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .baselines import bar
 from .cloze import LETTERS
 from .questions import load_meta, load_question_set, rotate
 
@@ -159,16 +160,12 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
             f"| {label} | {len(g)} of {len(records)} | {scores} | {unparsed} |"
         )
     base = meta.get("baselines", {})
-    for name in (
-        "best combination of all cues (held-out menus)",
-        "most words shared with the menu",
-    ):
-        if name in base:
-            b = base[name]
-            lines.append(
-                f"| baseline: {name} | all | {b['accuracy']:.1%} "
-                f"| {b['low']:.1%}–{b['high']:.1%} | |"
-            )
+    for i, name in enumerate(bar(base)):  # the first, higher row is the bar to clear
+        b = base[name]
+        lines.append(
+            f"| baseline{' (bar)' if i == 0 else ''}: {name} | all | "
+            f"{b['accuracy']:.1%} | {b['low']:.1%}–{b['high']:.1%} | |"
+        )
 
     lines += ["", "By course:", ""]
     courses = Counter(r["info"]["course"] for r in records.values())

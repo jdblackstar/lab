@@ -4,6 +4,7 @@ import numpy as np
 from menu_taste.baselines import (
     BEST,
     FEATURES,
+    bar,
     cross_validated_choice_model,
     report,
     report_numbers,
@@ -44,3 +45,18 @@ def test_one_menu_has_no_held_out_combination_score():
     assert questions
     assert BEST not in report_numbers(questions, menus)
     assert f"| {BEST} | unavailable" in report(questions, menus)
+
+
+def test_the_bar_is_the_higher_of_the_best_cue_and_the_combination():
+    def row(accuracy):
+        return {"accuracy": accuracy, "low": 0.0, "high": 1.0}
+
+    numbers = {
+        "random guess": row(0.40),  # luck, not a cue
+        "most words shared with the menu": row(0.30),
+        "most common dish in the corpus": row(0.33),
+        BEST: row(0.26),
+    }
+    assert bar(numbers) == ["most common dish in the corpus", BEST]
+    numbers[BEST] = row(0.45)
+    assert bar(numbers) == [BEST, "most common dish in the corpus"]

@@ -35,12 +35,15 @@ Without a question set or corpus the taskset loads 93 questions from a bundled s
 13 synthetic menus. It exists for smoke tests; scores on it mean nothing.
 
 Check the answer keys without a model (every gold answer must score 1, an empty reply
-0). Always pass `--runtime.type subprocess`: `vf-validate` checks the taskset, not the
-env, so it ignores the env's runtime and defaults to hosted Prime sandboxes.
+0) with `menu-taste-validate`, which runs `vf-validate menu-taste` on the local
+subprocess runtime and refuses any other. Plain `vf-validate` checks the taskset, not
+the env, so it ignores the env's runtime and defaults to hosted Prime sandboxes, two per
+question; verifiers 0.4 gives a taskset no way to change that. Like `vf-validate`, it
+exits 0 even when checks fail, so read `valid_rate` in the run's `summary.json`.
 
 ```bash
 cd environments/menu_taste
-uv run vf-validate menu-taste --runtime.type subprocess
+uv run menu-taste-validate
 uv run pytest
 ```
 
@@ -52,7 +55,7 @@ questions, and which menus leave the machine is decided once:
 ```bash
 cd environments/menu_taste
 uv run menu-taste-questions build private/menus.jsonl -o private/questions-v1.jsonl
-uv run vf-validate menu-taste --runtime.type subprocess \
+uv run menu-taste-validate \
   --taskset.questions-path private/questions-v1.jsonl --output-dir private/validate
 
 cd ../..
@@ -76,7 +79,8 @@ Every trace contains a whole menu, so on private questions:
 
 - never pass `--monitors.prime` (it uploads traces to the Prime platform), and keep
   `--output-dir` under `private/`;
-- always run `vf-validate` with `--runtime.type subprocess`.
+- validate with `menu-taste-validate`, not `vf-validate`, so nothing runs in a hosted
+  sandbox.
 
 `menu-taste-score` reports accuracy with 95% intervals resampled by menu (questions from
 one menu aren't independent), accuracy by course, which letters each run favors, and for
@@ -107,12 +111,12 @@ small (the default is 15): with 25 per batch, Haiku's accuracy fell from about 4
 40% on the last five questions.
 
 Taskset arguments (`--env.taskset.<name>` for evals, `--taskset.<name>` for
-`vf-validate`; use dashes, e.g. `--env.taskset.max-menus 50`):
+`menu-taste-validate`; use dashes, e.g. `--env.taskset.max-menus 50`):
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `questions_path` | `$MENU_TASTE_QUESTIONS` | Frozen question set; when set, the corpus arguments below are ignored |
-| `rotation` | `0` | Shift each question's options by this many places (frozen sets only) |
+| `rotation` | `0` | Shift each question's options by this many places, whether the questions come from a frozen set or a corpus |
 | `menus_path` | `$MENU_TASTE_MENUS`, then the sample | JSONL corpus from `menu-taste-ingest` |
 | `num_options` | `4` | Choices per question, including the right one |
 | `courses` | food courses | Which courses to hide, e.g. `["main", "dessert"]` |
@@ -243,8 +247,15 @@ uv run menu-taste-baselines private/menus.jsonl --no-surface-matching --max-per-
 ```
 
 The best of these should stay near chance. Sharing words with the menu always helps a
-little, because real menus repeat a theme (a summer menu uses watermelon twice); that
-is the bar a model has to clear.
+little, because real menus repeat a theme (a summer menu uses watermelon twice).
+
+The bar a model has to clear is the higher of the best single cue and the held-out
+combination; the report states it on top, and `menu-taste-score` shows both rows with
+the bar first. Neither alone is enough: with few questions the combination can't learn
+its weights and scores below the best cue (26% vs. 31% on the bundled sample), and with
+many it can find what single cues miss. The best cue is chosen after scoring every cue
+on the same questions, so the bar leans slightly high. The combination picks its ridge
+penalty by cross-validation within its training menus, so its score stays held out.
 
 ## Known gaps
 
