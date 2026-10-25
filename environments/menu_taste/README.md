@@ -11,6 +11,20 @@ season, and service style.
 - **Reward:** `correct_choice` (1 if the letter in `<answer>` tags is right); metric
   `answered` (a valid letter was given)
 
+## What the key is, and what it isn't
+
+The prompt asks for the dish that "fits this menu's balance, flavors, season, and
+service best." The key is the dish this caterer actually served. Those agree only when
+the served dish was also the best fit. They differ whenever the client took the safe
+option, the kitchen pushed a house staple, or two desserts were interchangeable. A model
+that picks a better-fitting dish than the one served is marked wrong.
+
+So accuracy measures agreement with one caterer's choices, not taste in general, and
+it's bounded by how often a skilled person can recover those choices. That human
+ceiling hasn't been measured yet. Until it is, an accuracy score can't tell a model
+that is short on judgment from questions that have no fair answer. To measure the
+ceiling, see [Answering as a person](#answering-as-a-person).
+
 ## Quickstart
 
 Built on verifiers 0.4 (`verifiers.v1`): the package exports `MenuTasteTaskset` and
@@ -105,6 +119,34 @@ come from a different setup than one-question API calls (a long context, a codin
 system prompt), so don't compare those scores with API eval scores. Keep batches
 small (the default is 15): with 25 per batch, Haiku's accuracy fell from about 49% to
 40% on the last five questions.
+
+### Answering as a person
+
+To measure the human ceiling, give a person a seeded sample of questions without the
+key and score their answers like any other run:
+
+```bash
+uv run menu-taste-questions human private/questions-v1.jsonl -n 50 --out private/human/chef-a
+# the person fills in <answer></answer> under each question in private/human/chef-a/sheet.md
+uv run menu-taste-questions collect private/human/chef-a -o private/runs/chef-a.jsonl
+uv run menu-taste-score private/questions-v1.jsonl private/runs/chef-a.jsonl private/runs/<model>.jsonl
+```
+
+`sheet.md` is a plain Markdown file holding only the questions, which can be printed
+or opened in any editor. No two questions on it reveal each other (the rule that
+batches follow), so it holds fewer than `-n` questions when the set is too small; the
+13-menu sample fits 12. Two people given the same `--seed` answer the same questions,
+and the score report shows how often they chose the same dish. A blank answer counts
+as unparsed and wrong.
+
+When several runs choose the same wrong dish, either the key is unfair or they all
+missed something. `--agreed-wrong` (two or more runs) writes those questions with the
+key and the shared choice marked, for a chef to judge:
+
+```bash
+uv run menu-taste-score private/questions-v1.jsonl private/runs/a.jsonl \
+  private/runs/b.jsonl private/runs/c.jsonl --agreed-wrong private/adjudicate.md
+```
 
 Taskset arguments (`--env.taskset.<name>` for evals, `--taskset.<name>` for
 `vf-validate`; use dashes, e.g. `--env.taskset.max-menus 50`):
@@ -209,18 +251,29 @@ Menu
               service    overrides the menu's (passed bites at a plated dinner)
               selection  all | guest_choice (entrée choice) | host_choice (pick 3 of 8)
               items[]    name, description, dietary tags, role, pairing
+  caterer     opaque label for the business that wrote it ("c1"); optional
   notes, source (content hash only), warnings
 ```
 
-There are no fields for price or client.
+There are no fields for price or client. `caterer` is only a label: menus without
+one count as one caterer, which is how the current corpus and v1 question set load.
+To pool a second caterer's corpus, label both and concatenate them:
+
+```bash
+jq -c '.caterer = "c1"' private/menus.jsonl > private/pooled.jsonl
+jq -c '.caterer = "c2"' private/menus-c2.jsonl >> private/pooled.jsonl
+```
 
 ## How questions are built
 
 - Only `event` and `sample` menus become questions or supply wrong options. Packages and
   catalogs ("choose three of the following") list options rather than a composed meal.
-- Wrong options are dishes of the same course. They never come from the target menu,
-  from a near-identical version of it (half its dishes shared), or from dishes that
-  resemble anything already on the menu.
+- Wrong options are dishes of the same course from the same caterer, so in a pooled
+  corpus, questions about one caterer's menus never show another's dishes. Unlabeled
+  questions say the options come from "the same caterer"; labeled ones say "this
+  menu's caterer". They never come from the target menu, from a near-identical
+  version of it (half its dishes shared), or from dishes that resemble anything
+  already on the menu.
 - Sections in `host_choice` mode, dietary alternates, kids' meals, and upgrades are never
   hidden.
 - Menus are rendered the same way no matter the source format, and section headings are
@@ -248,9 +301,12 @@ is the bar a model has to clear.
 
 ## Known gaps
 
-- No human ceiling yet. On the 300-question subset, all three runs chose the same wrong
-  dish on 47 questions (16%). Some are honest toss-ups (one dessert bar against
-  another); have a person answer a sample to find out how many are unfair.
+- No human ceiling yet (see [What the key is](#what-the-key-is-and-what-it-isnt)). On
+  the 300-question subset, all three runs chose the same wrong dish on 47 questions
+  (16%). Some are honest toss-ups (one dessert bar against another). Score a person's
+  sample, and have a chef judge the `--agreed-wrong` questions, to find out how many
+  are unfair.
+- One caterer. The schema can label a second corpus, but none exists yet.
 - Boards and platters listed under a "passed" heading stay in the passed section, so a
   model that reasons about service rejects them. This affects 40 questions in v1 (10
   where the board is the answer); fix it in the importer before building v2.

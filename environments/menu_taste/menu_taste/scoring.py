@@ -1,6 +1,8 @@
 """Read answers and score a run against a frozen question set.
 
     menu-taste-score private/questions-v1.jsonl private/runs/haiku-r0.jsonl [more runs]
+    menu-taste-score private/questions-v1.jsonl run-a.jsonl run-b.jsonl \\
+        --agreed-wrong private/adjudicate.md
 
 A run is the episode JSONL of a verifiers v1 eval on the question set (``traces.jsonl``,
 or prime-rl's ``monitors/file/traces/stream/*.jsonl.zst`` once decompressed), or a
@@ -126,7 +128,64 @@ def _by_menu(graded, value) -> dict[str, list[float]]:
     return out
 
 
-def report(questions: str, runs: list[str], labels: list[str] | None = None) -> str:
+def agreed_wrong(graded: dict[str, list[dict]]) -> dict[str, int]:
+    """Questions every run answered where every answer, across all of each run's
+    rollouts, chose the same wrong dish: {id: the option (stored order) chosen}."""
+    by_run = []
+    for g in graded.values():
+        picks = defaultdict(set)
+        for x in g:
+            picks[x["id"]].add((x["chosen"], x["correct"]))
+        by_run.append(picks)
+    shared = set.intersection(*(set(r) for r in by_run)) if by_run else set()
+    out = {}
+    for qid in sorted(shared):
+        picks = set().union(*(r[qid] for r in by_run))
+        if len(picks) == 1:
+            ((chosen, correct),) = picks
+            if chosen is not None and not correct:
+                out[qid] = chosen
+    return out
+
+
+ADJUDICATION_HEADER = """# Questions every run got wrong the same way
+
+Runs: {runs}.
+
+The key is the dish this caterer actually served; the prompt asks for the dish that
+fits the menu best. For each question, judge whether the key is clearly
+the better fit (`key`), both fit about equally (`either`), or the runs' choice fits
+better (`chosen`), and write it after "Verdict:".
+"""
+
+
+def adjudication_sheet(records: dict[str, dict], wrong: dict[str, int], runs) -> str:
+    parts = [ADJUDICATION_HEADER.format(runs=", ".join(runs))]
+    for qid, chosen in wrong.items():
+        rec = records[qid]
+        options = []
+        for i, option in enumerate(rec["options"]):
+            mark = (
+                " (key: served)"
+                if i == rec["answer_index"]
+                else " (all runs chose)"
+                if i == chosen
+                else ""
+            )
+            options.append(f"{LETTERS[i]}. {option}{mark}")
+        parts.append(
+            f"\n---\n\n### {qid} ({rec['info']['course']})\n\n"
+            f"{rec['menu_text']}\n\nOptions:\n" + "\n".join(options) + "\n\nVerdict:\n"
+        )
+    return "".join(parts)
+
+
+def report(
+    questions: str,
+    runs: list[str],
+    labels: list[str] | None = None,
+    agreed_wrong_out: str | None = None,
+) -> str:
     records = {r["id"]: r for r in load_question_set(questions)}
     meta = load_meta(questions)
     k = meta.get("num_options") or len(next(iter(records.values()))["options"])
@@ -219,6 +278,21 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
         lines.append(
             f"| {a} | {b} | {len(shared)} | {same:.0%} | {d:+.1%} ({lo:+.1%} to {hi:+.1%}) |"
         )
+    if len(graded) > 1:
+        wrong = agreed_wrong(graded)
+        n_shared = len(
+            set.intersection(*({x["id"] for x in g} for g in graded.values()))
+        )
+        lines += [
+            "",
+            f"All {len(graded)} runs chose the same wrong dish on {len(wrong)} of the "
+            f"{n_shared} questions they all answered.",
+        ]
+        if agreed_wrong_out:
+            Path(agreed_wrong_out).write_text(
+                adjudication_sheet(records, wrong, list(graded))
+            )
+            lines.append(f"Wrote them for adjudication to {agreed_wrong_out}.")
     return "\n".join(lines)
 
 
@@ -231,8 +305,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("questions")
     parser.add_argument("runs", nargs="+")
     parser.add_argument("--labels", nargs="+", default=None)
+    parser.add_argument(
+        "--agreed-wrong",
+        metavar="PATH",
+        help="Write the questions every run got wrong with the same dish, with the "
+        "key shown, for a person to adjudicate (needs two or more runs)",
+    )
     args = parser.parse_args(argv)
-    print(report(args.questions, args.runs, args.labels))
+    if args.agreed_wrong and len(args.runs) < 2:
+        parser.error("--agreed-wrong needs two or more runs")
+    print(report(args.questions, args.runs, args.labels, args.agreed_wrong))
     return 0
 
 

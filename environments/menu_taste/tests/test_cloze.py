@@ -213,3 +213,41 @@ def test_wrong_options_match_whether_the_answer_has_a_description():
 
     assert distractors(True) == {"Fig galette", "Pear crisp", "Quince cake"}
     assert any(d in bare for d in distractors(False))
+
+
+def test_wrong_options_come_only_from_the_menus_own_caterer():
+    # Caterer "a" has just enough desserts for a question with three options; "b" has
+    # plenty. Without the restriction, b's desserts would fill a's questions.
+    def menus(caterer, dishes):
+        out = []
+        for i, (main, dessert) in enumerate(dishes):
+            m = _menu(f"{caterer}{i}", {"main": [main], "dessert": [dessert]})
+            out.append(m.model_copy(update={"caterer": caterer}))
+        return out
+
+    a = menus("a", [("Roast duck", "Plum tart"), ("Trout", "Fig galette")])
+    a += menus("a", [("Ribeye", "Lemon posset")])
+    b = menus(
+        "b",
+        [
+            ("Pork chop", "Baklava"),
+            ("Quail", "Sorbet"),
+            ("Halibut", "Flan"),
+            ("Short rib", "Panna cotta"),
+        ],
+    )
+    caterer = {m.menu_id: m.caterer for m in a + b}
+    rows = build_cloze_items(a + b, num_options=3, min_menu_items=2)
+    assert {r["info"]["caterer"] for r in rows} == {"a", "b"}
+    for row in rows:
+        info = row["info"]
+        assert {caterer[m] for m in info["distractor_menu_ids"]} == {info["caterer"]}
+        assert "other menus by this menu's caterer." in row["question"]
+    # Unlabeled menus are one caterer: the same corpus without labels mixes them.
+    unlabeled = [m.model_copy(update={"caterer": None}) for m in a + b]
+    mixed = build_cloze_items(unlabeled, num_options=3, min_menu_items=2)
+    assert all("other menus by the same caterer." in r["question"] for r in mixed)
+    assert any(
+        {caterer[m] for m in r["info"]["distractor_menu_ids"]} == {"a", "b"}
+        for r in mixed
+    )
