@@ -16,7 +16,7 @@ from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
 
-from .render import render_item, render_menu
+from .render import render_menu
 from .schema import (
     DRINK_COURSES,
     Course,
@@ -162,14 +162,6 @@ class ClozeQuestion:
     def menu_text(self) -> str:
         return render_menu(self.menu, missing=(self.section_idx, self.item_idx))
 
-    def to_row(self) -> dict:
-        options = [render_item(item) for item in self.options]
-        return {
-            "question": format_question(self.menu_text(), options),
-            "answer": LETTERS[self.answer_index],
-            "info": self.info(),
-        }
-
     def info(self) -> dict:
         menu = self.menu
         return {
@@ -193,14 +185,6 @@ def format_question(menu_text: str, options: list[str]) -> str:
         menu=menu_text,
         options="\n".join(f"{LETTERS[i]}. {o}" for i, o in enumerate(options)),
     )
-
-
-def build_cloze_items(menus: list[Menu], **kwargs) -> list[dict]:
-    """Build multiple-choice rows (``question``, ``answer``, ``info``).
-
-    Takes the same arguments as ``cloze_questions``.
-    """
-    return [q.to_row() for q in cloze_questions(menus, **kwargs)]
 
 
 def cloze_questions(

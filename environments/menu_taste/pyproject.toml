@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 menu-taste-ingest = "menu_taste.ingest.cli:main"
 menu-taste-baselines = "menu_taste.baselines:main"
+menu-taste-batches = "menu_taste.batches:main"
 menu-taste-questions = "menu_taste.questions:main"
 menu-taste-score = "menu_taste.scoring:main"
 

@@ -4,10 +4,10 @@ Each task is one multiple-choice question: a real menu with one dish hidden, the
 dish, and same-course dishes from the caterer's other menus. The model answers with a
 letter in <answer> tags, scored deterministically against the question's key.
 
-Real evals read a frozen question set (``questions_path``, built by
+Evals read a frozen question set (``questions_path``, built by
 ``menu-taste-questions build``), so every run asks the same questions. Without one, the
-questions are built from a corpus (``menus_path``), by default the bundled synthetic
-sample, which exists only for smoke tests.
+taskset builds questions from the bundled synthetic sample with the default settings;
+that exists only for smoke tests.
 """
 
 from __future__ import annotations
@@ -17,13 +17,12 @@ import os
 import verifiers.v1 as vf
 
 from .cloze import LETTERS, SYSTEM_PROMPT, cloze_questions
-from .corpus import load_menus, resolve_corpus
+from .corpus import load_menus, sample_corpus_path
 from .questions import load_question_set, record, to_row
-from .schema import Course
 from .scoring import extract_letter
 
 MAX_TURNS = 1
-"""One model reply per question, as in v0's single-turn environment."""
+"""One model reply per question."""
 
 
 class MenuTasteData(vf.TaskData):
@@ -66,26 +65,10 @@ class MenuTasteTask(vf.Task[MenuTasteData]):
 class MenuTasteConfig(vf.TasksetConfig):
     questions_path: str | None = None
     """Frozen question set (``menu-taste-questions build``); falls back to
-    ``$MENU_TASTE_QUESTIONS``. When set, the corpus fields below are ignored."""
+    ``$MENU_TASTE_QUESTIONS``, then to questions built from the bundled synthetic
+    sample for smoke tests."""
     rotation: int = 0
     """Shift every question's options by this many places, to check position bias."""
-
-    menus_path: str | None = None
-    """Corpus to build questions from when there is no frozen set; falls back to
-    ``$MENU_TASTE_MENUS``, then the bundled synthetic sample."""
-    num_options: int = 4
-    courses: list[str] | None = None
-    """Courses to hide (``schema.Course`` values); defaults to food courses."""
-    include_drinks: bool = False
-    max_per_menu: int | None = None
-    min_menu_items: int = 4
-    max_menus: int | None = None
-    """Ask about a seeded sample of this many menus; bounds what one run reveals."""
-    max_per_dish: int | None = 2
-    match_surface: bool = True
-    seed: int = 0
-    """Distractor choice when building from a corpus. Shuffle the run's questions with
-    ``-s`` (``--select.seed``) instead."""
 
 
 class MenuTasteTaskset(vf.Taskset[MenuTasteTask, MenuTasteConfig]):
@@ -94,30 +77,12 @@ class MenuTasteTaskset(vf.Taskset[MenuTasteTask, MenuTasteConfig]):
         path = config.questions_path or os.environ.get("MENU_TASTE_QUESTIONS")
         if path:
             records = load_question_set(path)
-            source = path
         else:
-            corpus = resolve_corpus(config.menus_path)
-            questions = cloze_questions(
-                load_menus(corpus),
-                num_options=config.num_options,
-                courses=frozenset(Course(c) for c in config.courses)
-                if config.courses
-                else None,
-                include_drinks=config.include_drinks,
-                max_per_menu=config.max_per_menu,
-                min_menu_items=config.min_menu_items,
-                max_menus=config.max_menus,
-                max_per_dish=config.max_per_dish,
-                match_surface=config.match_surface,
-                seed=config.seed,
-            )
-            records = [record(q) for q in questions]
-            source = str(corpus)
+            sample = load_menus(sample_corpus_path())
+            records = [record(q) for q in cloze_questions(sample)]
+            path = "the bundled sample"
         if not records:
-            raise ValueError(
-                f"No questions could be built from {source}. Each question needs "
-                "same-course dishes from unrelated menus as wrong options."
-            )
+            raise ValueError(f"No questions in {path}.")
         tasks = []
         for rec in records:
             row = to_row(rec, config.rotation)
