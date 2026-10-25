@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         stamp = run_file.with_suffix(".settings.json")
         if (
             stamp.exists()
-            and json.loads(stamp.read_text()) == settings
+            and json.loads(stamp.read_text()) == {**settings, "model": model}
             and decompress(run_dir, run_file)
             and not problems(load_run(run_file), asked, args.repeats)
         ):
@@ -192,8 +192,6 @@ def main(argv: list[str] | None = None) -> int:
         else:
             stamp.unlink(missing_ok=True)
             code = run_model(model, questions, out / "evals", eval_args).returncode
-            stamp.parent.mkdir(parents=True, exist_ok=True)
-            stamp.write_text(json.dumps(settings, indent=2) + "\n")
             if not decompress(run_dir, run_file):
                 failed[model] = [f"eval exited {code} without traces"]
                 continue
@@ -202,6 +200,10 @@ def main(argv: list[str] | None = None) -> int:
                 found.insert(0, f"eval exited {code}")
             if found:
                 failed[model] = found + [f"see {run_dir}/logs"]
+            else:  # only a run that passed may be reused
+                stamp.write_text(
+                    json.dumps({**settings, "model": model}, indent=2) + "\n"
+                )
         runs.append((model, run_file))
 
     if not runs:

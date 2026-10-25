@@ -190,7 +190,7 @@ model = args[args.index("-m") + 1]
 run = Path(args[args.index("--output-dir") + 1]) / args[args.index("--run.name") + 1]
 stream = run / "monitors/file/traces/stream"
 stream.mkdir(parents=True, exist_ok=True)
-src = Path({episodes!r}) / f"{{model}}.jsonl"
+src = Path({episodes!r}) / f"{{run.name}}.jsonl"
 subprocess.run(["zstd", "-qf", str(src), "-o", str(stream / "00000.jsonl.zst")], check=True)
 with open(Path({episodes!r}) / "calls.txt", "a") as f:
     f.write(model + "\\n")
@@ -247,3 +247,15 @@ def test_results_command_scores_each_model_and_fails_on_errored_rollouts(
     assert results.main(argv) == 1
     assert (episodes / "calls.txt").read_text().split()[-1] == "good"
     assert "| good | 4 of" in (out / "results.md").read_text()
+
+    # A failed rerun leaves no stamp, so the old traces aren't reused next time; and
+    # a model whose id shares the slug doesn't reuse another model's run.
+    argv = [str(questions), "-r", "1", "-n", "4", "--out", str(out)]
+    assert results.main([*argv, "-m", "good"]) == 0
+    calls = len((episodes / "calls.txt").read_text().split())
+    runner.write_text("#!/bin/sh\nexit 3\n")
+    assert results.main([*argv, "-m", "good", "--", "--seed", "1"]) == 1
+    runner.write_text(FAKE_RUNNER.format(python=sys.executable, episodes=str(episodes)))
+    assert results.main([*argv, "-m", "good", "--", "--seed", "1"]) == 0
+    assert results.main([*argv, "-m", "good/", "--", "--seed", "1"]) == 0
+    assert len((episodes / "calls.txt").read_text().split()) == calls + 2
