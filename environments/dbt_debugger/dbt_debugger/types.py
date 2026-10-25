@@ -1,4 +1,4 @@
-"""Typed helpers for dbt-debugger rollout state and scoring contracts."""
+"""Typed shapes of the scenario scoring contract (``rubric_hints``) and evidence refs."""
 
 from __future__ import annotations
 
@@ -48,26 +48,3 @@ class EvidenceRequirement(TypedDict, total=False):
     status: str
     contains: str
     all_of: list[str]
-
-
-class DiagnosisSubmission(TypedDict, total=False):
-    """Structured payload stored after a valid ``submit_diagnosis`` call."""
-
-    has_bug: bool
-    root_cause: str
-    buggy_models: list[str]
-    fix: str
-    evidence: list[EvidenceRef]
-
-
-class RolloutStateKeys:
-    """Keys of the rollout-state dict the tool functions read and mutate.
-
-    The toolset builds this dict from its typed ``DbtDebuggerState`` (plus the
-    server-local scenario spec) around each tool call and writes it back afterwards.
-    """
-
-    SCENARIO_SPEC = "scenario_spec"
-    COLLECTED_EVIDENCE = "collected_evidence"
-    SUBMITTED_DIAGNOSIS = "submitted_diagnosis"
-    TOOL_TRACE = "tool_trace"
