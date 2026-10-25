@@ -75,6 +75,17 @@ def test_validator_requires_empty_ground_truth_models_for_no_bug() -> None:
     )
 
 
+def test_validator_rejects_whitespace_only_claim_option() -> None:
+    """A whitespace-only forbidden claim can never match, which would silently disable
+    the no-bug guardrail; the schema must reject it."""
+    spec = deepcopy(_spec("no_bug_fiscal_vs_calendar"))
+    spec["rubric_hints"]["forbidden_claims"] = [[[" "]]]
+
+    errors = _validation_errors("no_bug_fiscal_vs_calendar", spec)
+
+    assert any("schema rubric_hints.forbidden_claims" in error for error in errors)
+
+
 def test_validator_rejects_negated_accepted_phrase_overlap() -> None:
     """Accepted negated phrases must not be able to satisfy forbidden claims."""
     spec = deepcopy(_spec("campaign_spend_replay_restatement"))
