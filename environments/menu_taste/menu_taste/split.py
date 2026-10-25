@@ -4,8 +4,8 @@ A model trained on one caterer's menus can learn which of its dishes go together
 without learning anything about composition. The split keeps that memory from
 counting as skill on the eval set:
 
-- **Family-disjoint.** Menus that are versions of each other (``related_menu_ids``,
-  joined transitively) all go to one side, so no eval menu, or a version of it, is
+- **Family-disjoint.** Menus that are versions of each other (the relation behind
+  ``related_menu_ids``, joined transitively over every menu) all go to one side, so no eval menu, or a version of it, is
   ever a training question or a source of training options.
 - **Unseen eval dishes.** Each side is built from its own menus only, so wrong options
   never cross over. An eval question is dropped if any of its options, the hidden
@@ -34,38 +34,52 @@ import hashlib
 import random
 from pathlib import Path
 
-from .cloze import ClozeQuestion, cloze_questions
+from .cloze import (
+    ELIGIBLE_KINDS,
+    ClozeQuestion,
+    _menu_families,
+    cloze_questions,
+    dish_tokens,
+)
 from .corpus import load_menus
 from .questions import FORMAT_VERSION, _norm, record, write_question_set
 from .schema import Menu
 
 
-def menu_families(records: list[dict]) -> dict[str, str]:
-    """Each menu id -> a representative id of its family (connected components)."""
-    parent: dict[str, str] = {}
+def menu_families(menus: list[Menu]) -> dict[str, str]:
+    """Each eligible menu id -> a representative id of its family.
 
-    def find(x: str) -> str:
-        parent.setdefault(x, x)
+    Families are the connected components of the "version of" relation that
+    ``cloze_questions`` uses for ``related_menu_ids``, taken over every eligible
+    menu. Menus that produce no questions (too small, sampled out, capped) can still
+    link two others, so the components can't come from the questions alone.
+    """
+    eligible = [m for m in menus if m.kind in ELIGIBLE_KINDS]
+    related = _menu_families(
+        [{dish_tokens(i.name) for i in m.items()} for m in eligible]
+    )
+    parent = list(range(len(eligible)))
+
+    def find(x: int) -> int:
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
-    for rec in records:
-        root = find(rec["info"]["menu_id"])
-        for other in rec["related_menu_ids"]:
-            parent[find(other)] = root
-    return {m: find(m) for m in list(parent)}
+    for i, others in enumerate(related):
+        for j in others:
+            parent[find(j)] = find(i)
+    return {m.menu_id: eligible[find(i)].menu_id for i, m in enumerate(eligible)}
 
 
 def eval_menu_ids(
-    records: list[dict], eval_fraction: float, seed: int
+    menus: list[Menu], records: list[dict], eval_fraction: float, seed: int
 ) -> tuple[set[str], int]:
     """Menus of whole families, in seeded order, until they hold ``eval_fraction``
     of the questions; and the question count of the largest family."""
     if not 0 < eval_fraction < 1:
         raise ValueError("eval_fraction must be between 0 and 1")
-    family = menu_families(records)
+    family = menu_families(menus)
     members: dict[str, set[str]] = {}
     for menu_id, fam in family.items():
         members.setdefault(fam, set()).add(menu_id)
@@ -112,7 +126,10 @@ def build_split(corpus: str, out: str, eval_fraction: float, **params) -> dict:
     menus = load_menus(corpus)
     seed = params.get("seed", 0)
     held_ids, largest = eval_menu_ids(
-        [record(q) for q in cloze_questions(menus, **params)], eval_fraction, seed
+        menus,
+        [record(q) for q in cloze_questions(menus, **params)],
+        eval_fraction,
+        seed,
     )
     sides = {
         "train": [m for m in menus if m.menu_id not in held_ids],

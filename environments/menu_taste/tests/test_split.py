@@ -44,6 +44,16 @@ def _corpus(path):
         menus.append(_menu(f"m{i:02d}", mains, desserts))
         if i % 4 == 0:  # a revision: same mains, a new dessert
             menus.append(_menu(f"m{i:02d}-rev", mains, [f"Cake {next(codes)}"]))
+    # A revision chain through two menus too small to ask about: each link shares
+    # two of three dishes, but chain-a and chain-d share nothing, so only the small
+    # menus join them into one family.
+    a, b, c, d, e, f, g, h = (f"Roast {next(codes)}" for _ in range(8))
+    menus += [
+        _menu("chain-a", [a, b, c, d], [f"Cake {next(codes)}"]),
+        _menu("chain-b", [c, d], [e]),
+        _menu("chain-c", [d, e], [f]),
+        _menu("chain-d", [e, f, g, h], [f"Cake {next(codes)}"]),
+    ]
     for m in menus:
         Menu.model_validate(m)
     path.write_text("".join(json.dumps(m) + "\n" for m in menus))
@@ -56,7 +66,7 @@ def corpus(tmp_path_factory):
 
 
 def _family(menu_id):
-    return menu_id.removesuffix("-rev")
+    return "chain" if menu_id.startswith("chain-") else menu_id.removesuffix("-rev")
 
 
 @pytest.mark.parametrize("seed", range(8))

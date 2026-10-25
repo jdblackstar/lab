@@ -265,8 +265,9 @@ uv run menu-taste-questions build private/menus.jsonl -o private/questions-v2.js
 # -> private/questions-v2-train.jsonl, private/questions-v2-eval.jsonl (+ .meta.json)
 ```
 
-- Whole menu families (a menu and its versions, as in `related_menu_ids`, joined
-  transitively) go to one side, so no eval menu or version of it is trained on.
+- Whole menu families (a menu and its versions, the relation behind
+  `related_menu_ids`, joined transitively over every menu, including ones too small
+  to ask about) go to one side, so no eval menu or version of it is trained on.
 - Each side's questions, wrong options included, are built from that side's menus only.
   An eval question is dropped if any of its options appears in a training menu or
   option list. Every eval answer, and every wrong option next to it, is a dish the
