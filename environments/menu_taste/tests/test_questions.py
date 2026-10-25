@@ -1,6 +1,7 @@
 """Frozen question sets, rotation, batching, and reading answers. All data invented."""
 
 import json
+from pathlib import Path
 
 import pytest
 from menu_taste.cloze import LETTERS, cloze_questions
@@ -220,15 +221,20 @@ def test_questions_every_run_got_wrong_the_same_way_are_written_out(
             else r["answer_index"]
         ),
     )
+    # An earlier rollout of b got question 2 right, so not every answer agrees.
+    r2 = recs[2]
+    first = {"id": r2["id"], "rotation": 0}
+    first["completion"] = f"<answer>{LETTERS[r2['answer_index']]}</answer>"
+    Path(b).write_text(json.dumps(first) + "\n" + Path(b).read_text())
     sheet = tmp_path / "adjudicate.md"
     out = report(str(question_set), [a, b], agreed_wrong_out=str(sheet))
-    assert f"same wrong dish on 3 of the {len(recs)} questions" in out
+    assert f"same wrong dish on 2 of the {len(recs)} questions" in out
     text = sheet.read_text()
-    assert text.count("\nVerdict:\n") == 3
-    for r in recs[:3]:
+    assert text.count("\nVerdict:\n") == 2
+    for r in recs[:2]:
         assert (
             f"{LETTERS[r['answer_index']]}. {r['options'][r['answer_index']]} (key: served)"
             in text
         )
         assert f"{LETTERS[wrong(r)]}. {r['options'][wrong(r)]} (all runs chose)" in text
-    assert recs[3]["id"] not in text
+    assert recs[2]["id"] not in text and recs[3]["id"] not in text

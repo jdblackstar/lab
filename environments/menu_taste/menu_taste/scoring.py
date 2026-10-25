@@ -129,15 +129,22 @@ def _by_menu(graded, value) -> dict[str, list[float]]:
 
 
 def agreed_wrong(graded: dict[str, list[dict]]) -> dict[str, int]:
-    """Questions every run answered and every run got wrong with the same dish:
-    {id: the option (stored order) they all chose}."""
-    by_run = [{x["id"]: x for x in g} for g in graded.values()]
+    """Questions every run answered where every answer, across all of each run's
+    rollouts, chose the same wrong dish: {id: the option (stored order) chosen}."""
+    by_run = []
+    for g in graded.values():
+        picks = defaultdict(set)
+        for x in g:
+            picks[x["id"]].add((x["chosen"], x["correct"]))
+        by_run.append(picks)
     shared = set.intersection(*(set(r) for r in by_run)) if by_run else set()
     out = {}
     for qid in sorted(shared):
-        picks = {r[qid]["chosen"] for r in by_run}
-        if len(picks) == 1 and not by_run[0][qid]["correct"] and None not in picks:
-            out[qid] = picks.pop()
+        picks = set().union(*(r[qid] for r in by_run))
+        if len(picks) == 1:
+            ((chosen, correct),) = picks
+            if chosen is not None and not correct:
+                out[qid] = chosen
     return out
 
 
