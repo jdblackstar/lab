@@ -35,12 +35,15 @@ Without a question set or corpus the taskset loads 93 questions from a bundled s
 13 synthetic menus. It exists for smoke tests; scores on it mean nothing.
 
 Check the answer keys without a model (every gold answer must score 1, an empty reply
-0). Always pass `--runtime.type subprocess`: `vf-validate` checks the taskset, not the
-env, so it ignores the env's runtime and defaults to hosted Prime sandboxes.
+0) with `menu-taste-validate`, which runs `vf-validate menu-taste` on the local
+subprocess runtime and refuses any other. Plain `vf-validate` checks the taskset, not
+the env, so it ignores the env's runtime and defaults to hosted Prime sandboxes, two per
+question; verifiers 0.4 gives a taskset no way to change that. Like `vf-validate`, it
+exits 0 even when checks fail, so read `valid_rate` in the run's `summary.json`.
 
 ```bash
 cd environments/menu_taste
-uv run vf-validate menu-taste --runtime.type subprocess
+uv run menu-taste-validate
 uv run pytest
 ```
 
@@ -52,7 +55,7 @@ questions, and which menus leave the machine is decided once:
 ```bash
 cd environments/menu_taste
 uv run menu-taste-questions build private/menus.jsonl -o private/questions-v1.jsonl
-uv run vf-validate menu-taste --runtime.type subprocess \
+uv run menu-taste-validate \
   --taskset.questions-path private/questions-v1.jsonl --output-dir private/validate
 
 cd ../..
@@ -76,7 +79,8 @@ Every trace contains a whole menu, so on private questions:
 
 - never pass `--monitors.prime` (it uploads traces to the Prime platform), and keep
   `--output-dir` under `private/`;
-- always run `vf-validate` with `--runtime.type subprocess`.
+- validate with `menu-taste-validate`, not `vf-validate`, so nothing runs in a hosted
+  sandbox.
 
 `menu-taste-score` reports accuracy with 95% intervals resampled by menu (questions from
 one menu aren't independent), accuracy by course, which letters each run favors, and for
@@ -107,7 +111,7 @@ small (the default is 15): with 25 per batch, Haiku's accuracy fell from about 4
 40% on the last five questions.
 
 Taskset arguments (`--env.taskset.<name>` for evals, `--taskset.<name>` for
-`vf-validate`; use dashes, e.g. `--env.taskset.max-menus 50`):
+`menu-taste-validate`; use dashes, e.g. `--env.taskset.max-menus 50`):
 
 | Argument | Default | Meaning |
 | --- | --- | --- |

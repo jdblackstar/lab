@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 
 import pytest
 import verifiers.v1 as vf
@@ -154,6 +156,25 @@ def test_env_pins_a_plain_chat_and_refuses_code_running_harnesses():
                 taskset={"id": "menu-taste"}, agent={"harness": {"id": "bash"}}
             )
         )
+
+
+def test_validate_runs_locally_and_refuses_hosted_runtimes(tmp_path):
+    from menu_taste.validate import main
+
+    with pytest.raises(SystemExit, match="subprocess runtime only, not 'prime'"):
+        main(["--runtime.type", "prime", "-o", str(tmp_path)])
+    assert not any(tmp_path.iterdir())  # refused before anything ran
+
+    # A config file can't switch it to hosted sandboxes either.
+    toml = tmp_path / "hosted.toml"
+    toml.write_text('[runtime]\ntype = "prime"\n')
+    args = ["@", str(toml), "-n", "2", "-o", str(tmp_path), "--run.dir", "v"]
+    code = f"from menu_taste.validate import main; main({[*args, '--rich', 'false']!r})"
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True)
+    run = tmp_path / "v"
+    resolved = json.loads((run / "configs" / "resolved" / "validate.json").read_text())
+    assert resolved["runtime"]["type"] == "subprocess"
+    assert json.loads((run / "summary.json").read_text())["valid_rate"] == 1.0
 
 
 def test_missing_corpus_is_a_clear_error(tmp_path):
