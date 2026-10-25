@@ -116,7 +116,7 @@ Taskset arguments (`--env.taskset.<name>` for evals, `--taskset.<name>` for
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `questions_path` | `$MENU_TASTE_QUESTIONS` | Frozen question set; when set, the corpus arguments below are ignored |
-| `rotation` | `0` | Shift each question's options by this many places (frozen sets only) |
+| `rotation` | `0` | Shift each question's options by this many places, whether the questions come from a frozen set or a corpus |
 | `menus_path` | `$MENU_TASTE_MENUS`, then the sample | JSONL corpus from `menu-taste-ingest` |
 | `num_options` | `4` | Choices per question, including the right one |
 | `courses` | food courses | Which courses to hide, e.g. `["main", "dessert"]` |

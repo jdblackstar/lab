@@ -145,6 +145,14 @@ def test_every_task_validates_and_the_key_names_the_hidden_dish():
         assert f"{task.data.answer}. {task.data.target}" in task.data.prompt
 
 
+def test_rotation_applies_to_questions_built_from_a_corpus():
+    plain, rotated = _tasks(), _tasks(rotation=1)
+    assert [t.data.target for t in plain] == [t.data.target for t in rotated]
+    for p, r in zip(plain, rotated):
+        assert r.data.options == p.data.options[1:] + p.data.options[:1]
+        assert asyncio.run(r.validate(None))
+
+
 def test_env_pins_a_plain_chat_and_refuses_code_running_harnesses():
     config = MenuTasteEnvConfig(taskset={"id": "menu-taste"})
     assert config.agent.harness.id == "null"
