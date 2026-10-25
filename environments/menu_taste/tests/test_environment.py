@@ -2,11 +2,13 @@
 
 import asyncio
 import json
+import shutil
+import sys
 
 import pytest
 import verifiers.v1 as vf
 from aiohttp import web
-from menu_taste import MenuTasteEnv, MenuTasteTaskset
+from menu_taste import MenuTasteEnv, MenuTasteTaskset, results
 from menu_taste.cloze import SYSTEM_PROMPT
 from menu_taste.questions import build, load_question_set, to_row
 from menu_taste.scoring import grade, load_run
@@ -19,7 +21,8 @@ def _tasks(**config):
 
 def _run(tmp_path, reply, taskset=None, limit=4):
     """Run the eval CLI's runner on the env's defaults; ``reply(prompt)`` scripts the
-    model. Returns the traces and every request the model received."""
+    model (``None`` fails the request). Returns the traces and every request the
+    model received."""
     from verifiers.v1.cli.eval.runner import run_eval
     from verifiers.v1.configs.cli.eval import EvalConfig
     from verifiers.v1.dialects.chat import ChatDialect
@@ -31,6 +34,9 @@ def _run(tmp_path, reply, taskset=None, limit=4):
         body = await request.json()
         requests.append(body)
         user = next(m["content"] for m in body["messages"] if m["role"] == "user")
+        content = reply(user)
+        if content is None:
+            return web.json_response({"error": {"message": "refused"}}, status=400)
         raw = {
             "id": "scripted",
             "object": "chat.completion",
@@ -40,7 +46,7 @@ def _run(tmp_path, reply, taskset=None, limit=4):
                 {
                     "index": 0,
                     "finish_reason": "stop",
-                    "message": {"role": "assistant", "content": reply(user)},
+                    "message": {"role": "assistant", "content": content},
                 }
             ],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
@@ -172,3 +178,65 @@ def test_trace_data_round_trips(tmp_path):
         vf.Trace.model_validate(json.loads(line)["traces"][0]).last_reply
         == "<answer>A</answer>"
     )
+
+
+FAKE_RUNNER = """#!{python}
+# Stands in for scripts/prime_rl_eval.sh: lays out a recorded episode file the way
+# prime-rl's eval does (monitors/file/traces/stream/*.jsonl.zst) and exits 0.
+import subprocess, sys
+from pathlib import Path
+args = sys.argv[1:]
+model = args[args.index("-m") + 1]
+run = Path(args[args.index("--output-dir") + 1]) / args[args.index("--run.name") + 1]
+stream = run / "monitors/file/traces/stream"
+stream.mkdir(parents=True, exist_ok=True)
+src = Path({episodes!r}) / f"{{model}}.jsonl"
+subprocess.run(["zstd", "-qf", str(src), "-o", str(stream / "00000.jsonl.zst")], check=True)
+with open(Path({episodes!r}) / "calls.txt", "a") as f:
+    f.write(model + "\\n")
+"""
+
+
+@pytest.mark.skipif(not shutil.which("zstd"), reason="needs the zstd CLI")
+def test_results_command_scores_each_model_and_fails_on_errored_rollouts(
+    tmp_path, monkeypatch
+):
+    questions = tmp_path / "questions.jsonl"
+    build("menu_taste/data/sample_menus.jsonl", str(questions))
+    records = load_question_set(questions)
+    keys = {to_row(r)["question"]: to_row(r)["answer"] for r in records}
+    episodes = tmp_path / "episodes"
+    episodes.mkdir()
+    refused = set()
+
+    def flaky(prompt):  # right, but the provider refuses the first question it sees
+        if not refused:
+            refused.add(prompt)
+        return None if prompt in refused else f"<answer>{keys[prompt]}</answer>"
+
+    for model, reply in [
+        ("good", lambda p: f"<answer>{keys[p]}</answer>"),
+        ("flaky", flaky),
+    ]:
+        _run(tmp_path / model, reply, taskset={"questions_path": str(questions)})
+        shutil.copy(
+            tmp_path / model / "run" / "traces.jsonl", episodes / f"{model}.jsonl"
+        )
+    runner = tmp_path / "prime_rl_eval.sh"
+    runner.write_text(FAKE_RUNNER.format(python=sys.executable, episodes=str(episodes)))
+    runner.chmod(0o755)
+    monkeypatch.setattr(results, "RUNNER", runner)
+
+    out = tmp_path / "out"
+    argv = [str(questions), "-m", "good", "-m", "flaky", "-r", "1", "-n", "4"]
+    assert results.main([*argv, "--out", str(out)]) == 1  # the eval itself exited 0
+    text = (out / "results.md").read_text()
+    n = len(records)
+    assert f"| good | 4 of {n} | 100.0% | 100.0%–100.0% | 0 | 0 |" in text
+    assert f"| flaky | 3 of {n} | 100.0% | 100.0%–100.0% | 0 | 1 |" in text
+    assert "| baseline: most words shared with the menu | all |" in text
+    assert "| answer shares no words with the menu |" in text
+
+    # A complete run is reused; only the run with an error is evaluated again.
+    assert results.main([*argv, "--out", str(out)]) == 1
+    assert (episodes / "calls.txt").read_text().split() == ["good", "flaky", "flaky"]

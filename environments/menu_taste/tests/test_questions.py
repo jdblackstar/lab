@@ -14,7 +14,7 @@ from menu_taste.questions import (
     to_row,
     write_batches,
 )
-from menu_taste.scoring import extract_letter, grade, report
+from menu_taste.scoring import CUTS, extract_letter, grade, report, word_cuts
 
 
 @pytest.mark.parametrize(
@@ -132,3 +132,33 @@ def test_labels_must_be_unique_and_one_per_run(question_set, tmp_path, labels):
     run.write_text("")
     with pytest.raises(ValueError, match="one unique label per run"):
         report(str(question_set), [str(run), str(run)], labels)
+
+
+MENU = """Service: plated
+Season: summer
+
+Salad
+- Grilled peach salad — burrata, basil
+- [MISSING DISH]
+
+Dessert
+- Lemon tart"""
+
+
+@pytest.mark.parametrize(
+    "options, answer_index, cuts",
+    [
+        # Only the answer shares words ("peach"); "Plated summer dessert" shares only
+        # the service, season, and course labels, which aren't dishes.
+        (["Peach cobbler", "Plated summer dessert", "Fig cake", "Rye loaf"], 0, [0]),
+        # Another option shares more words than the answer.
+        (["Peach cobbler", "Basil burrata toast", "Fig cake", "Rye loaf"], 0, [1]),
+        (["Peach cobbler", "Lemon cake", "Fig cake", "Rye loaf"], 0, [2]),
+        # Nothing shares a word: a four-way tie at zero.
+        (["Fig cake", "Plum jam", "Rye loaf", "Oat bar"], 0, [2, 3]),
+        (["Fig cake", "Lemon cake", "Rye loaf", "Oat bar"], 2, [1, 3]),
+    ],
+)
+def test_word_cuts_read_dish_lines_only(options, answer_index, cuts):
+    rec = {"menu_text": MENU, "options": options, "answer_index": answer_index}
+    assert word_cuts(rec) == [CUTS[i] for i in cuts]
