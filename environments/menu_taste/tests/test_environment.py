@@ -240,3 +240,10 @@ def test_results_command_scores_each_model_and_fails_on_errored_rollouts(
     # A complete run is reused; only the run with an error is evaluated again.
     assert results.main([*argv, "--out", str(out)]) == 1
     assert (episodes / "calls.txt").read_text().split() == ["good", "flaky", "flaky"]
+
+    # Same rollout count (4), different settings: the cached run isn't reused, and
+    # 4 questions answered once don't pass for 2 questions answered twice.
+    argv = [str(questions), "-m", "good", "-r", "2", "-n", "2", "--out", str(out)]
+    assert results.main(argv) == 1
+    assert (episodes / "calls.txt").read_text().split()[-1] == "good"
+    assert "| good | 4 of" in (out / "results.md").read_text()

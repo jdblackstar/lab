@@ -9,9 +9,9 @@ no-taste baselines, accuracy by course and by whether shared words give the answ
 position bias, and how often models chose the same dish. The section is written to
 ``<out>/results.md``.
 
-Runs land in ``<out>/evals/<model>``. A run that already answered every question
-without errors is reused, so re-running the command after a failure only redoes the
-models that failed. Arguments after ``--`` go to the eval unchanged (for example
+Runs land in ``<out>/evals/<model>``. A run made with the same question set and
+settings that answered every question ``-r`` times without errors is reused, so
+re-running the command after a failure only redoes the models that failed. Arguments after ``--`` go to the eval unchanged (for example
 ``-- --client.base-url http://localhost:8000/v1``). The command exits 1 when any run
 failed, errored, or is incomplete; prime-rl's eval exits 0 even then.
 """
@@ -20,11 +20,14 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
+import json
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 from .questions import load_meta, load_question_set
@@ -50,11 +53,15 @@ def decompress(run_dir: Path, out: Path) -> bool:
     return True
 
 
-def problems(rows: list[dict], expected: int) -> list[str]:
+def problems(rows: list[dict], asked: int, repeats: int) -> list[str]:
     errored = sum(r["error"] for r in rows)
     out = [f"{errored} rollout(s) errored"] if errored else []
-    if len(rows) != expected:
-        out.append(f"{len(rows)} of {expected} rollouts")
+    counts = Counter(r["id"] for r in rows)
+    if len(counts) != asked or set(counts.values()) - {repeats}:
+        out.append(
+            f"{len(rows)} rollouts over {len(counts)} questions, "
+            f"expected {repeats} on each of {asked}"
+        )
     return out
 
 
@@ -153,10 +160,17 @@ def main(argv: list[str] | None = None) -> int:
 
     questions = Path(args.questions).resolve()
     total = len(load_question_set(questions))
-    expected = min(args.limit or total, total) * args.repeats
+    asked = min(args.limit or total, total)
     out = (
         Path(args.out) if args.out else questions.parent / "results" / questions.stem
     ).resolve()
+    # What a cached run must match to be reused (concurrency doesn't change results).
+    settings = {
+        "questions_sha256": hashlib.sha256(questions.read_bytes()).hexdigest(),
+        "repeats": args.repeats,
+        "limit": args.limit,
+        "eval_args": eval_args,
+    }
     eval_args = (
         ["-r", str(args.repeats), "-c", str(args.concurrency)]
         + (["-n", str(args.limit)] if args.limit else [])
@@ -167,14 +181,23 @@ def main(argv: list[str] | None = None) -> int:
     for model in args.model:
         run_dir = out / "evals" / slug(model)
         run_file = out / "runs" / f"{slug(model)}.jsonl"
-        if decompress(run_dir, run_file) and not problems(load_run(run_file), expected):
+        stamp = run_file.with_suffix(".settings.json")
+        if (
+            stamp.exists()
+            and json.loads(stamp.read_text()) == settings
+            and decompress(run_dir, run_file)
+            and not problems(load_run(run_file), asked, args.repeats)
+        ):
             print(f"==> {model}: reusing {run_dir}", file=sys.stderr)
         else:
+            stamp.unlink(missing_ok=True)
             code = run_model(model, questions, out / "evals", eval_args).returncode
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(json.dumps(settings, indent=2) + "\n")
             if not decompress(run_dir, run_file):
                 failed[model] = [f"eval exited {code} without traces"]
                 continue
-            found = problems(load_run(run_file), expected)
+            found = problems(load_run(run_file), asked, args.repeats)
             if code:
                 found.insert(0, f"eval exited {code}")
             if found:
