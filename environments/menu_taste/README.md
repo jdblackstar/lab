@@ -11,120 +11,59 @@ season, and service style.
 - **Reward:** `correct_choice` (1 if the letter in `<answer>` tags is right); metric
   `answered` (a valid letter was given)
 
-## Quickstart
-
 Built on verifiers 0.4 (`verifiers.v1`): the package exports `MenuTasteTaskset` and
 `MenuTasteEnv`. The env pins a plain chat: the `null` harness with no tools, the local
 subprocess runtime, and one reply per question (`max_turns` 1). It refuses harnesses
 that execute code, since a shell on the evaluator host could read the answer key.
 
-Evals run through prime-rl's `uv run eval` via
-[`scripts/prime_rl_eval.sh`](../../scripts/prime_rl_eval.sh). From the repo root:
+## Results
 
-```bash
-scripts/prime_rl_eval.sh environments/menu_taste menu-taste \
-  -m deepseek/deepseek-v4-flash -n 3 -r 1 -c 3 \
-  --output-dir outputs/menu-taste --run.name smoke
-```
+No results are published yet. Scores on the bundled synthetic sample mean nothing; it
+exists for smoke tests.
 
-The eval exits 0 even when rollouts error, so check
-`outputs/menu-taste/smoke/monitors/file/traces/stream.index.jsonl` for `"ok": true` and
-`"num_errors": 0` on every line.
+## How questions are built
 
-Without a question set or corpus the taskset loads 93 questions from a bundled sample of
-13 synthetic menus. It exists for smoke tests; scores on it mean nothing.
-
-Check the answer keys without a model (every gold answer must score 1, an empty reply
-0). Always pass `--runtime.type subprocess`: `vf-validate` checks the taskset, not the
-env, so it ignores the env's runtime and defaults to hosted Prime sandboxes.
-
-```bash
-cd environments/menu_taste
-uv run vf-validate menu-taste --runtime.type subprocess
-uv run pytest
-```
-
-## Running a real eval
-
-Real evals read a **frozen question set**, so every model and every run gets the same
-questions, and which menus leave the machine is decided once:
+Evals read a **frozen question set**, so every model and every run gets the same
+questions, and which menus leave the machine is decided once. `menu-taste-questions
+build` is the only way to make one:
 
 ```bash
 cd environments/menu_taste
 uv run menu-taste-questions build private/menus.jsonl -o private/questions-v1.jsonl
-uv run vf-validate menu-taste --runtime.type subprocess \
-  --taskset.questions-path private/questions-v1.jsonl --output-dir private/validate
-
-cd ../..
-scripts/prime_rl_eval.sh environments/menu_taste menu-taste -m <model> -r 1 -c 8 \
-  --env.taskset.questions-path "$PWD/environments/menu_taste/private/questions-v1.jsonl" \
-  --output-dir environments/menu_taste/private/evals --run.name <run>
-zstd -dc environments/menu_taste/private/evals/<run>/monitors/file/traces/stream/*.jsonl.zst \
-  > environments/menu_taste/private/runs/<run>.jsonl
-cd environments/menu_taste
-uv run menu-taste-score private/questions-v1.jsonl private/runs/<run>.jsonl
 ```
 
-Use `-n N` to ask the first N questions and `-s` (`--select.seed`) to shuffle them.
-`menu-taste-score` also reads the `traces.jsonl` a verifiers `run_eval` writes.
+It also writes `questions-v1.meta.json`: the corpus hash, the build settings, and the
+no-taste baselines for exactly these questions, which the score report shows next to
+each model. The build is deterministic.
 
-`build` also writes `questions-v1.meta.json`: the corpus hash, the build settings, and
-the no-taste baselines for exactly these questions, which the score report shows next to
-each model.
-
-Every trace contains a whole menu, so on private questions:
-
-- never pass `--monitors.prime` (it uploads traces to the Prime platform), and keep
-  `--output-dir` under `private/`;
-- always run `vf-validate` with `--runtime.type subprocess`.
-
-`menu-taste-score` reports accuracy with 95% intervals resampled by menu (questions from
-one menu aren't independent), accuracy by course, which letters each run favors, and for
-two or more runs on the same questions, how often they chose the same dish and the
-accuracy difference with an interval. Set `--env.taskset.rotation` (1–3) to shift
-every question's options; comparing rotations shows position bias.
-
-### Answering with Claude Code subagents
-
-Batches let an agent answer several questions at once, for example a Claude Code
-subagent on a small model:
-
-```bash
-uv run menu-taste-questions batches private/questions-v1.jsonl --out private/runs/haiku-r0
-# each agent reads batch-NNN.md and writes answers-NNN.md (### q-id, reasoning, <answer>)
-uv run menu-taste-questions collect private/runs/haiku-r0 -o private/runs/haiku-r0.jsonl
-uv run menu-taste-score private/questions-v1.jsonl private/runs/haiku-r0.jsonl
-```
-
-Two questions from the same menu (or versions of it) never share a batch, since one
-shows the dish the other hides, and no question shares a batch with one whose text
-contains its hidden dish. Agents that can read files could read the answer key, so
-make the question set and corpus unreadable (`chmod 000`) while they run, and check
-afterward that each agent only read its batch and wrote its answers. Batched answers
-come from a different setup than one-question API calls (a long context, a coding-agent
-system prompt), so don't compare those scores with API eval scores. Keep batches
-small (the default is 15): with 25 per batch, Haiku's accuracy fell from about 49% to
-40% on the last five questions.
-
-Taskset arguments (`--env.taskset.<name>` for evals, `--taskset.<name>` for
-`vf-validate`; use dashes, e.g. `--env.taskset.max-menus 50`):
-
-| Argument | Default | Meaning |
+| Option | Default | Meaning |
 | --- | --- | --- |
-| `questions_path` | `$MENU_TASTE_QUESTIONS` | Frozen question set; when set, the corpus arguments below are ignored |
-| `rotation` | `0` | Shift each question's options by this many places (frozen sets only) |
-| `menus_path` | `$MENU_TASTE_MENUS`, then the sample | JSONL corpus from `menu-taste-ingest` |
-| `num_options` | `4` | Choices per question, including the right one |
-| `courses` | food courses | Which courses to hide, e.g. `["main", "dessert"]` |
-| `include_drinks` | `false` | Also hide cocktails, wine, and other drinks |
-| `max_per_menu` | none | Cap questions per menu |
-| `min_menu_items` | `4` | Don't ask about menus with fewer dishes (they still supply wrong options) |
-| `max_menus` | all | Ask about a seeded sample of menus; bounds how much of the corpus one run shows a provider |
-| `max_per_dish` | `2` | How many questions one dish can answer; house staples would otherwise dominate (`null` for no cap) |
-| `match_surface` | `true` | Wrong options look like the answer: description or not, dietary tags or not, similar popularity |
-| `seed` | `0` | Option order and distractor choice when building from a corpus; shuffle the run with `-s` |
+| `--num-options` | `4` | Choices per question, including the right one |
+| `--courses` | food courses | Which courses to hide, e.g. `--courses main dessert` |
+| `--include-drinks` | off | Also hide cocktails, wine, and other drinks |
+| `--max-per-menu` | none | Cap questions per menu |
+| `--min-menu-items` | `4` | Don't ask about menus with fewer dishes (they still supply wrong options) |
+| `--max-menus` | all | Ask about a seeded sample of menus; bounds how much of the corpus one run shows a provider |
+| `--max-per-dish` | `2` | How many questions one dish can answer; house staples would otherwise dominate (`0` for no cap) |
+| `--no-match-surface` | matching on | Stop matching wrong options to the answer's surface (description, dietary tags, popularity) |
+| `--seed` | `0` | Option order and distractor choice |
 
-## Building a corpus from raw menus
+The rules:
+
+- Only `event` and `sample` menus become questions or supply wrong options. Packages and
+  catalogs ("choose three of the following") list options rather than a composed meal.
+- Wrong options are dishes of the same course. They never come from the target menu,
+  from a near-identical version of it (half its dishes shared), or from dishes that
+  resemble anything already on the menu.
+- Wrong options match the answer's surface: whether it has a description and dietary
+  tags, and how many menus serve it. A single dish answers at most two questions.
+- Sections in `host_choice` mode, dietary alternates, kids' meals, and upgrades are never
+  hidden.
+- Menus are rendered the same way no matter the source format, and section headings are
+  replaced with standard course labels. A verbatim heading like "Cheese Board" would give
+  the answer away without any judgment.
+
+### Building a corpus from raw menus
 
 `menu-taste-ingest` turns a folder of menus in any format into one JSONL corpus. It
 detects files by content, not extension, and handles PDFs (designed or scanned), phone
@@ -177,19 +116,7 @@ uv run menu-taste-ingest run ~/menus -o private/menus.jsonl \
   --model anthropic/claude-opus-5.5 --no-fallbacks
 ```
 
-### Privacy
-
-- Prices, contact details, client, host, venue and company names, and exact dates are
-  left out by the extractor and scrubbed again afterward. Possible names and events
-  ("The Goldberg Wedding", "in honor of …") are flagged for review, not deleted.
-- `environments/menu_taste/private/` is git-ignored. Keep real corpora there.
-- Eval traces and `vf-validate` output contain whole menus; keep them in `private/` and
-  never upload them (`--monitors.prime`).
-- Both ingestion and evaluation send menu text to model providers. Check that whatever
-  agreement covers the menus allows that before running them. Don't push an environment
-  that bundles real menus to the Hub as public.
-
-## The menu format
+### The menu format
 
 Defined in `menu_taste/schema.py`. A menu is an ordered list of sections. Each section
 records its role in the meal (`course`) and how it reaches guests (`service`), so one
@@ -214,23 +141,11 @@ Menu
 
 There are no fields for price or client.
 
-## How questions are built
+## What it measures, and what it doesn't
 
-- Only `event` and `sample` menus become questions or supply wrong options. Packages and
-  catalogs ("choose three of the following") list options rather than a composed meal.
-- Wrong options are dishes of the same course. They never come from the target menu,
-  from a near-identical version of it (half its dishes shared), or from dishes that
-  resemble anything already on the menu.
-- Sections in `host_choice` mode, dietary alternates, kids' meals, and upgrades are never
-  hidden.
-- Menus are rendered the same way no matter the source format, and section headings are
-  replaced with standard course labels. A verbatim heading like "Cheese Board" would give
-  the answer away without any judgment.
-
-- Wrong options match the answer's surface: whether it has a description and dietary
-  tags, and how many menus serve it. A single dish answers at most two questions.
-
-## Checking for shortcuts
+It measures whether a model can pick, among same-course dishes in the same caterer's
+voice, the one that fits a given menu. It does not measure writing or composing menus,
+and a score only means something next to the no-taste baselines for the same questions.
 
 `menu-taste-baselines` answers the questions with cues that need no taste (words shared
 with the menu, description length, writing style, how common a dish is) and with a
@@ -246,6 +161,9 @@ The best of these should stay near chance. Sharing words with the menu always he
 little, because real menus repeat a theme (a summer menu uses watermelon twice); that
 is the bar a model has to clear.
 
+Option position can also carry a score: compare runs with different `rotation` values
+(below) to see how much.
+
 ## Known gaps
 
 - No human ceiling yet. On the 300-question subset, all three runs chose the same wrong
@@ -256,3 +174,97 @@ is the bar a model has to clear.
   where the board is the answer); fix it in the importer before building v2.
 - Only one task so far. Natural next steps: spot the intruder dish, and real vs. generic
   menus for the same brief.
+
+## Reproduction
+
+Evals run through prime-rl's `uv run eval` via
+[`scripts/prime_rl_eval.sh`](../../scripts/prime_rl_eval.sh). Without a question set the
+taskset builds 93 questions from a bundled sample of 13 synthetic menus, for smoke
+tests. From the repo root:
+
+```bash
+scripts/prime_rl_eval.sh environments/menu_taste menu-taste \
+  -m deepseek/deepseek-v4-flash -n 3 -r 1 -c 3 \
+  --output-dir outputs/menu-taste --run.name smoke
+```
+
+The eval exits 0 even when rollouts error, so check
+`outputs/menu-taste/smoke/monitors/file/traces/stream.index.jsonl` for `"ok": true` and
+`"num_errors": 0` on every line.
+
+Check the answer keys without a model (every gold answer must score 1, an empty reply
+0). Always pass `--runtime.type subprocess`: `vf-validate` checks the taskset, not the
+env, so it ignores the env's runtime and defaults to hosted Prime sandboxes.
+
+```bash
+cd environments/menu_taste
+uv run vf-validate menu-taste --runtime.type subprocess
+uv run pytest
+```
+
+A real eval on a frozen question set (see [How questions are built](#how-questions-are-built)):
+
+```bash
+cd environments/menu_taste
+uv run vf-validate menu-taste --runtime.type subprocess \
+  --taskset.questions-path private/questions-v1.jsonl --output-dir private/validate
+
+cd ../..
+scripts/prime_rl_eval.sh environments/menu_taste menu-taste -m <model> -r 1 -c 8 \
+  --env.taskset.questions-path "$PWD/environments/menu_taste/private/questions-v1.jsonl" \
+  --output-dir environments/menu_taste/private/evals --run.name <run>
+zstd -dc environments/menu_taste/private/evals/<run>/monitors/file/traces/stream/*.jsonl.zst \
+  > environments/menu_taste/private/runs/<run>.jsonl
+cd environments/menu_taste
+uv run menu-taste-score private/questions-v1.jsonl private/runs/<run>.jsonl
+```
+
+Use `-n N` to ask the first N questions and `-s` (`--select.seed`) to shuffle them.
+`menu-taste-score` also reads the `traces.jsonl` a verifiers `run_eval` writes.
+
+The taskset takes two arguments (`--env.taskset.<name>` for evals, `--taskset.<name>`
+for `vf-validate`; use dashes):
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `questions_path` | `$MENU_TASTE_QUESTIONS`, then the sample | Frozen question set from `menu-taste-questions build` |
+| `rotation` | `0` | Shift each question's options by this many places, to measure position bias |
+
+`menu-taste-score` reports accuracy with 95% intervals resampled by menu (questions from
+one menu aren't independent), accuracy by course, which letters each run favors, and for
+two or more runs on the same questions, how often they chose the same dish and the
+accuracy difference with an interval.
+
+## Privacy
+
+Every trace contains a whole menu.
+
+- Prices, contact details, client, host, venue and company names, and exact dates are
+  left out by the extractor and scrubbed again afterward. Possible names and events
+  ("The Goldberg Wedding", "in honor of …") are flagged for review, not deleted.
+- `environments/menu_taste/private/` is git-ignored. Keep real corpora, question sets,
+  and scrub files there.
+- Eval traces and `vf-validate` output contain whole menus: keep `--output-dir` under
+  `private/`, never pass `--monitors.prime` (it uploads traces to the Prime platform),
+  and always run `vf-validate` with `--runtime.type subprocess`.
+- Both ingestion and evaluation send menu text to model providers. Check that whatever
+  agreement covers the menus allows that before running them. Don't push an environment
+  that bundles real menus to the Hub as public.
+
+## Appendix: answering in batches with coding agents
+
+Not part of the eval. `menu-taste-batches` splits a frozen question set into files that
+an agent answers several at a time, for example Claude Code subagents on a small model:
+
+```bash
+uv run menu-taste-batches write private/questions-v1.jsonl --out private/runs/haiku-r0
+# each agent reads batch-NNN.md and writes answers-NNN.md (### q-id, reasoning, <answer>)
+uv run menu-taste-batches collect private/runs/haiku-r0 -o private/runs/haiku-r0.jsonl
+uv run menu-taste-score private/questions-v1.jsonl private/runs/haiku-r0.jsonl
+```
+
+Questions that could reveal each other never share a batch. Agents that can read files
+could read the answer key, so keep the question set and corpus unreadable to them while
+they run. Batched scores come from a different setup than one-question API calls, so
+don't compare the two. Keep batches small (the default is 15): with 25 per batch,
+Haiku's accuracy fell from about 49% to 40% on the last five questions.
