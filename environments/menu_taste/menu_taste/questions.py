@@ -7,6 +7,7 @@ which menus leave the machine, are known in advance.
 
     menu-taste-questions build private/menus.jsonl -o private/questions-v1.jsonl
     menu-taste-questions batches private/questions-v1.jsonl --out private/runs/haiku-r0
+    menu-taste-questions human private/questions-v1.jsonl -n 50 --out private/human/chef-a
 
 Each record holds the rendered menu and options separately, so the options can be
 rotated (``rotation``) to measure position bias without changing the question.
@@ -60,7 +61,9 @@ def to_row(rec: dict, rotation: int = 0) -> dict:
     """The (question, answer, info) row the environment serves."""
     options, answer = rotate(rec, rotation)
     return {
-        "question": format_question(rec["menu_text"], options),
+        "question": format_question(
+            rec["menu_text"], options, rec["info"].get("caterer")
+        ),
         "answer": LETTERS[answer],
         "info": {**rec["info"], "id": rec["id"], "rotation": rotation},
     }
@@ -184,6 +187,55 @@ def write_batches(
     return paths
 
 
+def sample_questions(records: list[dict], n: int, seed: int = 0) -> list[dict]:
+    """A seeded sample of up to ``n`` questions, no two of which reveal each other.
+
+    The same rule as ``make_batches`` within a batch: its first batch is a seeded
+    first-fit pass over all the questions. Fewer than ``n`` come back only when the
+    set has too few compatible questions.
+    """
+    return make_batches(records, n, seed)[0] if records else []
+
+
+HUMAN_HEADER = """# Menu quiz: {n} questions
+
+Each question below is a catered menu with one dish removed. Pick the option you think
+was removed and type its letter between the answer tags under the question, like
+<answer>B</answer>. A line of reasoning above the tags is welcome but not needed.
+
+Answer every question, guessing when unsure. Work alone, and don't look the menus or
+dishes up. Each question is a different menu; don't use one to answer another.
+"""
+
+
+def write_sheet(
+    questions: str, out: str, n: int, rotation: int = 0, seed: int = 0
+) -> tuple[Path, int]:
+    """Write ``sheet.md``: a seeded sample of ``n`` questions for a person to answer
+    in place, without the key. ``collect`` reads the answers back from it."""
+    records = sample_questions(load_question_set(questions), n, seed)
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    sheet = out_dir / "sheet.md"
+    sheet.write_text(
+        HUMAN_HEADER.format(n=len(records))
+        + "".join(
+            f"\n---\n\n### {rec['id']}\n\n{to_row(rec, rotation)['question']}\n\n"
+            "Your answer: <answer></answer>\n"
+            for rec in records
+        )
+    )
+    # One "batch" whose answer file is the sheet itself (collect maps batch-NNN.md
+    # to answers-NNN.md and leaves other names alone).
+    manifest = {
+        "questions": str(questions),
+        "rotation": rotation,
+        "batches": {sheet.name: [r["id"] for r in records]},
+    }
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return sheet, len(records)
+
+
 _HEADING = re.compile(r"^#{2,4}\s*(q-[0-9a-f]{10})\b.*$", re.MULTILINE)
 
 
@@ -245,7 +297,19 @@ def main(argv: list[str] | None = None) -> int:
         "--limit", type=int, default=None, help="Seeded sample of N questions"
     )
     bt.add_argument("--seed", type=int, default=0)
-    c = sub.add_parser("collect", help="Gather answers-NNN.md files into a run file")
+    h = sub.add_parser(
+        "human",
+        help="Write a sampled quiz sheet for a person to answer, without the key",
+    )
+    h.add_argument("questions")
+    h.add_argument("--out", required=True)
+    h.add_argument("-n", type=int, default=50, help="How many questions")
+    h.add_argument("--rotation", type=int, default=0)
+    h.add_argument("--seed", type=int, default=0)
+    c = sub.add_parser(
+        "collect",
+        help="Gather answers-NNN.md files (or a filled sheet) into a run file",
+    )
     c.add_argument("run_dir")
     c.add_argument("-o", "--out", required=True)
     args = parser.parse_args(argv)
@@ -266,6 +330,17 @@ def main(argv: list[str] | None = None) -> int:
             args.questions, args.out, args.size, args.rotation, args.limit, args.seed
         )
         print(f"wrote {len(paths)} batches to {args.out}")
+    elif args.cmd == "human":
+        sheet, n = write_sheet(
+            args.questions, args.out, args.n, args.rotation, args.seed
+        )
+        print(f"wrote {n} questions to {sheet}")
+        if n < args.n:
+            print(
+                f"only {n} of the questions can share one sheet without one "
+                "revealing another; answer more on a sheet with another --seed, "
+                "given to a different person"
+            )
     else:
         print(json.dumps(collect(args.run_dir, args.out)))
     return 0

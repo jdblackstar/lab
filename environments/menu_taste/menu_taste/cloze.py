@@ -1,7 +1,9 @@
 """Missing-course task: hide one dish, offer it among dishes from other menus.
 
-Distractors come from the same corpus and the same course (a missing dessert competes
-with other desserts), so every option reads like it was written by the same kitchen.
+Distractors come from the same caterer and the same course (a missing dessert competes
+with that caterer's other desserts), so every option reads like it was written by the
+same kitchen. A corpus may pool several caterers (``Menu.caterer``); options never
+cross between them.
 What separates the real dish from the rest is how well it fits the menu around it.
 """
 
@@ -125,7 +127,7 @@ SYSTEM_PROMPT = (
 
 INSTRUCTIONS = """One dish has been removed from this catered menu and replaced with {marker}. \
 The options below are the removed dish plus dishes of the same course taken from other menus \
-by the same caterer. Pick the dish that was removed: the one that fits this menu's balance, \
+by {source}. Pick the dish that was removed: the one that fits this menu's balance, \
 flavors, season, and service best.
 
 <menu>
@@ -165,7 +167,7 @@ class ClozeQuestion:
     def to_row(self) -> dict:
         options = [render_item(item) for item in self.options]
         return {
-            "question": format_question(self.menu_text(), options),
+            "question": format_question(self.menu_text(), options, self.menu.caterer),
             "answer": LETTERS[self.answer_index],
             "info": self.info(),
         }
@@ -174,6 +176,7 @@ class ClozeQuestion:
         menu = self.menu
         return {
             "menu_id": menu.menu_id,
+            "caterer": menu.caterer,
             "course": self.course.value,
             "service": menu.service.value,
             "section_service": (
@@ -187,9 +190,15 @@ class ClozeQuestion:
         }
 
 
-def format_question(menu_text: str, options: list[str]) -> str:
+def format_question(
+    menu_text: str, options: list[str], caterer: str | None = None
+) -> str:
+    """``caterer`` is the menu's label (``Menu.caterer``). Unlabeled menus count as
+    one caterer and keep the original wording, so frozen v1 prompts don't change; in a
+    labeled corpus, every option comes from this menu's own caterer."""
     return INSTRUCTIONS.format(
         marker="[MISSING DISH]",
+        source="the same caterer" if caterer is None else "this menu's caterer",
         menu=menu_text,
         options="\n".join(f"{LETTERS[i]}. {o}" for i, o in enumerate(options)),
     )
@@ -295,6 +304,9 @@ def cloze_questions(
             s
             for s in by_course[target.course]
             if s.menu_idx not in families[target.menu_idx]
+            # A corpus can pool several caterers; the prompt says the options come
+            # from the same caterer, so they must.
+            and eligible[s.menu_idx].caterer == menu.caterer
             and not any(same_dish(s.tokens, t) for t in menu_tokens[target.menu_idx])
         ]
         rng.shuffle(pool)
