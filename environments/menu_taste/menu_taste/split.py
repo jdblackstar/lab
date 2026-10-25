@@ -137,6 +137,9 @@ def build_split(corpus: str, out: str, eval_fraction: float, **params) -> dict:
     }
     questions = {k: cloze_questions(v, **params) for k, v in sides.items()}
     records = {k: [record(q) for q in v] for k, v in questions.items()}
+    for part, recs in records.items():
+        if len({r["id"] for r in recs}) != len(recs):
+            raise ValueError(f"duplicate question ids in the {part} half")
     kept = unseen_in(records["train"], records["eval"])
     dropped = len(records["eval"]) - len(kept)
     records["eval"] = kept
