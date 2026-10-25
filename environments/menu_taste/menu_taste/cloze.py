@@ -338,8 +338,8 @@ def cloze_questions(
                 counts = Counter(tags)
                 odd = len(tags) > 2 and len(counts) == 2 and 1 in counts.values()
                 return (
-                    odd and counts[tags[0]] == 1,
                     sum(surface(s) != want for s in chosen),
+                    odd and counts[tags[0]] == 1,
                     odd,
                     sum(picked),
                 )

@@ -242,3 +242,34 @@ def test_wrong_options_share_the_answers_dietary_tags_and_none_stands_alone():
     # No other vegetarian dessert: three vegan ones would leave the answer alone.
     picked = options([vg, vg, vg, vg, gf, gf])
     assert len(set(picked)) > 1
+
+
+def test_tag_balancing_never_costs_a_formatting_match():
+    target = _menu(
+        "t",
+        {
+            "main": ["Roast duck", "Seared scallops", "Hanger steak"],
+            "dessert": [
+                {
+                    "name": "Plum tart",
+                    "description": "brown butter",
+                    "dietary": ["vegetarian"],
+                }
+            ],
+        },
+    )
+    described_vegan = [
+        {"name": n, "description": "cream", "dietary": ["vegan"]}
+        for n in ["Sorbet", "Mochi", "Flan"]
+    ]
+    bare_vegetarian = [
+        {"name": n, "dietary": ["vegetarian"]}
+        for n in ["Baklava", "Rice pudding", "Lemon posset"]
+    ]
+    pool = [
+        _menu(f"d{i}", {"dessert": [d]})
+        for i, d in enumerate(described_vegan + bare_vegetarian)
+    ]
+    rows = build_cloze_items([target, *pool], courses=frozenset({"dessert"}), seed=3)
+    (row,) = [r for r in rows if r["info"]["menu_id"] == "t"]
+    assert set(row["info"]["options"]) - {"Plum tart"} == {"Sorbet", "Mochi", "Flan"}
