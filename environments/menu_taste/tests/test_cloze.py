@@ -213,3 +213,32 @@ def test_wrong_options_match_whether_the_answer_has_a_description():
 
     assert distractors(True) == {"Fig galette", "Pear crisp", "Quince cake"}
     assert any(d in bare for d in distractors(False))
+
+
+def test_wrong_options_share_the_answers_dietary_tags_and_none_stands_alone():
+    target = _menu(
+        "t",
+        {
+            "main": ["Roast duck", "Seared scallops", "Hanger steak"],
+            "dessert": [{"name": "Plum tart", "dietary": ["vegetarian"]}],
+        },
+    )
+
+    def options(pool_tags):
+        names = ["Lemon posset", "Rice pudding", "Baklava", "Sorbet", "Flan", "Mochi"]
+        pool = [
+            _menu(f"d{i}", {"dessert": [{"name": n, "dietary": tags}]})
+            for i, (n, tags) in enumerate(zip(names, pool_tags))
+        ]
+        rows = build_cloze_items(
+            [target, *pool], courses=frozenset({"dessert"}), seed=3
+        )
+        (row,) = [r for r in rows if r["info"]["menu_id"] == "t"]
+        tags = {n: t for n, t in zip(names, pool_tags)}
+        return [tuple(tags[o]) for o in row["info"]["options"] if o != "Plum tart"]
+
+    v, vg, gf = ["vegetarian"], ["vegan"], ["gluten_free"]
+    assert options([vg, vg, vg, v, v, v]) == [("vegetarian",)] * 3
+    # No other vegetarian dessert: three vegan ones would leave the answer alone.
+    picked = options([vg, vg, vg, vg, gf, gf])
+    assert len(set(picked)) > 1

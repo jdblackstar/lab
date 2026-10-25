@@ -121,7 +121,7 @@ Taskset arguments (`--env.taskset.<name>` for evals, `--taskset.<name>` for
 | `min_menu_items` | `4` | Don't ask about menus with fewer dishes (they still supply wrong options) |
 | `max_menus` | all | Ask about a seeded sample of menus; bounds how much of the corpus one run shows a provider |
 | `max_per_dish` | `2` | How many questions one dish can answer; house staples would otherwise dominate (`null` for no cap) |
-| `match_surface` | `true` | Wrong options look like the answer: description or not, dietary tags or not, similar popularity |
+| `match_surface` | `true` | Wrong options look like the answer: description or not, the same dietary tags, similar popularity |
 | `seed` | `0` | Option order and distractor choice when building from a corpus; shuffle the run with `-s` |
 
 ## Building a corpus from raw menus
@@ -227,15 +227,21 @@ There are no fields for price or client.
   replaced with standard course labels. A verbatim heading like "Cheese Board" would give
   the answer away without any judgment.
 
-- Wrong options match the answer's surface: whether it has a description and dietary
-  tags, and how many menus serve it. A single dish answers at most two questions.
+- Wrong options match the answer's surface: whether it has a description, which dietary
+  tags it carries, and how many menus serve it. When too few share its tags, the draw
+  avoids leaving any one option alone with its tag set (one "(vegetarian)" among three
+  "(vegan)"). A single dish answers at most two questions.
 
 ## Checking for shortcuts
 
 `menu-taste-baselines` answers the questions with cues that need no taste (words shared
-with the menu, description length, writing style, how common a dish is) and with a
-model trained to combine them, scored on held-out menus. It runs locally and sends
-nothing anywhere.
+with the menu, description length, writing style, how common a dish is, ingredients tied
+to the menu's stated season, the one option whose dietary tags differ, and how often the
+corpus serves each option with the dishes shown) and with a model trained to combine
+them, scored on held-out menus. Co-occurrence counts leave out the question's own menu
+and its versions. The season rule only answers menus with a stated season and the
+dietary-tag rule only questions with one odd tag set; the report says how many each
+covered. It runs locally and sends nothing anywhere.
 
 ```bash
 uv run menu-taste-baselines private/menus.jsonl
@@ -251,8 +257,15 @@ is the bar a model has to clear.
 - No human ceiling yet. On the 300-question subset, all three runs chose the same wrong
   dish on 47 questions (16%). Some are honest toss-ups (one dessert bar against
   another); have a person answer a sample to find out how many are unfair.
-- Boards and platters listed under a "passed" heading stay in the passed section, so a
-  model that reasons about service rejects them. This affects 40 questions in v1 (10
-  where the board is the answer); fix it in the importer before building v2.
+- Frozen v1 predates three fixes, so it still has their problems until v2 is rebuilt
+  from the corpus (`menu-taste-questions build`): boards and platters under a "passed"
+  heading stayed in the passed section (40 questions, 10 where the board is the
+  answer; `import-grid` now moves them to a display section), and wrong options matched
+  whether the answer had dietary tags, not which ones. Re-import, rebuild, and rerun
+  `menu-taste-baselines` before trusting v2.
+- Season words give the answer away on the bundled sample: picking the option with the
+  most ingredients of the menu's stated season scores about 43%. The real corpus mostly
+  has no stated season, so check that rule's row on it; wrong options are not yet
+  matched for season.
 - Only one task so far. Natural next steps: spot the intruder dish, and real vs. generic
   menus for the same brief.

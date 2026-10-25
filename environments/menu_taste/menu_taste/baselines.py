@@ -1,7 +1,9 @@
 """Baselines with no taste, to check what the missing-course task actually measures.
 
-Each baseline scores the options of a question with surface cues only: shared words
-with the menu, description length, writing style, how common a dish is. If any of them,
+Each baseline scores the options of a question with cues that need no taste: shared
+words with the menu, description length, writing style, how common a dish is, words tied
+to the menu's stated season, the one option whose dietary tags differ from the rest, and
+how often the caterer serves each option with the dishes shown. If any of them,
 or a model trained to combine all of them, beats chance by a wide margin, then the
 questions can be answered without judging how a menu fits together, and the task needs
 fixing before model scores mean anything.
@@ -24,9 +26,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .cloze import ClozeQuestion, cloze_questions, dish_tokens
+from .cloze import (
+    ELIGIBLE_KINDS,
+    ClozeQuestion,
+    cloze_questions,
+    dish_tokens,
+    same_dish,
+)
 from .corpus import load_menus
-from .schema import Item, Menu
+from .schema import Item, Menu, Season
 
 _STOP = frozenset(
     [
@@ -63,6 +71,32 @@ def item_words(item: Item) -> set[str]:
     return words(item.name) | words(item.description)
 
 
+# Ingredients a menu writer reaches for in each season. Matching the menu's stated
+# season by vocabulary alone takes no judgment of how the menu fits together.
+SEASON_WORDS = {
+    Season.spring: words(
+        "asparagus ramp ramps pea peas fava morel morels rhubarb radish radishes "
+        "artichoke artichokes strawberry strawberries nettle fiddlehead chervil "
+        "elderflower spring"
+    ),
+    Season.summer: words(
+        "tomato tomatoes heirloom corn peach peaches watermelon melon zucchini "
+        "cucumber cucumbers berry berries blueberry blueberries blackberry raspberry "
+        "cherry cherries basil gazpacho nectarine apricot okra eggplant plum plums summer"
+    ),
+    Season.fall: words(
+        "squash pumpkin apple apples cider sage pear pears fig figs mushroom mushrooms "
+        "chestnut cranberry butternut delicata quince persimmon maple pecan brussels "
+        "grapes autumn harvest"
+    ),
+    Season.winter: words(
+        "citrus parsnip parsnips celery root turnip cabbage kale beet beets pomegranate "
+        "chestnut chestnuts cranberry peppermint gingerbread truffle venison juniper "
+        "mulled winter"
+    ),
+}
+
+
 def _capital_share(name: str) -> float:
     tokens = re.findall(r"[A-Za-z]+", name)
     return sum(t[0].isupper() for t in tokens) / len(tokens) if tokens else 0.0
@@ -81,6 +115,9 @@ class Context:
     has_desc: float
     has_tags: float
     capitals: float
+    season_words: set[str]
+    shown: list[frozenset[str]]
+    held_out: frozenset[str]
 
 
 def context(q: ClozeQuestion) -> Context:
@@ -105,6 +142,9 @@ def context(q: ClozeQuestion) -> Context:
         has_desc=sum(bool(i.description) for i in items) / n,
         has_tags=sum(bool(i.dietary) for i in items) / n,
         capitals=sum(_capital_share(i.name) for i in items) / n,
+        season_words=SEASON_WORDS.get(q.menu.event.season, set()),
+        shown=[dish_tokens(i.name) for i in items],
+        held_out=frozenset(q.related_menu_ids or (q.menu.menu_id,)),
     )
 
 
@@ -118,6 +158,43 @@ def dish_popularity(menus: list[Menu]) -> Callable[[Item], float]:
     return lambda item: math.log1p(counts.get(dish_tokens(item.name), 0))
 
 
+def dish_cooccurrence(menus: list[Menu]) -> Callable[[Item, Context], list[float]]:
+    """How often the caterer serves a dish on menus with the dishes shown, counting
+    only menus outside the question's own family (the target menu and its versions).
+
+    Returns [log of the number of (menu, shown dish) pairs, share of the shown dishes
+    found on the dish's other menus]. Models never see the corpus; this checks whether
+    the corpus's own pairing habits give the answer away."""
+    eligible = [m for m in menus if m.kind in ELIGIBLE_KINDS]
+    index = {m.menu_id: i for i, m in enumerate(eligible)}
+    exact: defaultdict[frozenset[str], set[int]] = defaultdict(set)
+    by_word: defaultdict[str, set[frozenset[str]]] = defaultdict(set)
+    for i, menu in enumerate(eligible):
+        for tokens in {dish_tokens(it.name) for it in menu.items()}:
+            exact[tokens].add(i)
+            for w in tokens:
+                by_word[w].add(tokens)
+    cache: dict[frozenset[str], set[int]] = {}
+
+    def serving(tokens: frozenset[str]) -> set[int]:
+        """Menus serving this dish or one the question builder counts as the same."""
+        if tokens not in cache:
+            similar = set().union(*(by_word[w] for w in tokens)) if tokens else set()
+            cache[tokens] = set().union(
+                *(exact[u] for u in similar if same_dish(tokens, u))
+            )
+        return cache[tokens]
+
+    def score(item: Item, ctx: Context) -> list[float]:
+        held = {index[m] for m in ctx.held_out if m in index}
+        mine = serving(dish_tokens(item.name)) - held
+        hits = sum(len(mine & serving(t)) for t in ctx.shown)
+        share = hits / (len(mine) * len(ctx.shown)) if mine and ctx.shown else 0.0
+        return [math.log1p(hits), share]
+
+    return score
+
+
 FEATURES = [
     "menu_overlap",
     "menu_overlap_share",
@@ -128,13 +205,23 @@ FEATURES = [
     "tag_style_match",
     "capitals_gap",
     "popularity",
+    "season_words",
+    "tag_set_shared",
+    "cooccurrence",
+    "cooccurrence_share",
 ]
 
 
 def features(
-    item: Item, ctx: Context, popularity: Callable[[Item], float]
+    item: Item,
+    options: tuple[Item, ...],
+    ctx: Context,
+    popularity: Callable[[Item], float],
+    cooccurrence: Callable[[Item, Context], list[float]],
 ) -> list[float]:
     w = item_words(item)
+    tags = frozenset(item.dietary)
+    same_tags = sum(frozenset(o.dietary) == tags for o in options) - 1
     overlap = len(w & ctx.words)
     return [
         overlap,
@@ -146,15 +233,18 @@ def features(
         1 - abs(bool(item.dietary) - ctx.has_tags),
         abs(_capital_share(item.name) - ctx.capitals),
         popularity(item),
+        len(w & ctx.season_words),
+        same_tags / max(len(options) - 1, 1),
+        *cooccurrence(item, ctx),
     ]
 
 
 def feature_tensor(questions: list[ClozeQuestion], menus: list[Menu]) -> np.ndarray:
-    pop = dish_popularity(menus)
+    pop, cooc = dish_popularity(menus), dish_cooccurrence(menus)
     out = []
     for q in questions:
         ctx = context(q)
-        out.append([features(item, ctx, pop) for item in q.options])
+        out.append([features(item, q.options, ctx, pop, cooc) for item in q.options])
     return np.asarray(out, dtype=float)
 
 
@@ -169,7 +259,31 @@ RULES = [
     ("capitalization closest to the menu's", "capitals_gap", min),
     ("most common dish in the corpus", "popularity", max),
     ("least common dish in the corpus", "popularity", min),
+    ("most words tied to the menu's stated season", "season_words", max),
+    ("only option whose dietary tags differ", "tag_set_shared", min),
+    ("most often served with the shown dishes", "cooccurrence", max),
+    ("largest share of the shown dishes on its other menus", "cooccurrence_share", max),
 ]
+
+
+def applicable(questions: list[ClozeQuestion], X: np.ndarray) -> dict[str, np.ndarray]:
+    """Rules that only make sense on some questions; the rest are left unanswered."""
+    shared = X[:, :, FEATURES.index("tag_set_shared")]
+    return {
+        "most words tied to the menu's stated season": np.array(
+            [q.menu.event.season is not Season.unknown for q in questions], dtype=bool
+        ),
+        # Three wrong options share one tag set and the fourth option has another.
+        "only option whose dietary tags differ": np.array(
+            [
+                X.shape[1] > 2
+                and sorted(row)[0] == 0
+                and np.allclose(sorted(row)[1:], (X.shape[1] - 2) / (X.shape[1] - 1))
+                for row in shared
+            ],
+            dtype=bool,
+        ),
+    }
 
 
 def _pick(values: np.ndarray, best, rng: random.Random) -> int:
@@ -178,8 +292,12 @@ def _pick(values: np.ndarray, best, rng: random.Random) -> int:
     return rng.choice(ties)
 
 
-def rule_predictions(X: np.ndarray, seed: int = 0) -> dict[str, np.ndarray]:
+def rule_predictions(
+    X: np.ndarray, seed: int = 0, only: dict[str, np.ndarray] | None = None
+) -> dict[str, np.ndarray]:
+    """The option each rule picks, or -1 where ``only`` says the rule does not apply."""
     rng = random.Random(seed)
+    only = only or {}
     idx = {f: i for i, f in enumerate(FEATURES)}
     preds = {
         "random guess": np.array([rng.randrange(X.shape[1]) for _ in range(len(X))])
@@ -191,6 +309,8 @@ def rule_predictions(X: np.ndarray, seed: int = 0) -> dict[str, np.ndarray]:
         else:
             col = X[:, :, idx[feat]]
         preds[name] = np.array([_pick(row, best, rng) for row in col])
+        if name in only:
+            preds[name][~only[name]] = -1
     return preds
 
 
@@ -240,10 +360,15 @@ def interval(correct: np.ndarray) -> tuple[float, float, float]:
     return p, centre - half, centre + half
 
 
+def _scored(pred: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Hits on the questions a baseline answered."""
+    return (pred == y)[pred >= 0]
+
+
 def _all_predictions(questions, menus, seed):
     X = feature_tensor(questions, menus)
     y = np.array([q.answer_index for q in questions])
-    preds = rule_predictions(X, seed)
+    preds = rule_predictions(X, seed, applicable(questions, X))
     groups = [q.menu.menu_id for q in questions]
     if len(set(groups)) > 1:
         preds[BEST], weights = cross_validated_choice_model(X, y, groups, seed=seed)
@@ -264,8 +389,13 @@ def report_numbers(
     _, y, preds, _ = _all_predictions(questions, menus, seed)
     out = {}
     for name, pred in preds.items():
-        p, lo, hi = interval(pred == y)
+        hits = _scored(pred, y)
+        if not len(hits):
+            continue
+        p, lo, hi = interval(hits)
         out[name] = {"accuracy": round(p, 4), "low": round(lo, 4), "high": round(hi, 4)}
+        if len(hits) < len(y):
+            out[name]["questions"] = len(hits)
     return out
 
 
@@ -283,7 +413,13 @@ def report(questions: list[ClozeQuestion], menus: list[Menu], seed: int = 0) -> 
         "| --- | --- | --- |",
     ]
     for name, pred in preds.items():
-        p, lo, hi = interval(pred == y)
+        hits = _scored(pred, y)
+        if len(hits) < len(y):
+            name = f"{name} (on the {len(hits)} questions it applies to)"
+        if not len(hits):
+            lines.append(f"| {name} | – | – |")
+            continue
+        p, lo, hi = interval(hits)
         lines.append(f"| {name} | {p:.1%} | {lo:.1%}–{hi:.1%} |")
     if combo is None:
         lines.append(f"| {BEST} | unavailable: needs at least two menus | |")
