@@ -8,12 +8,14 @@ structured diagnosis, which is scored deterministically against the scenario's
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Any
 
 import verifiers.v1 as vf
+from dbt_debugger.evidence import project_files
 from dbt_debugger.scenarios import build_prompt, gold_paths, load_scenario_spec
-from dbt_debugger.scoring import score_diagnosis
+from dbt_debugger.scoring import Audit, score_diagnosis
 from dbt_debugger.toolset import DbtDebuggerState, DbtDebuggerToolset
 
 MAX_TURNS = 20
@@ -71,16 +73,16 @@ class DbtDebuggerTask(
         trace.info["submitted_diagnosis"] = state.submitted_diagnosis
         trace.info["collected_evidence"] = state.collected_evidence
         trace.info["tool_trace"] = state.tool_trace
-        trace.info["verification_result"] = self.audit(trace)
+        trace.info["verification_result"] = dataclasses.asdict(self.audit(trace))
 
-    def audit(self, trace: vf.Trace) -> dict[str, Any]:
+    def audit(self, trace: vf.Trace) -> Audit:
         """Deterministic audit of the persisted submission (pure, so safe to recompute)."""
         return score_diagnosis(trace.info.get("submitted_diagnosis"), self.spec)
 
     @vf.reward(weight=1.0)
     async def diagnosis_reward(self, trace: vf.Trace) -> float:
         """1.0 iff every deterministic check passes."""
-        return float(self.audit(trace)["strict_pass"])
+        return self.audit(trace).strict_pass
 
     @vf.metric
     async def difficulty_metric(self) -> float:
@@ -91,7 +93,7 @@ class DbtDebuggerTask(
         audit = self.audit(trace)
         out: dict[str, float] = {}
         for field, truthy in AUDIT_METRICS:
-            value = audit.get(field, 0.0)
+            value = getattr(audit, field)
             out[field] = 1.0 if truthy and value else float(value)
         return out
 
@@ -116,7 +118,7 @@ class DbtDebuggerTask(
             if result.startswith("Error:"):
                 raise ValueError(f"gold diagnosis rejected: {result}")
             audit = score_diagnosis(toolset.state.submitted_diagnosis, spec)
-            return audit["strict_pass"] == 1.0
+            return audit.strict_pass == 1.0
 
 
 async def _collect_gold_evidence(
@@ -127,12 +129,7 @@ async def _collect_gold_evidence(
     if kind == "file_span":
         # The whole file contains every anchor the requirement names.
         path = requirement["path"]
-        content = next(
-            entry["content"]
-            for key in ("files", "macros", "seeds")
-            for entry in toolset.workspace.spec["dbt_project"].get(key) or []
-            if entry["path"] == path
-        )
+        content = project_files(toolset.workspace.spec)[path]
         return await toolset.add_file_evidence(
             path, 1, max(1, len(content.splitlines()))
         )

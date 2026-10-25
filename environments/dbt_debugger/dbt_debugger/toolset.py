@@ -25,7 +25,13 @@ from typing import TYPE_CHECKING, Annotated, Any
 from pydantic import Field
 
 import verifiers.v1 as vf
-from dbt_debugger.claim_text_matching import text_contains_option
+from dbt_debugger.evidence import (
+    RECORD_NAME_KEY,
+    RUN_HISTORY_RECORD_TYPES,
+    entry_matches,
+    parse_match_json,
+    run_history_entries,
+)
 from dbt_debugger.paths import (
     effective_read_globs,
     globs_for_list_and_search,
@@ -45,7 +51,6 @@ _ALLOWED_DBT_SUBCOMMANDS = frozenset({"parse", "compile", "ls", "run", "test", "
 _ALLOWED_DBT_RESOURCE_TYPES = frozenset(
     {"model", "test", "source", "seed", "snapshot", "exposure"}
 )
-_RUN_HISTORY_RECORD_TYPES = frozenset({"summary", "model", "test", "warning"})
 _MAX_TRACE_ENTRIES = 500
 
 
@@ -146,39 +151,6 @@ def _file_evidence_guidance(rel_path: str) -> str | None:
             "Cite the underlying project file, sample rows, or run history fact instead."
         )
     return None
-
-
-def _parse_match_json(match_json: str) -> dict[str, Any]:
-    """Parse a sample-row match into a non-empty object of scalar values."""
-    if not match_json.strip():
-        raise ValueError("sample_rows evidence requires non-empty match_json")
-    try:
-        raw = json.loads(match_json)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"match_json must be valid JSON: {exc}") from exc
-    if not isinstance(raw, dict) or not raw:
-        raise ValueError("match_json must decode to a non-empty object")
-    out: dict[str, Any] = {}
-    for key, value in raw.items():
-        if not key.strip():
-            raise ValueError("match_json keys must be non-empty strings")
-        if not (value is None or isinstance(value, (str, int, float, bool))):
-            raise ValueError("match_json values must be JSON scalar values")
-        out[key.strip()] = value
-    return out
-
-
-def _run_history_record_matches(
-    record: dict[str, Any], *, name_key: str, name: str, status: str, contains: str
-) -> bool:
-    """Return whether one ``model_results``/``tests`` record matches the filters."""
-    if name and str(record.get(name_key, "")).strip() != name:
-        return False
-    if status and str(record.get("status", "")).strip().lower() != status:
-        return False
-    return not contains or text_contains_option(
-        json.dumps(record, sort_keys=True), contains
-    )
 
 
 class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
@@ -581,7 +553,7 @@ class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
                 f"Available tables: {sorted(sample_data)!r}"
             )
         try:
-            match = _parse_match_json(match_json)
+            match = parse_match_json(match_json)
         except ValueError as exc:
             return f"Error: {exc}"
         matched_rows = matching_sample_rows(table_obj, match)
@@ -643,68 +615,46 @@ class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
     ) -> str:
         """Store one run-history citation for the final diagnosis."""
         rtype = record_type.strip().lower()
-        if rtype not in _RUN_HISTORY_RECORD_TYPES:
+        if rtype not in RUN_HISTORY_RECORD_TYPES:
             return (
-                f"Error: record_type must be one of {sorted(_RUN_HISTORY_RECORD_TYPES)!r}"
+                f"Error: record_type must be one of {sorted(RUN_HISTORY_RECORD_TYPES)!r}"
             )
-        run_history = self.workspace.spec["run_history"]
         status = status.strip().lower()
         contains = contains.strip()
         ref: dict[str, Any] = {"kind": "run_history", "record_type": rtype}
-        matched: dict[str, Any]
 
         if rtype in ("summary", "warning"):
             if not contains:
                 return f"Error: {rtype} evidence requires contains"
-            if rtype == "summary":
-                summary = str(run_history.get("summary", ""))
-                if not text_contains_option(summary, contains):
-                    return f"Error: run_history.summary does not contain {contains!r}"
-                matched = {"matched_summary": summary}
-            else:
-                warning = next(
-                    (
-                        w
-                        for w in run_history.get("warnings", [])
-                        if text_contains_option(w, contains)
-                    ),
-                    None,
-                )
-                if warning is None:
-                    return f"Error: no run_history warning contains {contains!r}"
-                matched = {"matched_warning": warning}
             ref["contains"] = contains
         else:
-            name_key = "model" if rtype == "model" else "name"
+            name_key = RECORD_NAME_KEY[rtype]
             target = (model if rtype == "model" else name).strip()
             if not target:
                 return f"Error: {rtype} evidence requires {name_key}"
             if rtype == "model" and target not in self.workspace.valid_model_names:
                 return f"Error: unknown model {target!r}"
-            records_key = "model_results" if rtype == "model" else "tests"
-            record = next(
-                (
-                    r
-                    for r in run_history.get(records_key) or []
-                    if _run_history_record_matches(
-                        r, name_key=name_key, name=target, status=status, contains=contains
-                    )
-                ),
-                None,
-            )
-            if record is None:
-                filters = f"{name_key}={target!r}, status={status or '*'}"
-                if contains:
-                    filters += f", contains={contains!r}"
-                return (
-                    f"Error: no run_history {rtype} result matches {filters}"
-                )
             ref[name_key] = target
             if status:
                 ref["status"] = status
             if contains:
                 ref["contains"] = contains
-            matched = {"matched_record": record}
+
+        entries = run_history_entries(rtype, self.workspace.spec["run_history"])
+        entry = next((e for e in entries if entry_matches(e, ref)), None)
+        if entry is None:
+            if rtype == "summary":
+                return f"Error: run_history.summary does not contain {contains!r}"
+            if rtype == "warning":
+                return f"Error: no run_history warning contains {contains!r}"
+            filters = f"{name_key}={target!r}, status={status or '*'}"
+            if contains:
+                filters += f", contains={contains!r}"
+            return f"Error: no run_history {rtype} result matches {filters}"
+        matched_key = {
+            "summary": "matched_summary",
+            "warning": "matched_warning",
+        }.get(rtype, "matched_record")
 
         added = self._store_evidence(ref)
         self._trace(
@@ -716,7 +666,7 @@ class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
             f"Stored run_history evidence for record_type={rtype!r}.",
             ref,
             added,
-            **matched,
+            **{matched_key: entry},
         )
 
     @vf.tool
