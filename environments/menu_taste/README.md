@@ -247,8 +247,15 @@ uv run menu-taste-baselines private/menus.jsonl --no-surface-matching --max-per-
 ```
 
 The best of these should stay near chance. Sharing words with the menu always helps a
-little, because real menus repeat a theme (a summer menu uses watermelon twice); that
-is the bar a model has to clear.
+little, because real menus repeat a theme (a summer menu uses watermelon twice).
+
+The bar a model has to clear is the higher of the best single cue and the held-out
+combination; the report states it on top, and `menu-taste-score` shows both rows with
+the bar first. Neither alone is enough: with few questions the combination can't learn
+its weights and scores below the best cue (26% vs. 31% on the bundled sample), and with
+many it can find what single cues miss. The best cue is chosen after scoring every cue
+on the same questions, so the bar leans slightly high. The combination picks its ridge
+penalty by cross-validation within its training menus, so its score stays held out.
 
 ## Known gaps
 
