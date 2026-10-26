@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from dbt_debugger.scenarios import GOLD_DIR
 from validation.validate_scenarios import _validate_one
 
@@ -28,10 +30,12 @@ def _validation_errors(name: str, spec: dict[str, Any] | None = None) -> list[st
     return _validate_one(_scenario_path(name), scenario_spec)
 
 
-def test_campaign_replay_scenario_passes_validation() -> None:
-    """The cleaned campaign replay scenario should pass single-file validation."""
-    errors = _validation_errors("campaign_spend_replay_restatement")
-    assert errors == []
+@pytest.mark.parametrize("path", sorted(GOLD_DIR.glob("*.json")), ids=lambda p: p.stem)
+def test_every_gold_scenario_passes_validation(path: Path) -> None:
+    """Scoring indexes the spec directly and trusts the schema, so a shipped scenario
+    that drifts off-schema would fail rollouts instead of scoring them."""
+    spec = json.loads(path.read_text(encoding="utf-8"))
+    assert _validate_one(path, spec) == []
 
 
 def test_validator_defaults_missing_allowed_models_to_required_models() -> None:
