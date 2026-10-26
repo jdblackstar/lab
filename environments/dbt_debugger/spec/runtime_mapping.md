@@ -3,20 +3,22 @@
 This document describes how the JSON corpus in `dbt_debugger/scenarios/gold/` becomes a verifiers rollout (`verifiers>=0.4.0`, `import verifiers.v1 as vf`): which object owns each piece of a scenario, what the model can see, and how the submitted diagnosis is scored.
 
 ```diagram
-┌──────────────────────────┐      TaskData (scenario_id)      ┌──────────────────────────────┐
+┌──────────────────────────┐      TaskData (scenario_id)      ┌──────────────────────────────────┐
 │ DbtDebuggerTask          │ ───────────────────────────────▶ │ DbtDebuggerToolset (per rollout) │
-│  stop: diagnosis_accepted│                                  │  setup_task: materialize dbt │
-│  reward: strict_pass     │ ◀─────────────────────────────── │  + DuckDB workspace          │
-│  metrics: audit fields   │   DbtDebuggerState (evidence,    │  tools: files, dbt, evidence,│
-│  validate: gold check    │   diagnosis, trace) after each   │  submit_diagnosis            │
-└───────────┬──────────────┘   tool call                      └──────────────────────────────┘
+│  stop: diagnosis_accepted│                                  │  setup_task: materialize dbt     │
+│  reward: strict_pass     │ ◀─────────────────────────────── │  + DuckDB workspace              │
+│  metrics: audit fields   │   DbtDebuggerState (evidence,    │  tools: files, dbt, evidence,    │
+│  validate: gold check    │   diagnosis, trace) after each   │  submit_diagnosis                │
+└───────────┬──────────────┘   tool call                      └──────────────────────────────────┘
             │ score_diagnosis(submission, spec)
             ▼
-┌──────────────────────────┐   ┌──────────────────────────┐   ┌──────────────────────────┐
-│ scoring.py → Audit       │──▶│ rubric.py (Rubric,       │   │ evidence.py              │
-│                          │   │ DiagnosisVariant,        │   │ evidence_matches(ref,    │
-│                          │──▶│ ClaimPattern)            │   │ requirement, spec)       │
-└──────────────────────────┘   └──────────────────────────┘   └──────────────────────────┘
+┌──────────────────────────┐   ┌──────────────────────────────────┐
+│ scoring.py → Audit       │──▶│ rubric.py: Rubric,               │
+│                          │   │  DiagnosisVariant, ClaimPattern  │
+│                          │   ├──────────────────────────────────┤
+│                          │──▶│ evidence.py: evidence_matches    │
+│                          │   │  (ref, requirement, spec)        │
+└──────────────────────────┘   └──────────────────────────────────┘
 ```
 
 ## Package contract
@@ -104,7 +106,7 @@ The three `add_*_evidence` tools store small JSON refs in `DbtDebuggerState.coll
 | `sample_rows` | `table`, `match_json` (normalized), `min_rows`                 |
 | `run_history` | `record_type` plus the filters given: `model`/`name`, `status`, `contains` |
 
-`rubric_hints.required_evidence` entries name the facts a diagnosis must cite in the same vocabulary. `evidence.evidence_matches(ref, requirement, spec)` is the one place that decides whether a ref satisfies a requirement: same artifact, the citation still selects the records the requirement names, and the requirement's `all_of` anchors appear in what it cites. The tool server uses the same helpers to reject an unfounded ref at store time, and the offline validator uses them to prove every requirement is satisfiable, so the three cannot disagree about what counts as a citation.
+`rubric_hints.required_evidence` entries name the facts a diagnosis must cite in the same vocabulary. `evidence.evidence_matches(ref, requirement, spec)` decides whether a stored ref satisfies a requirement at scoring time: same artifact, the citation still selects the records the requirement names, and the requirement's `all_of` anchors appear in what it cites. The tool server rejects an unfounded ref at store time with the same run-history filter and `match_json` parser, and the offline validator uses them to check that every requirement is satisfiable by *some* ref, but only the `vf-validate` gold check (below) proves each requirement can be cited through the real tools and then scored.
 
 ## Stop conditions
 

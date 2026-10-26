@@ -34,7 +34,7 @@ This document defines the canonical structure for each gold scenario file under 
 ### Visibility legend
 
 - **tool**: May appear in prompts, tool-visible file trees, or structured tool results (subject to `artifact_manifest`).
-- **evaluator**: Read only by the tool server process and by scoring (`rubric_hints`, `ground_truth`); MUST NOT be leaked in user-facing prompts or tool results.
+- **evaluator**: Read only by scoring, the corpus validator, and the `vf-validate` gold check (`rubric_hints`, `ground_truth`). The tool server loads the whole spec but never returns these fields; they MUST NOT be leaked in prompts or tool results.
 
 ---
 
@@ -190,8 +190,8 @@ Array of objects:
 
 ## How the runtime uses these fields
 
-- **Task data**: the prompt is built from `symptom` + generic instructions only; `title`, `dag`, and exact debug-context filenames are not exposed.
-- **Tool server `setup_task`**: writes `dbt_project.files`, `debug_context/` (`sample_data`, `run_history`), and the DuckDB source tables into a temporary workspace; `ground_truth` and `rubric_hints` are read only by scoring and the validator.
+- **Task data**: the prompt is built from `symptom` + generic instructions (which name the two `debug_context/` files and the evidence tools); `title` and `dag` are not exposed.
+- **Tool server `setup_task`**: writes `dbt_project.files`, `debug_context/` (`sample_data.json`, `run_history.json`), and the DuckDB source tables into a temporary workspace; `ground_truth` and `rubric_hints` are read only by scoring, the validator, and the gold check.
 - **Tools and scoring**: see [runtime_mapping.md](runtime_mapping.md). The structured `submit_diagnosis` payload is compared to `rubric_hints.accepted_diagnoses`, the stored evidence to `required_evidence`, and the text to `forbidden_claims`, all deterministically.
 
 ---
