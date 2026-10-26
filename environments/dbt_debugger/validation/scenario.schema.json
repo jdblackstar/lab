@@ -26,7 +26,7 @@
     "claim_group": {
       "type": "array",
       "minItems": 1,
-      "items": { "type": "string", "minLength": 1 }
+      "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
     },
     "claim_pattern": {
       "type": "array",
@@ -262,7 +262,7 @@
                   "all_of": {
                     "type": "array",
                     "minItems": 1,
-                    "items": { "type": "string", "minLength": 1 }
+                    "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
                   }
                 }
               },
@@ -284,7 +284,7 @@
                   "all_of": {
                     "type": "array",
                     "minItems": 1,
-                    "items": { "type": "string", "minLength": 1 }
+                    "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
                   }
                 }
               },
