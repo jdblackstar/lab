@@ -776,17 +776,24 @@ def test_cleanup_workspace_surfaces_rmtree_failure(
 
 
 def test_list_files_respects_globs() -> None:
-    async def _run() -> str:
+    async def _run() -> tuple[str, str, list[dict[str, Any]]]:
         async with _materialized_toolset("join_fanout_exec_revenue") as toolset:
             toolset._workspace = replace(
                 toolset.workspace, tool_visible_globs=["models/**"], immutable_paths=[]
             )
-            return await toolset.list_files(".", max_entries=50)
+            listing = await toolset.list_files(".", max_entries=50)
+            single = await toolset.list_files("models/staging/stg_orders.sql")
+            return listing, single, list(toolset.state.tool_trace)
 
-    output = asyncio.run(_run())
+    output, single, trace = asyncio.run(_run())
     assert "models/staging/stg_orders.sql" in output
     assert "debug_context/sample_data.json" in output
     assert "dbt_project.yml" not in output
+    assert single == "FILE models/staging/stg_orders.sql"
+    assert [entry["path"] for entry in trace if entry["tool"] == "list_files"] == [
+        ".",
+        "models/staging/stg_orders.sql",
+    ]
 
 
 def test_list_debug_context_via_env_globs() -> None:
