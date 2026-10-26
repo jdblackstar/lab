@@ -29,7 +29,7 @@ This environment is intentionally opinionated about what a good agentic eval sho
 
 - **Grounded investigation over answer guessing**: scenarios expose symptoms, project files, sample rows, and run history, but not the answer key. Correctness requires cited evidence, not just plausible prose.
 - **False positives are failures**: several scenarios have `has_bug: false`; an agent that always rewrites a dbt model should lose even if its explanation sounds confident.
-- **Deterministic scoring first**: v1 avoids LLM judges. Rubrics use explicit accepted-diagnosis variants, model-set checks, evidence satisfiability, and forbidden-claim patterns.
+- **Deterministic scoring first**: there is no LLM judge. Rubrics use explicit accepted-diagnosis variants, model-set checks, evidence satisfiability, and forbidden-claim patterns.
 - **Runtime feedback should teach the protocol**: evidence is collected with dedicated tools instead of a brittle string format, so invalid citations fail early and recoverably.
 - **Authoring gates protect benchmark quality**: validation checks JSON Schema shape, resolvable evidence anchors, corpus balance, and alignment between human-readable ground truth and the scored rubric contract.
 
@@ -40,17 +40,17 @@ This environment is intentionally opinionated about what a good agentic eval sho
 - `dbt_debugger/taskset.py`: `DbtDebuggerTaskset` (one task per gold scenario), the task's stop condition, deterministic reward/metrics, the `vf-validate` gold check, and `DbtDebuggerEnv`, which pins the run defaults.
 - `dbt_debugger/toolset.py`: `DbtDebuggerToolset`, the per-rollout MCP tool server that materializes the dbt workspace and implements the scoped filesystem/dbt tools and interactive evidence collection, plus the shared `DbtDebuggerState`.
 - `dbt_debugger/scoring.py`: deterministic root-cause/fix/model/evidence scoring and no-bug guardrails, producing an `Audit`.
-- `dbt_debugger/rubric.py` and `dbt_debugger/evidence.py`: the typed `rubric_hints` contract (`Rubric`, `DiagnosisVariant`, `ClaimPattern`) and the one `evidence_matches` resolver that the tool server, scoring, and the validator all share.
+- `dbt_debugger/rubric.py` and `dbt_debugger/evidence.py`: the typed `rubric_hints` contract (`Rubric`, `DiagnosisVariant`, `ClaimPattern`) and the `evidence_matches` resolver scoring uses, built from the same run-history filter and `match_json` parser that the tool server and the validator use.
 - `validation/validate_scenarios.py`: schema validation plus custom checks that catch impossible evidence and gold/rubric drift.
 - `dbt_debugger/scenarios/gold/*.json`: compact incident corpus spanning joins, incremental drift, source schema issues, macros/config, business-definition gaps, and no-bug cases.
 
-See [`spec/runtime_mapping.md`](spec/runtime_mapping.md) for how the corpus maps onto the v1 taskset, tool server, and scoring.
+See [`spec/runtime_mapping.md`](spec/runtime_mapping.md) for how a scenario runs: which object owns each piece of it, what the model can see, and how the diagnosis is scored.
 
 ## Status
 
 - **Scenario corpus**: Gold JSON scenarios under `dbt_debugger/scenarios/gold/` with schema in `spec/scenario_schema.md`.
 - **Runtime**: each rollout gets a per-rollout tool server that materializes a **temporary dbt + DuckDB workspace**, exposes filesystem + bounded `dbt` tools, and accepts **`submit_diagnosis`**. The diagnosis is scored deterministically against explicit `rubric_hints.accepted_diagnoses` plus grounded evidence requirements (no LLM judge).
-- **Run defaults** (`DbtDebuggerEnv`): the tools-only `null` harness on the local `subprocess` runtime, capped at 20 model turns. The tool calls in the 20th (final allowed) reply still execute before the cap ends the rollout, so a diagnosis submitted there is stored and scored (stop condition `max_turns`). Under v0 (verifiers 0.1.x) the cap was checked before tools ran, so tool calls in reply 20 never executed and a diagnosis submitted there scored 0. Harnesses that execute code (such as `bash`) are refused, because a shell on the evaluator host could read the bundled answer keys.
+- **Run defaults** (`DbtDebuggerEnv`): the tools-only `null` harness on the local `subprocess` runtime, capped at 20 model turns. The tool calls in the 20th (final allowed) reply still execute before the cap ends the rollout, so a diagnosis submitted there is stored and scored (stop condition `max_turns`). Harnesses that execute code (such as `bash`) are refused, because a shell on the evaluator host could read the bundled answer keys.
 
 Local execution uses **`dbt-duckdb`** and bundled `sample_data` loaded into DuckDB to match `sources.yml`. No external warehouse is needed.
 
@@ -68,9 +68,9 @@ Local execution uses **`dbt-duckdb`** and bundled `sample_data` loaded into Duck
 | `dbt_debugger/scenarios/gold/*.json`  | Reviewed scenarios (shipped in the wheel)                                  |
 | `spec/scenario_schema.md`             | Canonical JSON field definitions                                           |
 | `spec/authoring_guide.md`             | How to write new scenarios                                                 |
-| `spec/runtime_mapping.md`             | Corpus → verifiers v1 mapping                                              |
+| `spec/runtime_mapping.md`             | How a scenario runs: taskset, tool server, evidence, scoring               |
 | `validation/`                         | JSON Schema + `validate_scenarios.py`                                      |
-| `tests/`                              | Pytest smoke for workspace, dbt compile, tools, scoring, v1 wiring         |
+| `tests/`                              | Pytest smoke for workspace, dbt compile, tools, scoring, taskset wiring    |
 | `outputs/`                            | Local eval / `vf-validate` runs (ignored by git from repo root `.gitignore`) |
 
 
@@ -141,7 +141,7 @@ uv run vf-validate dbt-debugger --runtime.type subprocess
 
 Expected result: 10 scenario files validate, the test suite passes, and `vf-validate` reports 10/10 valid gold and noop checks.
 
-The v0 → v1 comparison snapshot below was run with verifiers 0.4.0's `vf-eval`, before evals switched to prime-rl's `uv run eval` (`scripts/prime_rl_eval.sh`). That three-scenario smoke (`deepseek/deepseek-v4-flash`, first three scenarios) completed with no rollout errors and the same shape as the v0 baseline on that model: two rollouts hit the 20-turn cap and one stopped on `diagnosis_accepted` after its diagnosis was stored. All three scored a strict pass of `0.0`.
+The most recent model smoke (`deepseek/deepseek-v4-flash`, first three scenarios) was run with verifiers 0.4.0's `vf-eval`, before evals switched to prime-rl's `uv run eval` (`scripts/prime_rl_eval.sh`). It completed with no rollout errors: two rollouts hit the 20-turn cap and one stopped on `diagnosis_accepted` after its diagnosis was stored. All three scored a strict pass of `0.0`.
 
 ## Configuration
 
