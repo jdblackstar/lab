@@ -40,7 +40,7 @@ This environment is intentionally opinionated about what a good agentic eval sho
 - `dbt_debugger/taskset.py`: `DbtDebuggerTaskset` (one task per gold scenario), the task's stop condition, deterministic reward/metrics, the `vf-validate` gold check, and `DbtDebuggerEnv`, which pins the run defaults.
 - `dbt_debugger/toolset.py`: `DbtDebuggerToolset`, the per-rollout MCP tool server that materializes the dbt workspace and implements the scoped filesystem/dbt tools and interactive evidence collection, plus the shared `DbtDebuggerState`.
 - `dbt_debugger/scoring.py`: deterministic root-cause/fix/model/evidence scoring and no-bug guardrails, producing an `Audit`.
-- `dbt_debugger/rubric.py` and `dbt_debugger/evidence.py`: the typed `rubric_hints` contract (`Rubric`, `DiagnosisVariant`, `ClaimPattern`) and the one `evidence_matches` resolver that the tool server, scoring, and the validator all share.
+- `dbt_debugger/rubric.py` and `dbt_debugger/evidence.py`: the typed `rubric_hints` contract (`Rubric`, `DiagnosisVariant`, `ClaimPattern`) and the `evidence_matches` resolver scoring uses, built from the same run-history filter and `match_json` parser that the tool server and the validator use.
 - `validation/validate_scenarios.py`: schema validation plus custom checks that catch impossible evidence and gold/rubric drift.
 - `dbt_debugger/scenarios/gold/*.json`: compact incident corpus spanning joins, incremental drift, source schema issues, macros/config, business-definition gaps, and no-bug cases.
 
@@ -141,7 +141,7 @@ uv run vf-validate dbt-debugger --runtime.type subprocess
 
 Expected result: 10 scenario files validate, the test suite passes, and `vf-validate` reports 10/10 valid gold and noop checks.
 
-The most recent model smoke (`deepseek/deepseek-v4-flash`, first three scenarios, via `scripts/prime_rl_eval.sh`) completed with no rollout errors: two rollouts hit the 20-turn cap and one stopped on `diagnosis_accepted` after its diagnosis was stored. All three scored a strict pass of `0.0`.
+The most recent model smoke (`deepseek/deepseek-v4-flash`, first three scenarios) was run with verifiers 0.4.0's `vf-eval`, before evals switched to prime-rl's `uv run eval` (`scripts/prime_rl_eval.sh`). It completed with no rollout errors: two rollouts hit the 20-turn cap and one stopped on `diagnosis_accepted` after its diagnosis was stored. All three scored a strict pass of `0.0`.
 
 ## Configuration
 
