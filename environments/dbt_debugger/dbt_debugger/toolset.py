@@ -768,9 +768,9 @@ class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
         if not root_cause or not fix:
             return "Error: root_cause and fix must be non-empty strings"
         models = [model.strip() for model in buggy_models]
-        if not all(models):
-            return "Error: buggy_models must contain non-empty strings"
         for model in models:
+            if not model:
+                return "Error: buggy_models must contain non-empty strings"
             if model not in self.workspace.valid_model_names:
                 return f"Error: Unknown model in buggy_models: {model!r}"
         if not has_bug and models:

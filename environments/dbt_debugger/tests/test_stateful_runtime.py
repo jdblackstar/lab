@@ -652,6 +652,23 @@ def test_submit_diagnosis_response_hides_internal_metadata() -> None:
     }
 
 
+def test_submit_diagnosis_reports_models_in_order() -> None:
+    """Each model is checked for emptiness and then for existence before the next
+    one, so an unknown first model is reported ahead of a blank later one."""
+    toolset = _toolset({"has_bug": True}, ["model_a"])
+    toolset.state.collected_evidence.append(
+        _file_span_evidence("models/model_a.sql", 1, 2)
+    )
+    message = _submit_for_test(
+        toolset,
+        has_bug=True,
+        root_cause="model_a has a bug",
+        buggy_models=["bogus", ""],
+        fix="Fix model_a",
+    )
+    assert message == "Error: Unknown model in buggy_models: 'bogus'"
+
+
 def test_submit_diagnosis_requires_collected_evidence() -> None:
     toolset = _toolset({"has_bug": True}, ["model_a"])
     message = _submit_for_test(
