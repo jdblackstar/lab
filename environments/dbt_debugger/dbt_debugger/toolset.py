@@ -270,7 +270,7 @@ class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
         else:
             header = (
                 f"# {rel}{imm} (no lines in range; file has {len(lines)} line(s); "
-                f"requested {start}-{end})"
+                f"requested {start}-{end})\n"
             )
         self._trace(tool, path=rel, start_line=start, end_line=end)
         return "\n".join([header, *(f"{i}| {line}" for i, line in enumerate(chunk, start))])
@@ -295,6 +295,7 @@ class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
         if base.is_file():
             if not path_matches_globs(rel_base, globs):
                 return "Error: path not allowed by artifact manifest"
+            self._trace("list_files", path=path, max_entries=max_entries)
             return f"FILE {tagged(rel_base)}"
 
         def _walk() -> str:
@@ -478,8 +479,9 @@ class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
         self, path: str, start_line: int = 1, end_line: int = 220
     ) -> str:
         """Read logs or ``target/`` artifacts (plus normal project files allowed by globs)."""
+        # Traced as ``read_file``: it always has been, and traces are compared across runs.
         return await self._read(
-            path, start_line, end_line, tool="read_artifact", tag_immutable=False
+            path, start_line, end_line, tool="read_file", tag_immutable=False
         )
 
     # -- evidence tools -------------------------------------------------------------

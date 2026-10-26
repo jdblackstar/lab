@@ -57,7 +57,7 @@ Each JSON file becomes one task:
 
 1. Load the scenario JSON keyed by `scenario_id`.
 2. Materialize `dbt_project.files` (+ optional seeds/macros), `debug_context/`, a rollout-local `profiles.yml`, and DuckDB source tables under a temporary workspace (inside the server runtime's workdir).
-3. Keep `project_root`, `profiles_dir`, `duckdb_path`, the manifest globs, valid model names, and the spec on the server. None of them appear in tool schemas.
+3. Keep `project_root`, `profiles_dir`, the manifest globs, valid model names, and the spec on the server. None of them appear in tool schemas.
 
 Rollout state that the task needs lives in `DbtDebuggerState` (`collected_evidence`, `submitted_diagnosis`, `tool_trace`) and is synced with the host around every tool call.
 
