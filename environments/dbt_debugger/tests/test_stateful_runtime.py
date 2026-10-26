@@ -17,6 +17,7 @@ import pytest
 import verifiers.v1 as vf
 from mcp.server.mcpserver import MCPServer
 
+from dbt_debugger.evidence import evidence_matches
 from dbt_debugger.paths import (
     globs_for_list_and_search,
     normalize_rel_path,
@@ -248,6 +249,37 @@ def test_materialize_scenario_and_dbt_compile(scenario_id: str) -> None:
         assert result.returncode == 0, result.stdout + result.stderr
     finally:
         cleanup_workspace(workspace.workspace_root)
+
+
+def test_run_history_evidence_matches_model_test_and_warning_records() -> None:
+    """No gold scenario requires model/test/warning run-history evidence, so pin the
+    matching rules for those record types here: the ref and the requirement must
+    select a common record; names are exact, statuses case-insensitive, and
+    ``contains`` is checked against the record text."""
+    spec = _spec("join_fanout_exec_revenue")
+
+    def matches(ref: dict[str, Any], requirement: dict[str, Any]) -> bool:
+        return evidence_matches(
+            {"kind": "run_history", **ref}, {"kind": "run_history", **requirement}, spec
+        )
+
+    model_ref = {"record_type": "model", "model": "int_order_lines", "status": "success"}
+    assert matches(model_ref, {"record_type": "model", "model": "int_order_lines", "status": "SUCCESS"})
+    assert not matches(model_ref, {"record_type": "model", "model": "int_order_lines", "status": "error"})
+    assert not matches(
+        {"record_type": "model", "model": "stg_orders"},
+        {"record_type": "model", "model": "int_order_lines"},
+    )
+    assert not matches({"record_type": "model"}, {"record_type": "model", "status": "error"})
+
+    test_ref = {"record_type": "test", "name": "unique_stg_orders_order_id"}
+    assert matches(test_ref, {**test_ref, "contains": "passed"})
+    assert not matches(test_ref, {**test_ref, "contains": "failed"})
+
+    warning_ref = {"record_type": "warning", "contains": "increased 85%"}
+    assert matches(warning_ref, {"record_type": "warning", "contains": "no alert fired"})
+    assert not matches(warning_ref, {"record_type": "warning", "contains": "alert fired loudly"})
+    assert not matches({"record_type": "summary"}, {"record_type": "warning"})
 
 
 def test_score_join_paraphrase_submission_strict_pass() -> None:
