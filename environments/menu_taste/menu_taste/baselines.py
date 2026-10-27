@@ -107,11 +107,11 @@ def infer_season(shown_words: set[str]) -> Season:
 
 
 def season_pick(season: Season, option_words: list[set[str]]) -> int | None:
-    """The one option with words of ``season``, or None when no single option has any."""
-    hits = [
-        i for i, w in enumerate(option_words) if w & SEASON_WORDS.get(season, set())
-    ]
-    return hits[0] if len(hits) == 1 else None
+    """The option with the most words of ``season``, as the season baseline picks it,
+    or None when none has any or several tie for the most."""
+    counts = [len(w & SEASON_WORDS.get(season, set())) for w in option_words]
+    best = max(counts, default=0)
+    return counts.index(best) if best and counts.count(best) == 1 else None
 
 
 def _capital_share(name: str) -> float:
