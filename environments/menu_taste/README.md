@@ -252,20 +252,23 @@ The best of these should stay near chance. Sharing words with the menu always he
 little, because real menus repeat a theme (a summer menu uses watermelon twice); that
 is the bar a model has to clear.
 
+Season is different: it is part of what the task asks a model to judge, so wrong options
+are not matched for it. The season row is a floor instead. Picking the option with the
+most ingredients of the menu's stated season scores about 43% on the bundled sample, so
+a model has to beat that to show judgment beyond knowing what is in season.
+
 ## Known gaps
 
 - No human ceiling yet. On the 300-question subset, all three runs chose the same wrong
   dish on 47 questions (16%). Some are honest toss-ups (one dessert bar against
   another); have a person answer a sample to find out how many are unfair.
-- Frozen v1 predates three fixes, so it still has their problems until v2 is rebuilt
+- Frozen v1 predates two fixes, so it still has their problems until v2 is rebuilt
   from the corpus (`menu-taste-questions build`): boards and platters under a "passed"
   heading stayed in the passed section (40 questions, 10 where the board is the
   answer; `import-grid` now moves them to a display section), and wrong options matched
   whether the answer had dietary tags, not which ones. Re-import, rebuild, and rerun
   `menu-taste-baselines` before trusting v2.
-- Season words give the answer away on the bundled sample: picking the option with the
-  most ingredients of the menu's stated season scores about 43%. The real corpus mostly
-  has no stated season, so check that rule's row on it; wrong options are not yet
-  matched for season.
+- The real corpus mostly has no stated season, so the season row covers few of its
+  questions. Check how many it answers before reading it as the floor.
 - Only one task so far. Natural next steps: spot the intruder dish, and real vs. generic
   menus for the same brief.
