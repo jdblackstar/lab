@@ -134,6 +134,50 @@ def test_labels_must_be_unique_and_one_per_run(question_set, tmp_path, labels):
         report(str(question_set), [str(run), str(run)], labels)
 
 
+def test_scores_are_split_by_whether_season_picks_out_an_option(tmp_path):
+    spring = "Season: spring\n\nMain\n- Roast chicken\n- [MISSING DISH]"
+    implied = "Main\n- Gnudi — ramp pesto\n- Halibut — morels\n- [MISSING DISH]"
+    plain = "Main\n- Roast chicken\n- [MISSING DISH]"
+    desserts = ["Chocolate cake", "Lemon bar", "Rice pudding"]
+    cases = [  # (menu, options, answer index); every answer below is option A
+        (spring, ["Asparagus tart", *desserts], 0),
+        (spring, ["Pea tart", *desserts], 1),
+        (implied, ["Rhubarb crisp", *desserts], 0),  # season inferred from the dishes
+        (plain, ["Plum tart", *desserts], 0),
+    ]
+    questions = tmp_path / "q.jsonl"
+    questions.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "id": f"q{i}",
+                    "menu_text": menu,
+                    "options": options,
+                    "answer_index": answer,
+                    "related_menu_ids": [],
+                    "info": {"menu_id": f"m{i}", "course": "dessert"},
+                }
+            )
+            + "\n"
+            for i, (menu, options, answer) in enumerate(cases)
+        )
+    )
+    run = tmp_path / "a.jsonl"
+    run.write_text(
+        "".join(
+            json.dumps(
+                {"id": f"q{i}", "rotation": 0, "completion": "<answer>A</answer>"}
+            )
+            + "\n"
+            for i in range(len(cases))
+        )
+    )
+    text = report(str(questions), [str(run)], ["a"])
+    assert "| season points to the answer | 2 | 100% (2) |" in text
+    assert "| season points to a wrong option | 1 | 0% (1) |" in text
+    assert "| season singles out no option | 1 | 100% (1) |" in text
+
+
 MENU = """Service: plated
 Season: summer
 

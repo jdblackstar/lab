@@ -291,7 +291,16 @@ is the bar a model has to clear.
 Season is different: it is part of what the task asks a model to judge, so wrong options
 are not matched for it. The season row is a floor instead. Picking the option with the
 most ingredients of the menu's stated season scores about 43% on the bundled sample, so
-a model has to beat that to show judgment beyond knowing what is in season.
+a model has to beat that to show judgment beyond knowing what is in season. A second
+row infers the season from the shown dishes (at least two ingredients of one season,
+more than any other), so it also covers menus with no stated season.
+
+`menu-taste-score` splits each run by season cue: questions where the season (stated,
+or else inferred) picks out one option by its ingredients and it is the answer, where
+it picks out a wrong option, and where it picks out none. A model that only knows
+produce scores well on the first row and at chance on the third; the third row is the
+cleanest read on composition. The split reads the question text, so it works on frozen
+v1 as is.
 
 ## Known gaps
 
@@ -304,7 +313,8 @@ a model has to beat that to show judgment beyond knowing what is in season.
   answer; `import-grid` now moves them to a display section), and wrong options matched
   whether the answer had dietary tags, not which ones. Re-import, rebuild, and rerun
   `menu-taste-baselines` before trusting v2.
-- The real corpus mostly has no stated season, so the season row covers few of its
-  questions. Check how many it answers before reading it as the floor.
+- The real corpus mostly has no stated season, so the stated-season row covers few of
+  its questions; use the inferred-season row there. On the bundled sample the inferred
+  season matches the stated one on 77 of the 87 questions where it makes a guess.
 - Only one task so far. Natural next steps: spot the intruder dish, and real vs. generic
   menus for the same brief.

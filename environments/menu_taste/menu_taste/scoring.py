@@ -20,16 +20,36 @@ from pathlib import Path
 
 import numpy as np
 
-from .baselines import words
+from .baselines import infer_season, season_pick, words
 from .cloze import LETTERS
 from .questions import load_meta, load_question_set, rotate
 from .render import MISSING_MARKER
+from .schema import Season
 
 _ANSWER = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTALL)
 _LETTER = re.compile(
     r"^[\s*_`\"'(\[]*(?:(?:option|choice|answer)\s*:?\s*)?([a-z])(?![a-z])",
     re.IGNORECASE,
 )
+
+
+_SEASON_LINE = re.compile(r"^Season: (\w+)$", re.MULTILINE)
+SEASON_CUES = (
+    "season points to the answer",
+    "season points to a wrong option",
+    "season singles out no option",
+)
+
+
+def season_cue(rec: dict) -> str:
+    """Whether the menu's season (stated, or else inferred from the shown dishes) picks
+    out one option by its ingredients, and whether that option is the answer."""
+    m = _SEASON_LINE.search(rec["menu_text"])
+    season = Season(m.group(1)) if m else infer_season(words(rec["menu_text"]))
+    pick = season_pick(season, [words(o) for o in rec["options"]])
+    if pick is None:
+        return SEASON_CUES[2]
+    return SEASON_CUES[0] if pick == rec["answer_index"] else SEASON_CUES[1]
 
 
 def extract_letter(text: str, num_options: int = 4) -> str | None:
@@ -242,6 +262,20 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
             hits = [x["correct"] for x in g if x["course"] == course]
             cells.append(f"{np.mean(hits):.0%} ({len(hits)})" if hits else "–")
         lines.append(f"| {course} | {n} | " + " | ".join(cells) + " |")
+
+    # Season is part of what the task asks about, so this splits rather than removes it:
+    # a model strong only on the first row knows produce, not composition.
+    cues = {i: season_cue(rec) for i, rec in records.items()}
+    lines += ["", "By season cue:", ""]
+    lines.append("| Season cue | Questions | " + " | ".join(graded) + " |")
+    lines.append("| --- | --- |" + " --- |" * len(graded))
+    for cue in SEASON_CUES:
+        n = sum(c == cue for c in cues.values())
+        cells = []
+        for g in graded.values():
+            hits = [x["correct"] for x in g if cues[x["id"]] == cue]
+            cells.append(f"{np.mean(hits):.0%} ({len(hits)})" if hits else "–")
+        lines.append(f"| {cue} | {n} | " + " | ".join(cells) + " |")
 
     cuts = {qid: word_cuts(rec) for qid, rec in records.items()}
     lines += [

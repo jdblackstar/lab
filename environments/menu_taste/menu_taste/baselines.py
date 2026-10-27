@@ -97,6 +97,23 @@ SEASON_WORDS = {
 }
 
 
+def infer_season(shown_words: set[str]) -> Season:
+    """The season the shown dishes point to: at least two of its words, and more than
+    any other season has. Otherwise unknown."""
+    hits = {season: len(shown_words & ws) for season, ws in SEASON_WORDS.items()}
+    best = max(hits.values())
+    top = [season for season, n in hits.items() if n == best]
+    return top[0] if best >= 2 and len(top) == 1 else Season.unknown
+
+
+def season_pick(season: Season, option_words: list[set[str]]) -> int | None:
+    """The option with the most words of ``season``, as the season baseline picks it,
+    or None when none has any or several tie for the most."""
+    counts = [len(w & SEASON_WORDS.get(season, set())) for w in option_words]
+    best = max(counts, default=0)
+    return counts.index(best) if best and counts.count(best) == 1 else None
+
+
 def _capital_share(name: str) -> float:
     tokens = re.findall(r"[A-Za-z]+", name)
     return sum(t[0].isupper() for t in tokens) / len(tokens) if tokens else 0.0
@@ -116,6 +133,7 @@ class Context:
     has_tags: float
     capitals: float
     season_words: set[str]
+    inferred_season_words: set[str]
     shown: list[frozenset[str]]
     held_out: frozenset[str]
 
@@ -130,10 +148,11 @@ def context(q: ClozeQuestion) -> Context:
             if s_idx == q.section_idx:
                 section_items.append(item)
     n = max(len(items), 1)
+    shown_words = set().union(*(item_words(i) for i in items)) if items else set()
     return Context(
         items=items,
         section_items=section_items,
-        words=set().union(*(item_words(i) for i in items)) if items else set(),
+        words=shown_words,
         section_words=set().union(*(item_words(i) for i in section_items))
         if section_items
         else set(),
@@ -143,6 +162,7 @@ def context(q: ClozeQuestion) -> Context:
         has_tags=sum(bool(i.dietary) for i in items) / n,
         capitals=sum(_capital_share(i.name) for i in items) / n,
         season_words=SEASON_WORDS.get(q.menu.event.season, set()),
+        inferred_season_words=SEASON_WORDS.get(infer_season(shown_words), set()),
         shown=[dish_tokens(i.name) for i in items],
         held_out=frozenset(q.related_menu_ids or (q.menu.menu_id,)),
     )
@@ -206,6 +226,7 @@ FEATURES = [
     "capitals_gap",
     "popularity",
     "season_words",
+    "inferred_season_words",
     "tag_set_shared",
     "cooccurrence",
     "cooccurrence_share",
@@ -234,6 +255,7 @@ def features(
         abs(_capital_share(item.name) - ctx.capitals),
         popularity(item),
         len(w & ctx.season_words),
+        len(w & ctx.inferred_season_words),
         same_tags / max(len(options) - 1, 1),
         *cooccurrence(item, ctx),
     ]
@@ -248,6 +270,8 @@ def feature_tensor(questions: list[ClozeQuestion], menus: list[Menu]) -> np.ndar
     return np.asarray(out, dtype=float)
 
 
+INFERRED_SEASON_RULE = "most words tied to the season the shown dishes suggest"
+
 # Single-cue rules: (name, feature, pick the highest or lowest value)
 RULES = [
     ("most words shared with the menu", "menu_overlap", max),
@@ -260,6 +284,7 @@ RULES = [
     ("most common dish in the corpus", "popularity", max),
     ("least common dish in the corpus", "popularity", min),
     ("most words tied to the menu's stated season", "season_words", max),
+    (INFERRED_SEASON_RULE, "inferred_season_words", max),
     ("only option whose dietary tags differ", "tag_set_shared", min),
     ("most often served with the shown dishes", "cooccurrence", max),
     ("largest share of the shown dishes on its other menus", "cooccurrence_share", max),
@@ -272,6 +297,10 @@ def applicable(questions: list[ClozeQuestion], X: np.ndarray) -> dict[str, np.nd
     return {
         "most words tied to the menu's stated season": np.array(
             [q.menu.event.season is not Season.unknown for q in questions], dtype=bool
+        ),
+        INFERRED_SEASON_RULE: np.array(
+            [infer_season(context(q).words) is not Season.unknown for q in questions],
+            dtype=bool,
         ),
         # Three wrong options share one tag set and the fourth option has another.
         "only option whose dietary tags differ": np.array(
