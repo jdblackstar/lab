@@ -69,6 +69,8 @@ public final class PocMain {
 
     /** HumanPlayer's existing rule/choice handling with a synchronous pipe transport. */
     static final class BridgePlayer extends HumanPlayer {
+        // Checkpoints serialize this class; the pin keeps xmage-runtime-v1 recordings loadable.
+        private static final long serialVersionUID = 5468673559502403429L;
         final transient PlayerResponse reply;
         final transient Channel channel;
         final long seed;
@@ -101,6 +103,15 @@ public final class PocMain {
         private BridgePlayer(BridgePlayer p) {
             super(p); reply = p.reply; channel = p.channel; seed = p.seed; deckSeed = p.deckSeed; shuffles = p.shuffles;
             cardOrder.putAll(p.cardOrder);
+        }
+        /** Reattach a deserialized seat, whose transport fields are transient, to a new channel. */
+        BridgePlayer(BridgePlayer saved, Channel channel) { this(saved, channel, new PlayerResponse()); }
+        private BridgePlayer(BridgePlayer saved, Channel channel, PlayerResponse reply) {
+            // HumanPlayer(PlayerImpl, PlayerResponse) runs PlayerImpl's full copy constructor, ID included.
+            super(saved, reply);
+            this.reply = reply; this.channel = channel; seed = saved.seed; deckSeed = saved.deckSeed; shuffles = saved.shuffles;
+            cardOrder.putAll(saved.cardOrder);
+            setUserData(saved.getUserData());
         }
         @Override public BridgePlayer copy() { return new BridgePlayer(this); }
         @Override public void restore(Player p) {
@@ -155,11 +166,18 @@ public final class PocMain {
     }
 
     static final class RecordedGame extends TwoPlayerDuel {
+        // Checkpoints serialize this class; the pin keeps xmage-runtime-v1 recordings loadable.
+        private static final long serialVersionUID = -2555739996622015410L;
         transient Recorder recorder;
         String technicalFailure;
         RecordedGame() {
             super(MultiplayerAttackOption.LEFT, RangeOfInfluence.ALL,
                 MulliganType.GAME_DEFAULT.getMulligan(0), 60, 20, 7);
+        }
+        /** Copy a restored checkpoint, keeping the recording hooks that copy() drops. */
+        RecordedGame(RecordedGame saved) {
+            super(saved);
+            technicalFailure = saved.technicalFailure;
         }
         @Override public TwoPlayerDuel copy() { return new TwoPlayerDuel(this); }
         @Override public void fireEvent(GameEvent e) {
@@ -185,7 +203,7 @@ public final class PocMain {
         final BufferedWriter decisions;
         final BufferedWriter events;
         final Map<UUID, BufferedWriter> views = new LinkedHashMap<>();
-        long sequence = 0;
+        long sequence = 0, eventCount = 0;
         boolean capturing;
         Recorder(Path root, Game game, String mode) throws IOException {
             this.root = root;
@@ -204,7 +222,7 @@ public final class PocMain {
             if (capturing || g.isSimulation()) return sequence;
             capturing = true;
             try {
-                if (reason.equals("event")) line(events, event);
+                if (reason.equals("event")) { line(events, event); eventCount++; }
                 // Benchmark privacy audits retain every decision's engine projection,
                 // not event/update projections or restorable engine graphs.
                 if (!fullAudit && (reason.equals("event") || reason.equals("update"))) return sequence;
@@ -266,8 +284,12 @@ public final class PocMain {
         PlayerQueryEvent pending;
         Recorder recorder;
         final Map<UUID, Integer> objectOrder = new HashMap<>();
-        final BufferedReader input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+        final BufferedReader input;
+        final PrintStream out;
         int decision;
+
+        Channel() { this(new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8)), System.out); }
+        Channel(BufferedReader input, PrintStream out) { this.input = input; this.out = out; }
 
         static void add(JsonArray actions, String kind, String label, String type, Object value) {
             actions.add(object("index", actions.size(), "kind", kind, "label", label, "response_type", type, "value", value));
@@ -307,8 +329,8 @@ public final class PocMain {
                     "query_type", q.getQueryType(), "message", message, "view", view, "actions", actions);
                 long seq = recorder.capture(g, "decision", object("decision", decision, "actor", p.getId()));
                 line(recorder.views.get(p.getId()), observation);
-                System.out.println(JSON.toJson(object("type", "decision", "observation", observation)));
-                System.out.flush();
+                out.println(JSON.toJson(object("type", "decision", "observation", observation)));
+                out.flush();
                 String answer = input.readLine();
                 if (answer == null) throw new EOFException("Controller disconnected");
                 JsonObject response = JsonParser.parseString(answer).getAsJsonObject();
@@ -628,6 +650,7 @@ public final class PocMain {
             return;
         }
         if (args[0].equals("verify")) { verifyCheckpoints(Paths.get(args[1])); return; }
+        if (args[0].equals("replay") || args[0].equals("rollout")) { Resume.main(args); return; }
         if (args[0].equals("inspect")) {
             try (ObjectInputStream in = new ObjectInputStream(new GZIPInputStream(Files.newInputStream(Paths.get(args[1]))))) {
                 System.out.println(JSON.toJson(summary((Game) in.readObject())));
