@@ -28,8 +28,8 @@ scripts/prime_rl_eval.sh environments/menu_taste menu-taste \
 ```
 
 The eval exits 0 even when rollouts error, so check
-`outputs/menu-taste/smoke/monitors/file/traces/stream.index.jsonl` for `"ok": true` and
-`"num_errors": 0` on every line.
+`outputs/menu-taste/smoke/monitors/file/traces/stream.index.jsonl` for `"ok": true` on
+every line (`"num_errors"` stays 0 when the model call fails).
 
 Without a question set or corpus the taskset loads 93 questions from a bundled sample of
 13 synthetic menus. It exists for smoke tests; scores on it mean nothing.
@@ -43,6 +43,41 @@ cd environments/menu_taste
 uv run vf-validate menu-taste --runtime.type subprocess
 uv run pytest
 ```
+
+## Results
+
+No model has been scored on the real question set yet, so there is no table here. To
+make one, freeze a question set (next section), then run every model on it from
+`environments/menu_taste`:
+
+```bash
+uv run menu-taste-results private/questions-v1.jsonl -m <model> -m <model> -r 3
+```
+
+This runs each model through the environment with prime-rl's eval (`-r` answers per
+question, `-c 8` at a time, Prime Inference with `PRIME_API_KEY` by default),
+decompresses the traces, scores all runs together, and writes
+`private/results/questions-v1/results.md`. That file is the section to paste here. It
+holds:
+
+- accuracy with 95% intervals resampled by menu, next to the question set's stored
+  no-taste baselines;
+- accuracy by course;
+- accuracy on questions where the "most words shared with the menu" rule picks the
+  answer, picks another option, or ties, and on questions whose answer shares no words
+  with the menu, so a score can't come from that cue alone;
+- which letters each model favors, and how often each pair of models chose the same
+  dish.
+
+The eval exits 0 even when rollouts fail. `menu-taste-results` counts failed rollouts
+instead of scoring them, and exits 1 if any rollout errored or a run is incomplete.
+Running it again reuses complete runs and repeats only the failed ones. Arguments after
+`--` go to the eval unchanged, for example `-- --client.base-url <url>
+--client.api-key-var <VAR>` for another OpenAI-compatible endpoint. Runs and traces stay
+next to the question set, under `private/`.
+
+Scores from Claude Code subagents answering batches (below) come from a different
+setup and don't belong in this table.
 
 ## Running a real eval
 
@@ -79,7 +114,8 @@ Every trace contains a whole menu, so on private questions:
 - always run `vf-validate` with `--runtime.type subprocess`.
 
 `menu-taste-score` reports accuracy with 95% intervals resampled by menu (questions from
-one menu aren't independent), accuracy by course, which letters each run favors, and for
+one menu aren't independent), accuracy by course and by the word-overlap cuts under
+[Results](#results), which letters each run favors, and for
 two or more runs on the same questions, how often they chose the same dish and the
 accuracy difference with an interval. Set `--env.taskset.rotation` (1–3) to shift
 every question's options; comparing rotations shows position bias.
@@ -268,9 +304,9 @@ v1 as is.
 
 ## Known gaps
 
-- No human ceiling yet. On the 300-question subset, all three runs chose the same wrong
-  dish on 47 questions (16%). Some are honest toss-ups (one dessert bar against
-  another); have a person answer a sample to find out how many are unfair.
+- No human ceiling yet. Some questions may be honest toss-ups (one dessert bar against
+  another) that no amount of taste resolves; have a person answer a sample to find out
+  how many are unfair.
 - Frozen v1 predates two fixes, so it still has their problems until v2 is rebuilt
   from the corpus (`menu-taste-questions build`): boards and platters under a "passed"
   heading stayed in the passed section (40 questions, 10 where the board is the
