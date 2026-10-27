@@ -86,3 +86,12 @@ def test_cooccurrence_ignores_the_menus_own_versions():
     assert answer_hits == 0 and wrong_hits > 0  # duck with scallops only in a version
     (answer_hits, _), _ = scores(("t",))
     assert answer_hits > 0
+
+
+def test_season_is_inferred_only_when_the_dishes_clearly_point_to_one():
+    from menu_taste.baselines import infer_season, words
+    from menu_taste.schema import Season
+
+    assert infer_season(words("ramp pesto, morels, roast chicken")) is Season.spring
+    assert infer_season(words("ramp pesto, roast chicken")) is Season.unknown
+    assert infer_season(words("ramp pesto, morels, squash, apple")) is Season.unknown
