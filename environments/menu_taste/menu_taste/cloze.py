@@ -344,7 +344,17 @@ def cloze_questions(
                     sum(picked),
                 )
 
-            best = min(combinations(range(len(head)), need), key=cost)
+            # Try the best-ranked set and its single swaps, not every combination
+            # (which grows combinatorially with num_options). One swap always keeps
+            # the answer from standing alone when any set can; a lone wrong option
+            # occasionally needs two and then stays.
+            base = tuple(range(need))
+            swaps = [
+                tuple(sorted(set(base) - {out} | {spare}))
+                for out in base
+                for spare in range(need, len(head))
+            ]
+            best = min([base, *swaps], key=cost)
             distractors = [head[i] for i in best]
 
         options = [target, *distractors]
