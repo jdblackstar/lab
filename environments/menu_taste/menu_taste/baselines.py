@@ -118,6 +118,7 @@ class Context:
     season_words: set[str]
     shown: list[frozenset[str]]
     held_out: frozenset[str]
+    caterer: str | None
 
 
 def context(q: ClozeQuestion) -> Context:
@@ -145,6 +146,7 @@ def context(q: ClozeQuestion) -> Context:
         season_words=SEASON_WORDS.get(q.menu.event.season, set()),
         shown=[dish_tokens(i.name) for i in items],
         held_out=frozenset(q.related_menu_ids or (q.menu.menu_id,)),
+        caterer=q.menu.caterer,
     )
 
 
@@ -161,6 +163,8 @@ def dish_popularity(menus: list[Menu]) -> Callable[[Item], float]:
 def dish_cooccurrence(menus: list[Menu]) -> Callable[[Item, Context], list[float]]:
     """How often the caterer serves a dish on menus with the dishes shown, counting
     only menus outside the question's own family (the target menu and its versions).
+    In a pooled corpus only the question's own caterer counts, since its options
+    come from that caterer alone.
 
     Returns [log of the number of (menu, shown dish) pairs, share of the shown dishes
     found on the dish's other menus]. Models never see the corpus; this checks whether
@@ -187,7 +191,11 @@ def dish_cooccurrence(menus: list[Menu]) -> Callable[[Item, Context], list[float
 
     def score(item: Item, ctx: Context) -> list[float]:
         held = {index[m] for m in ctx.held_out if m in index}
-        mine = serving(dish_tokens(item.name)) - held
+        mine = {
+            i
+            for i in serving(dish_tokens(item.name)) - held
+            if eligible[i].caterer == ctx.caterer
+        }
         hits = sum(len(mine & serving(t)) for t in ctx.shown)
         share = hits / (len(mine) * len(ctx.shown)) if mine and ctx.shown else 0.0
         return [math.log1p(hits), share]

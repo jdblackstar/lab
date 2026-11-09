@@ -67,12 +67,13 @@ def test_cooccurrence_ignores_the_menus_own_versions():
     from menu_taste.cloze import ClozeQuestion
     from menu_taste.schema import Menu
 
-    def menu(menu_id, dishes):
+    def menu(menu_id, dishes, caterer=None):
         return Menu.model_validate(
             {
                 "menu_id": menu_id,
                 "kind": "event",
                 "service": "plated",
+                "caterer": caterer,
                 "sections": [
                     {"course": "main", "items": [{"name": d} for d in dishes]}
                 ],
@@ -85,7 +86,7 @@ def test_cooccurrence_ignores_the_menus_own_versions():
     answer, wrong = target.sections[0].items[0], other.sections[0].items[0]
     cooc = dish_cooccurrence([target, version, other])
 
-    def scores(related):
+    def scores(related, cooc=cooc, target=target):
         q = ClozeQuestion(
             menu=target,
             section_idx=0,
@@ -102,3 +103,14 @@ def test_cooccurrence_ignores_the_menus_own_versions():
     assert answer_hits == 0 and wrong_hits > 0  # duck with scallops only in a version
     (answer_hits, _), _ = scores(("t",))
     assert answer_hits > 0
+
+    # In a pooled corpus, another caterer's pairings don't count: the question's
+    # options come from its own caterer, so only that caterer's habits can leak.
+    a = [menu("t", ["Roast duck", "Seared scallops", "Braised lamb"], "a")]
+    b = [
+        menu("b1", ["Grilled trout", "Seared scallops", "Short rib"], "b"),
+        menu("b2", ["Grilled trout", "Braised lamb", "Quail"], "b"),
+    ]
+    pooled = dish_cooccurrence(a + b)
+    _, (wrong_hits, wrong_share) = scores(("t",), cooc=pooled, target=a[0])
+    assert wrong_hits == 0 and wrong_share == 0.0
