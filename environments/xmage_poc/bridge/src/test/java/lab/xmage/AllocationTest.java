@@ -14,7 +14,7 @@ public class AllocationTest {
         PlayerQueryEvent query = PlayerQueryEvent.multiAmountEvent(UUID.randomUUID(), Arrays.asList(
             new MultiAmountMessage("Knight", 0, 3, 1), new MultiAmountMessage("Ox", 0, 3, 2)), 3, 3, new HashMap<>());
         JsonArray actions = new JsonArray();
-        new PocMain.Channel().amountAllocations(actions, query);
+        new Channel().amountAllocations(actions, query);
         Set<String> offered = new HashSet<>();
         for (JsonElement action : actions) offered.add(action.getAsJsonObject().get("value").getAsString());
         assertEquals(new HashSet<>(Arrays.asList("0 3", "1 2", "2 1", "3 0")), offered);
@@ -27,7 +27,7 @@ public class AllocationTest {
         PlayerQueryEvent query = PlayerQueryEvent.multiAmountEvent(UUID.randomUUID(), Arrays.asList(
             new MultiAmountMessage("A", 1, 2, 1), new MultiAmountMessage("B", 0, 2, 1)), 2, 3, options);
         JsonArray actions = new JsonArray();
-        new PocMain.Channel().amountAllocations(actions, query);
+        new Channel().amountAllocations(actions, query);
         Set<String> offered = new HashSet<>();
         for (JsonElement action : actions) if (action.getAsJsonObject().get("kind").getAsString().equals("allocation")) offered.add(action.getAsJsonObject().get("value").getAsString());
         assertEquals(new HashSet<>(Arrays.asList("1 1", "1 2", "2 0", "2 1")), offered);
@@ -37,6 +37,6 @@ public class AllocationTest {
     @Test(expected = IllegalStateException.class) public void rejectsUnboundedEnumeration() {
         PlayerQueryEvent query = PlayerQueryEvent.multiAmountEvent(UUID.randomUUID(), Collections.singletonList(
             new MultiAmountMessage("Huge", 0, 10000, 0)), 0, 10000, new HashMap<>());
-        new PocMain.Channel().amountAllocations(new JsonArray(), query);
+        new Channel().amountAllocations(new JsonArray(), query);
     }
 }
