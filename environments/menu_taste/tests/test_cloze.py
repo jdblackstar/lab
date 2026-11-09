@@ -1,6 +1,12 @@
-from menu_taste.cloze import LETTERS, build_cloze_items, dish_tokens, same_dish
+from menu_taste.cloze import LETTERS, cloze_questions, dish_tokens, same_dish
 from menu_taste.corpus import load_menus, sample_corpus_path
+from menu_taste.questions import record, to_row
 from menu_taste.schema import Menu
+
+
+def build_cloze_items(menus, **kwargs):
+    """Questions as the env serves them: (``question``, ``answer``, ``info``) rows."""
+    return [to_row(record(q)) for q in cloze_questions(menus, **kwargs)]
 
 
 def _sample():

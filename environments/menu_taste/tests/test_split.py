@@ -6,7 +6,8 @@ from itertools import product
 
 import pytest
 from menu_taste.cloze import dish_tokens
-from menu_taste.questions import _norm, load_question_set, main
+from menu_taste.batches import _norm
+from menu_taste.questions import load_question_set, main
 from menu_taste.schema import Menu
 from menu_taste.split import build_split
 from menu_taste.taskset import MenuTasteConfig, MenuTasteTaskset

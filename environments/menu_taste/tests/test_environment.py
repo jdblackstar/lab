@@ -190,11 +190,11 @@ def test_validate_runs_locally_and_refuses_hosted_runtimes(tmp_path):
     assert json.loads((run / "summary.json").read_text())["valid_rate"] == 1.0
 
 
-def test_missing_corpus_is_a_clear_error(tmp_path):
-    empty = tmp_path / "menus.jsonl"
+def test_empty_question_set_is_a_clear_error(tmp_path):
+    empty = tmp_path / "questions.jsonl"
     empty.write_text("")
     with pytest.raises(ValueError, match="No questions"):
-        _tasks(menus_path=str(empty))
+        _tasks(questions_path=str(empty))
 
 
 def test_trace_data_round_trips(tmp_path):

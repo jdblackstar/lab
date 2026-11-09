@@ -10,7 +10,6 @@ from pathlib import Path
 
 from .schema import Menu
 
-MENUS_ENV_VAR = "MENU_TASTE_MENUS"
 SAMPLE_CORPUS = "sample_menus.jsonl"
 
 
@@ -35,12 +34,6 @@ def write_menus(menus: Iterable[Menu], path: str | os.PathLike) -> None:
 
 def sample_corpus_path() -> Path:
     return Path(str(resources.files("menu_taste") / "data" / SAMPLE_CORPUS))
-
-
-def resolve_corpus(path: str | None) -> Path:
-    """Explicit path, then ``$MENU_TASTE_MENUS``, then the bundled synthetic sample."""
-    chosen = path or os.environ.get(MENUS_ENV_VAR)
-    return Path(chosen).expanduser() if chosen else sample_corpus_path()
 
 
 def dump_json(menu: Menu) -> str:

@@ -42,7 +42,8 @@ from .cloze import (
     dish_tokens,
 )
 from .corpus import load_menus
-from .questions import FORMAT_VERSION, _norm, record, write_question_set
+from .batches import _norm
+from .questions import FORMAT_VERSION, record, write_question_set
 from .schema import Menu
 
 

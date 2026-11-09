@@ -6,7 +6,7 @@
 
 A run is the episode JSONL of a verifiers v1 eval on the question set (``traces.jsonl``,
 or prime-rl's ``monitors/file/traces/stream/*.jsonl.zst`` once decompressed), or a
-JSONL of ``{id, rotation, completion}`` (what ``menu-taste-questions collect`` writes).
+JSONL of ``{id, rotation, completion}`` (what ``menu-taste-batches collect`` writes).
 A run may answer each question several times (``-r``). Intervals are bootstrapped by
 menu, since questions from one menu aren't independent. Rollouts that errored (the
 model call failed) are counted, not scored.
