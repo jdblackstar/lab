@@ -43,7 +43,7 @@ from .cloze import (
 )
 from .corpus import load_menus
 from .batches import _norm
-from .questions import FORMAT_VERSION, record, write_question_set
+from .questions import FORMAT_VERSION, params_meta, record, write_question_set
 from .schema import Menu
 
 
@@ -175,7 +175,7 @@ def build_split(corpus: str, out: str, eval_fraction: float, **params) -> dict:
         "created": datetime.date.today().isoformat(),
         "corpus_sha256": hashlib.sha256(Path(corpus).read_bytes()).hexdigest(),
         "corpus_menus": len(menus),
-        "params": {k: v for k, v in params.items() if k != "courses"},
+        "params": params_meta(params),
     }
     written = {}
     for part in ("train", "eval"):

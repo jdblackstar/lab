@@ -109,7 +109,8 @@ def test_eval_questions_showing_a_dish_trained_on_are_dropped(corpus, tmp_path):
 
 def test_build_with_eval_fraction_writes_halves_the_taskset_loads(corpus, tmp_path):
     out = tmp_path / "questions.jsonl"
-    assert main(["build", str(corpus), "-o", str(out), "--eval-fraction", "0.3"]) == 0
+    argv = ["build", str(corpus), "-o", str(out), "--eval-fraction", "0.3"]
+    assert main([*argv, "--courses", "dessert", "main"]) == 0
     assert not out.exists()
 
     halves = {}
@@ -117,6 +118,7 @@ def test_build_with_eval_fraction_writes_halves_the_taskset_loads(corpus, tmp_pa
         path = tmp_path / f"questions-{part}.jsonl"
         meta = json.loads((tmp_path / f"questions-{part}.meta.json").read_text())
         assert meta["split"]["part"] == part
+        assert meta["params"]["courses"] == ["dessert", "main"]  # how it was built
         assert meta["questions"] == len(load_question_set(path))
         assert meta["split"][f"{part}_questions"] == meta["questions"]
         assert "best combination of all cues (held-out menus)" in meta["baselines"]

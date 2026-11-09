@@ -82,6 +82,13 @@ def load_meta(path: str | Path) -> dict:
     return json.loads(p.read_text()) if p.exists() else {}
 
 
+def params_meta(params: dict) -> dict:
+    """``cloze_questions`` arguments as recorded in a set's ``.meta.json``: the
+    course filter becomes a sorted list of values (``None`` for the default)."""
+    courses = params.get("courses")
+    return {**params, "courses": sorted(c.value for c in courses) if courses else None}
+
+
 def build(corpus: str, out: str, **params) -> dict:
     from .baselines import report_numbers
 
@@ -95,12 +102,7 @@ def build(corpus: str, out: str, **params) -> dict:
         "created": datetime.date.today().isoformat(),
         "corpus_sha256": hashlib.sha256(Path(corpus).read_bytes()).hexdigest(),
         "corpus_menus": len(menus),
-        "params": {
-            **params,
-            "courses": sorted(c.value for c in params["courses"])
-            if params.get("courses")
-            else None,
-        },
+        "params": params_meta(params),
         "questions": len(records),
         "menus_shown": len({r["info"]["menu_id"] for r in records}),
         "num_options": len(records[0]["options"]) if records else 0,
