@@ -32,6 +32,7 @@ menu-taste-baselines = "menu_taste.baselines:main"
 menu-taste-questions = "menu_taste.questions:main"
 menu-taste-score = "menu_taste.scoring:main"
 menu-taste-results = "menu_taste.results:main"
+menu-taste-validate = "menu_taste.validate:main"
 
 [build-system]
 requires = ["hatchling"]

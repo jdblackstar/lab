@@ -23,7 +23,7 @@ from .schema import Course
 from .scoring import extract_letter
 
 MAX_TURNS = 1
-"""One model reply per question, as in v0's single-turn environment."""
+"""One model reply per question: the task is single-turn multiple choice."""
 
 
 class MenuTasteData(vf.TaskData):

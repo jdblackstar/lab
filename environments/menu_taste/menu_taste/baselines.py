@@ -194,39 +194,82 @@ def rule_predictions(X: np.ndarray, seed: int = 0) -> dict[str, np.ndarray]:
     return preds
 
 
-def fit_choice_model(X: np.ndarray, y: np.ndarray, l2: float = 1e-2, steps: int = 400):
-    """Conditional logit: softmax over each question's options of a linear score."""
+L2_GRID = (0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0)
+"""Ridge penalties (on standardized features) the combination chooses from. The cues
+are weak and a few hundred questions are few, so a fixed small penalty overfits: on
+the 93-question sample, l2=0.01 scored 36% on its training menus, 25% on held-out ones,
+with a held-out log loss worse than guessing uniformly."""
+
+
+def _log_softmax(logits: np.ndarray) -> np.ndarray:
+    logits = logits - logits.max(1, keepdims=True)
+    return logits - np.log(np.exp(logits).sum(1, keepdims=True))
+
+
+def fit_choice_model(X: np.ndarray, y: np.ndarray, l2: float = 0.1):
+    """Conditional logit: softmax over each question's options of a linear score.
+
+    The penalized log likelihood is concave with a handful of weights, so Newton's
+    method solves it exactly in a few steps, with no learning rate or step count to
+    tune (a fixed-rate gradient descent diverges once ``l2`` is large)."""
     mean = X.reshape(-1, X.shape[-1]).mean(0)
     std = X.reshape(-1, X.shape[-1]).std(0) + 1e-9
     Z = (X - mean) / std
+    rows = np.arange(len(y))
     w = np.zeros(X.shape[-1])
-    for _ in range(steps):
-        logits = Z @ w
-        logits -= logits.max(1, keepdims=True)
-        p = np.exp(logits)
-        p /= p.sum(1, keepdims=True)
-        chosen = Z[np.arange(len(y)), y]
-        expected = (p[..., None] * Z).sum(1)
-        grad = -(chosen - expected).mean(0) + l2 * w
-        w -= 0.5 * grad
+    for _ in range(50):
+        p = np.exp(_log_softmax(Z @ w))
+        expected = np.einsum("qk,qkf->qf", p, Z)
+        grad = -(Z[rows, y] - expected).mean(0) + l2 * w
+        second = np.einsum("qk,qkf,qkg->fg", p, Z, Z) / len(y)
+        hessian = second - expected.T @ expected / len(y) + l2 * np.eye(len(w))
+        step = np.linalg.solve(hessian, grad)
+        w -= step
+        if np.abs(step).max() < 1e-8:
+            break
     return lambda Xn: ((Xn - mean) / std) @ w, w / std
+
+
+def _menu_folds(groups: list[str], folds: int, seed: int) -> list[np.ndarray]:
+    """Test masks that hold out whole menus."""
+    unique = sorted(set(groups))
+    random.Random(seed).shuffle(unique)
+    fold_of = {g: i % folds for i, g in enumerate(unique)}
+    masks = [np.array([fold_of[g] == k for g in groups]) for k in range(folds)]
+    return [m for m in masks if m.any() and not m.all()]
+
+
+def choose_l2(
+    X: np.ndarray, y: np.ndarray, groups: list[str], folds: int = 4, seed: int = 0
+) -> float:
+    """The penalty in ``L2_GRID`` with the best held-out-menu log likelihood."""
+    masks = _menu_folds(groups, folds, seed)
+    if not masks:
+        return max(L2_GRID)
+
+    def held_out_loss(l2: float) -> float:
+        loss = 0.0
+        for test in masks:
+            score, _ = fit_choice_model(X[~test], y[~test], l2)
+            lp = _log_softmax(score(X[test]))
+            loss -= lp[np.arange(test.sum()), y[test]].sum()
+        return loss
+
+    return min(L2_GRID, key=held_out_loss)
 
 
 def cross_validated_choice_model(
     X: np.ndarray, y: np.ndarray, groups: list[str], folds: int = 5, seed: int = 0
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Predictions where every question's menu was held out of training."""
-    unique = sorted(set(groups))
-    random.Random(seed).shuffle(unique)
-    fold_of = {g: i % folds for i, g in enumerate(unique)}
+    """Predictions where every question's menu was held out of training, including
+    out of the choice of penalty (chosen again inside each training split)."""
     pred = np.zeros(len(y), dtype=int)
-    for k in range(folds):
-        test = np.array([fold_of[g] == k for g in groups])
-        if test.all() or not test.any():
-            continue
-        score, _ = fit_choice_model(X[~test], y[~test])
+    for test in _menu_folds(groups, folds, seed):
+        train_groups = [g for g, t in zip(groups, test) if not t]
+        l2 = choose_l2(X[~test], y[~test], train_groups, seed=seed)
+        score, _ = fit_choice_model(X[~test], y[~test], l2)
         pred[test] = score(X[test]).argmax(1)
-    _, weights = fit_choice_model(X, y)
+    _, weights = fit_choice_model(X, y, choose_l2(X, y, groups, seed=seed))
     return pred, weights
 
 
@@ -262,6 +305,12 @@ def report_numbers(
     if not questions:
         return {}
     _, y, preds, _ = _all_predictions(questions, menus, seed)
+    return _numbers(y, preds)
+
+
+def _numbers(
+    y: np.ndarray, preds: dict[str, np.ndarray]
+) -> dict[str, dict[str, float]]:
     out = {}
     for name, pred in preds.items():
         p, lo, hi = interval(pred == y)
@@ -269,22 +318,44 @@ def report_numbers(
     return out
 
 
+def bar(numbers: dict[str, dict[str, float]]) -> list[str]:
+    """The baselines a model has to beat, highest first: the best single cue and the
+    held-out combination. Neither alone is the bar. With few questions the combination
+    can't learn its weights and lands below the best cue (on the bundled sample, 26% vs
+    31%); with many it can find what single cues miss. The best cue is picked after
+    scoring every cue on these same questions, so it leans high, which is the safe
+    direction for a bar."""
+    singles = [name for name, _, _ in RULES if name in numbers]
+    rows = [max(singles, key=lambda n: numbers[n]["accuracy"])] if singles else []
+    rows += [BEST] if BEST in numbers else []
+    return sorted(rows, key=lambda n: -numbers[n]["accuracy"])
+
+
 def report(questions: list[ClozeQuestion], menus: list[Menu], seed: int = 0) -> str:
     X, y, preds, weights = _all_predictions(questions, menus, seed)
     combo = preds.get(BEST)
     k = X.shape[1]
+    numbers = _numbers(y, preds)
+    top = bar(numbers)[0]
     lines = [
         (
             f"{len(questions)} questions from {len({q.menu.menu_id for q in questions})} "
             f"menus, {k} options each (chance = {1 / k:.0%})"
         ),
         "",
+        (
+            f"Bar to clear: {numbers[top]['accuracy']:.1%} ({top}), the higher of the "
+            "best single cue and the held-out combination. The best cue is picked "
+            "after scoring all of them on these questions, so it leans high."
+        ),
+        "",
         "| Baseline | Accuracy | 95% interval |",
         "| --- | --- | --- |",
     ]
-    for name, pred in preds.items():
-        p, lo, hi = interval(pred == y)
-        lines.append(f"| {name} | {p:.1%} | {lo:.1%}–{hi:.1%} |")
+    for name, n in numbers.items():
+        lines.append(
+            f"| {name} | {n['accuracy']:.1%} | {n['low']:.1%}–{n['high']:.1%} |"
+        )
     if combo is None:
         lines.append(f"| {BEST} | unavailable: needs at least two menus | |")
     else:
