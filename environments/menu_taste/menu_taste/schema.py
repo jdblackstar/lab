@@ -217,6 +217,11 @@ class SourceRef(_Model):
 
 class Menu(MenuBody):
     menu_id: str
+    caterer: str | None = Field(
+        default=None,
+        description="An opaque label for the business that wrote the menu ('c1', not "
+        "its name). Menus without one count as one caterer.",
+    )
     source: SourceRef | None = None
     warnings: list[str] = Field(default_factory=list)
 
