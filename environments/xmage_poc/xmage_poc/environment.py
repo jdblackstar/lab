@@ -284,11 +284,61 @@ class SeatStats:
         }
 
 
+def append_jsonl(path: Path, record: dict) -> None:
+    with path.open("a") as log:
+        log.write(json.dumps(record) + "\n")
+
+
+class SeatPrompt:
+    """One seat's private prompt state, rebuilt in full for every inference.
+
+    A *decision* is one engine query to this seat (`obs["decision"]` numbers them
+    across the whole game). Each decision opens one *block*: a list of messages
+    that starts with the rendered observation, then gains each model reply for
+    that decision and, after every rejected reply, a *correction* (a JSON user
+    message naming the error and, once attempts run out, the fallback action).
+
+    `messages()` is the system message followed by the newest `history_decisions`
+    whole blocks. Trimming whole blocks, not messages, means corrections can never
+    evict the current observation, even with history_decisions=1. The system
+    message carries this seat's registered deck and, for text observations, a
+    glossary of every public card rule shown to this seat so far. Nothing from the
+    other seat ever enters a SeatPrompt.
+    """
+
+    def __init__(self, deck_context: dict, *, text: bool):
+        self.text = text
+        self.deck_context = DECK_CONTEXT_MARKER + json.dumps(deck_context)
+        self.glossary: dict[str, str] = {}
+        self.blocks: list[list] = []
+
+    def show(self, obs: dict, factors: dict) -> None:
+        """Open a new block for this decision's observation."""
+        if self.text:
+            self.glossary.update(public_card_rules(obs))
+            rendered = render_observation(obs, **factors)
+        else:
+            rendered = json.dumps(obs)
+        self.blocks.append([vf.UserMessage(content=rendered)])
+
+    def messages(self, history_decisions: int) -> list:
+        """Exactly the messages for one inference."""
+        system = SYSTEM
+        if self.text:
+            system += TEXT_INSTRUCTIONS + glossary_text(self.glossary)
+        return [
+            vf.SystemMessage(content=system + self.deck_context),
+            *(m for block in self.blocks[-history_decisions:] for m in block),
+        ]
+
+
 class XMageGame:
     """One game's host-side controller: the engine plays the user of every seat.
 
-    Each seat's prompt is rebuilt per decision from that seat's own blocks only, so
-    the other seat's hand, replies and corrections can never enter it.
+    `play` drives the engine: `receive_for_model` auto-passes forced priority and
+    returns the next decision that needs a model, the seat's `SeatPrompt` builds
+    its prompt, `prompt` records it, and `reply` parses the answer, then submits
+    it, appends a correction for a retry, or submits the fallback action.
     """
 
     def __init__(self, config: XMageEnvConfig, data: XMageData, session):
@@ -296,12 +346,10 @@ class XMageGame:
         self.data = data
         self.session = session
         self.auto_passed_priority = 0
-        self.stats = {seat: SeatStats() for seat in SEATS}
-        self.histories: dict[str, list] = {}
-        self.glossaries: dict[str, dict] = {}
-        self.factors: dict | None = None
-        self.result: dict | None = None
-        self.audit: dict | None = None
+        self.stats = {seat: SeatStats() for seat in SEATS}  # by obs["player"]
+        self.seats: dict[str, SeatPrompt] = {}  # by obs["player_id"]
+        self.result: dict | None = None  # the engine's final message
+        self.audit: dict | None = None  # verify() of the finished recording
 
     async def receive_for_model(self) -> dict:
         """Drain forced priority passes before spending a model turn."""
@@ -321,82 +369,60 @@ class XMageGame:
                 action = obs["actions"][0]["index"]
                 session.send(obs, action)
                 self.auto_passed_priority += 1
-                with (session.output / "automatic-priority.jsonl").open("a") as log:
-                    log.write(
-                        json.dumps(
-                            {
-                                "decision": obs["decision"],
-                                "player": obs["player"],
-                                "action": action,
-                            }
-                        )
-                        + "\n"
-                    )
+                append_jsonl(
+                    session.output / "automatic-priority.jsonl",
+                    {
+                        "decision": obs["decision"],
+                        "player": obs["player"],
+                        "action": action,
+                    },
+                )
 
         return await asyncio.to_thread(receive)
 
-    def show(self, obs: dict) -> None:
-        """Open this decision's block in its seat's history."""
-        session = self.session
-        context = DECK_CONTEXT_MARKER + json.dumps(session.deck_contexts[obs["player"]])
-        history = self.histories.setdefault(
-            obs["player_id"], [vf.SystemMessage(content=SYSTEM + context)]
-        )
-        # Presentation only: neither the action protocol nor seat history changes.
-        # Play/draw is public and fixed by the bridge for both seats.
+    def seat(self, obs: dict) -> SeatPrompt:
+        seat = self.seats.get(obs["player_id"])
+        if seat is None:
+            seat = self.seats[obs["player_id"]] = SeatPrompt(
+                self.session.deck_contexts[obs["player"]],
+                text=self.config.observation_format == "text",
+            )
+        return seat
+
+    def factors(self, obs: dict) -> dict:
+        """Public play/draw factors, rendered into text observations and recorded
+        with every prompt. Presentation only: neither the action protocol nor seat
+        history changes. Play/draw is public and fixed by the bridge for both seats.
+        """
         starter = self.data.starting_player
-        self.factors = {
+        return {
             "pilot_play_order": (
                 "play" if starter in {obs["player"], obs["player_id"]} else "draw"
             ),
             "starting_player": starter,
         }
-        if self.config.observation_format == "text":
-            glossary = self.glossaries.setdefault(obs["player_id"], {})
-            glossary.update(public_card_rules(obs))
-            history[0] = vf.SystemMessage(
-                content=SYSTEM + TEXT_INSTRUCTIONS + glossary_text(glossary) + context
-            )
-            rendered = render_observation(obs, **self.factors)
-        else:
-            rendered = json.dumps(obs)
-        history.append([vf.UserMessage(content=rendered)])
 
-    async def prompt(self, obs: dict) -> list:
+    async def prompt(self, seat: SeatPrompt, obs: dict) -> list:
         """Exactly the messages for this inference, recorded before it is sent."""
-        history = self.histories[obs["player_id"]]
-        # Trim whole decisions, not messages: corrections must never evict the
-        # current observation, even with history_decisions=1. Blocks stay private
-        # to their seat, including rejected replies and fallback notifications.
-        prompt = [
-            history[0],
-            *(
-                message
-                for block in history[1:][-self.config.history_decisions :]
-                for message in block
-            ),
-        ]
+        prompt = seat.messages(self.config.history_decisions)
         # Audit every inference input, including retries, the persistent glossary
         # and trimmed history, not just the raw view.
         record = {
             "decision": obs["decision"],
             "player": obs["player"],
-            **self.factors,
+            **self.factors(obs),
             "messages": [{"role": m.role, "content": m.content} for m in prompt],
         }
-
-        def record_prompt():
-            with (self.session.output / "model-prompts.jsonl").open("a") as log:
-                log.write(json.dumps(record) + "\n")
-
-        await asyncio.to_thread(record_prompt)
+        await asyncio.to_thread(
+            append_jsonl, self.session.output / "model-prompts.jsonl", record
+        )
         return prompt
 
-    async def reply(self, obs: dict, messages, attempt: int) -> bool:
+    async def reply(self, seat: SeatPrompt, obs: dict, messages, attempt: int) -> bool:
         """Apply one model reply; True once the decision was submitted."""
         stats = self.stats[obs["player"]]
-        history = self.histories[obs["player_id"]]
-        history[-1].extend(messages)
+        block = seat.blocks[-1]
+        block.extend(messages)
         stats.model_action_attempts += 1
         try:
             action = completion_action(messages)
@@ -435,7 +461,7 @@ class XMageGame:
             )
             await asyncio.to_thread(self.session.send, obs, action)
             stats.fallback_action_count += 1
-        history[-1].append(vf.UserMessage(content=json.dumps(correction)))
+        block.append(vf.UserMessage(content=json.dumps(correction)))
         return exhausted
 
     async def play(self, interactions: dict) -> None:
@@ -446,14 +472,15 @@ class XMageGame:
             interaction = interactions.get(obs["player"])
             if interaction is None:
                 raise RuntimeError(f"Engine requested unseated {obs['player']}")
-            self.show(obs)
+            seat = self.seat(obs)
+            seat.show(obs, self.factors(obs))
             attempt = 0
             while True:
                 attempt += 1
-                segment = await interaction.turn(await self.prompt(obs))
+                segment = await interaction.turn(await self.prompt(seat, obs))
                 if segment.terminated:
                     return
-                if await self.reply(obs, segment.messages, attempt):
+                if await self.reply(seat, obs, segment.messages, attempt):
                     break
             pending = await self.receive_for_model()
         self.result = pending
