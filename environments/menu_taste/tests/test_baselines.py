@@ -44,3 +44,45 @@ def test_one_menu_has_no_held_out_combination_score():
     assert questions
     assert BEST not in report_numbers(questions, menus)
     assert f"| {BEST} | unavailable" in report(questions, menus)
+
+
+def test_cooccurrence_ignores_the_menus_own_versions():
+    from menu_taste.baselines import context, dish_cooccurrence
+    from menu_taste.cloze import ClozeQuestion
+    from menu_taste.schema import Menu
+
+    def menu(menu_id, dishes):
+        return Menu.model_validate(
+            {
+                "menu_id": menu_id,
+                "kind": "event",
+                "service": "plated",
+                "sections": [
+                    {"course": "main", "items": [{"name": d} for d in dishes]}
+                ],
+            }
+        )
+
+    target = menu("t", ["Roast duck", "Seared scallops", "Braised lamb"])
+    version = menu("t2", ["Roast duck", "Seared scallops", "Pork chop"])
+    other = menu("o", ["Grilled trout", "Seared scallops", "Short rib"])
+    answer, wrong = target.sections[0].items[0], other.sections[0].items[0]
+    cooc = dish_cooccurrence([target, version, other])
+
+    def scores(related):
+        q = ClozeQuestion(
+            menu=target,
+            section_idx=0,
+            item_idx=0,
+            options=(answer, wrong),
+            option_menu_ids=("t", "o"),
+            answer_index=0,
+            related_menu_ids=related,
+        )
+        ctx = context(q)
+        return cooc(answer, ctx), cooc(wrong, ctx)
+
+    (answer_hits, _), (wrong_hits, _) = scores(("t", "t2"))
+    assert answer_hits == 0 and wrong_hits > 0  # duck with scallops only in a version
+    (answer_hits, _), _ = scores(("t",))
+    assert answer_hits > 0

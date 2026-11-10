@@ -50,6 +50,9 @@ ELIGIBLE_KINDS = frozenset({MenuKind.event, MenuKind.sample})
 SAME_DISH_THRESHOLD = 0.5
 # Two menus sharing this fraction of dishes count as versions of one menu.
 SAME_MENU_THRESHOLD = 0.5
+# With surface matching, how many next-best wrong options may replace the best ones to
+# avoid leaving one option alone with its dietary tags.
+_SPARE_CANDIDATES = 6
 
 _STOPWORDS = frozenset(
     [
@@ -299,27 +302,60 @@ def cloze_questions(
         ]
         rng.shuffle(pool)
         if match_surface:
-            # Same formatting as the answer first, then as close in popularity as
-            # possible; the shuffle above breaks ties.
+            # Same formatting as the answer first, then the same dietary tags (one
+            # "(vegetarian)" among three "(vegan)" stands out), then as close in
+            # popularity as possible; the shuffle above breaks ties.
             want = surface(target)
+            want_tags = set(item_of(target).dietary)
             pool.sort(
                 key=lambda c: (
                     surface(c) != want,
+                    set(item_of(c).dietary) != want_tags,
                     abs(
                         math.log(menus_serving[c.tokens])
                         - math.log(menus_serving[target.tokens])
                     ),
                 )
             )
-        distractors: list[_Slot] = []
+        need = num_options - 1
+        head: list[_Slot] = []
         for cand in pool:
-            if len(distractors) == num_options - 1:
+            if len(head) == need + (_SPARE_CANDIDATES if match_surface else 0):
                 break
-            if any(same_dish(cand.tokens, d.tokens) for d in distractors):
+            if any(same_dish(cand.tokens, d.tokens) for d in head):
                 continue
-            distractors.append(cand)
-        if len(distractors) < num_options - 1:
+            head.append(cand)
+        if len(head) < need:
             continue
+        distractors = head[:need]
+        if match_surface:
+            # The best-ranked set of wrong options that leaves no option alone with its
+            # dietary tags: an answer that stands out gives itself away, and a wrong
+            # option that stands out can be ruled out. Formatting still comes first.
+            def cost(picked: tuple[int, ...]) -> tuple:
+                chosen = [head[i] for i in picked]
+                tags = [frozenset(item_of(s).dietary) for s in (target, *chosen)]
+                counts = Counter(tags)
+                odd = len(tags) > 2 and len(counts) == 2 and 1 in counts.values()
+                return (
+                    sum(surface(s) != want for s in chosen),
+                    odd and counts[tags[0]] == 1,
+                    odd,
+                    sum(picked),
+                )
+
+            # Try the best-ranked set and its single swaps, not every combination
+            # (which grows combinatorially with num_options). One swap always keeps
+            # the answer from standing alone when any set can; a lone wrong option
+            # occasionally needs two and then stays.
+            base = tuple(range(need))
+            swaps = [
+                tuple(sorted(set(base) - {out} | {spare}))
+                for out in base
+                for spare in range(need, len(head))
+            ]
+            best = min([base, *swaps], key=cost)
+            distractors = [head[i] for i in best]
 
         options = [target, *distractors]
         rng.shuffle(options)
