@@ -234,6 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--max-per-menu", type=int, default=None)
     b.add_argument("--max-per-dish", type=int, default=2)
     b.add_argument("--seed", type=int, default=0)
+    b.add_argument(
+        "--eval-fraction",
+        type=float,
+        default=None,
+        help="Write <stem>-train and <stem>-eval split by menu family (see split.py)",
+    )
     bt = sub.add_parser(
         "batches", help="Split a question set into batch files to answer"
     )
@@ -251,9 +257,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "build":
-        meta = build(
+        if args.eval_fraction is not None:
+            from .split import build_split
+
+            make, extra = build_split, {"eval_fraction": args.eval_fraction}
+        else:
+            make, extra = build, {}
+        meta = make(
             args.corpus,
             args.out,
+            **extra,
             num_options=args.num_options,
             max_menus=args.max_menus,
             max_per_menu=args.max_per_menu,

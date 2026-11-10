@@ -282,6 +282,61 @@ The best of these should stay near chance. Sharing words with the menu always he
 little, because real menus repeat a theme (a summer menu uses watermelon twice); that
 is the bar a model has to clear.
 
+## Training on this
+
+**What a model would learn.** The corpus is one caterer. The cheapest way to raise
+reward on it is to memorize that caterer's habits: which dishes it puts together,
+which it serves in spring, how its dish names are written. A model that learned only
+that would score well on more of the same caterer's menus and know nothing about
+composing menus. Taste would be the general part: a heavy main wants a light dessert,
+courses shouldn't repeat a flavor, a passed course needs finger food, a summer menu
+uses summer produce. Those rules also hold for other caterers. Reward alone can't tell
+the two apart, so training on the whole corpus and scoring on it measures memory.
+
+**The split.** `build --eval-fraction` writes separate train and eval sets:
+
+```bash
+uv run menu-taste-questions build private/menus.jsonl -o private/questions-v2.jsonl \
+  --eval-fraction 0.2
+# -> private/questions-v2-train.jsonl, private/questions-v2-eval.jsonl (+ .meta.json)
+```
+
+- Whole menu families (a menu and its versions, the relation behind
+  `related_menu_ids`, joined transitively over every menu, including ones too small
+  to ask about) go to one side, so no eval menu or version of it is trained on.
+- Each side's questions, wrong options included, are built from that side's menus only.
+  An eval question is dropped if any of its options appears in a training menu or
+  option list. Every eval answer, and every wrong option next to it, is a dish the
+  model never saw in training. Matching is by name (case and spacing ignored, a longer
+  name containing it counts), so a renamed dish ("Plum Galette" for "Plum Tart") gets
+  through.
+
+Each `.meta.json` has a `split` block with the seed, menus and questions per side, how
+many eval questions were dropped, and the largest family's question count. Versions
+chain, so one family can hold much of a corpus; if it does, the split can't be
+balanced. Baselines are recomputed per side. Eval questions draw wrong options from
+fewer menus than an unsplit build does, so don't compare their scores with v1 scores.
+
+**The transfer test.** Train on the train families
+([`configs/rl/menu-taste.toml`](../../configs/rl/menu-taste.toml), or GEPA with
+[`configs/gepa/base.toml`](../../configs/gepa/base.toml)). Then score the trained model
+and the same model untrained on the eval families, on the same questions and rotations.
+The RL config's eval runs before step 0, which gives the untrained number. Report both
+with `menu-taste-score`, along with the eval set's baselines.
+
+**What would count as transfer:** the trained model beats the untrained one on the eval
+families, the 95% interval of the difference (resampled by menu) excludes zero, and the
+gain shows up on most courses, not one. Accuracy should rise on the train families too.
+If it rises there and not on the eval families, the model learned this caterer, not
+composition. That outcome is plausible: eval menus show dishes it never saw, and
+whatever general rules exist may be too weak in one caterer's data to learn from
+binary rewards. A trained score that doesn't clear the eval set's best shortcut
+baseline, or a gain that vanishes when the options are rotated, doesn't count either.
+
+For hosted runs (`prime train`), the config needs the environment on the Hub with the
+question files bundled; the steps are in the config's comments. Doing that sends the
+menus to Prime.
+
 ## Known gaps
 
 - No human ceiling yet. Some questions may be honest toss-ups (one dessert bar against
