@@ -4,9 +4,14 @@
 #   cd environments/menu_taste
 #   uv run vf-gepa @ ../../configs/gepa/base.toml --dry-run
 #
-# Without a question set this loads the 93 bundled synthetic questions, so num_train +
-# num_val stays under 93. With private questions (MENU_TASTE_QUESTIONS), pass
-# `-o private/outputs` so traces stay under private/.
+# GEPA reads only the train half of a family split (`menu-taste-questions build ...
+# --eval-fraction 0.2`, see the README's "Training on this"); its train and val tasks
+# both come from it, so the eval half stays unseen. Score the best prompt on the eval
+# half afterward with scripts/prime_rl_eval.sh and
+# `--env.taskset.system-prompt <run>/best_system_prompt.txt`, next to the seed prompt.
+# Pass `-o private/outputs` so traces stay under private/. To smoke-test without a
+# corpus, build the split from the bundled sample (57 train questions with
+# --eval-fraction 0.3, so lower num_train and num_val to fit).
 model = "openai/gpt-4.1-mini"
 reflection_model = "openai/gpt-4.1-mini"
 num_train = 60
@@ -19,6 +24,7 @@ seed = 0
 
 [env.taskset]
 id = "menu-taste"
+questions_path = "private/questions-v2-train.jsonl"
 
 # [sampling]
 # max_tokens = 512

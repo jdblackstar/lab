@@ -1,7 +1,9 @@
 """Baselines with no taste, to check what the missing-course task actually measures.
 
-Each baseline scores the options of a question with surface cues only: shared words
-with the menu, description length, writing style, how common a dish is. If any of them,
+Each baseline scores the options of a question with cues that need no taste: shared
+words with the menu, description length, writing style, how common a dish is, words tied
+to the menu's stated season, the one option whose dietary tags differ from the rest, and
+how often the caterer serves each option with the dishes shown. If any of them,
 or a model trained to combine all of them, beats chance by a wide margin, then the
 questions can be answered without judging how a menu fits together, and the task needs
 fixing before model scores mean anything.
@@ -24,9 +26,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .cloze import ClozeQuestion, cloze_questions, dish_tokens
+from .cloze import (
+    ELIGIBLE_KINDS,
+    ClozeQuestion,
+    cloze_questions,
+    dish_tokens,
+    same_dish,
+)
 from .corpus import load_menus
-from .schema import Item, Menu
+from .schema import Item, Menu, Season
 
 _STOP = frozenset(
     [
@@ -63,6 +71,32 @@ def item_words(item: Item) -> set[str]:
     return words(item.name) | words(item.description)
 
 
+# Ingredients a menu writer reaches for in each season. Matching the menu's stated
+# season by vocabulary alone takes no judgment of how the menu fits together.
+SEASON_WORDS = {
+    Season.spring: words(
+        "asparagus ramp ramps pea peas fava morel morels rhubarb radish radishes "
+        "artichoke artichokes strawberry strawberries nettle fiddlehead chervil "
+        "elderflower spring"
+    ),
+    Season.summer: words(
+        "tomato tomatoes heirloom corn peach peaches watermelon melon zucchini "
+        "cucumber cucumbers berry berries blueberry blueberries blackberry raspberry "
+        "cherry cherries basil gazpacho nectarine apricot okra eggplant plum plums summer"
+    ),
+    Season.fall: words(
+        "squash pumpkin apple apples cider sage pear pears fig figs mushroom mushrooms "
+        "chestnut cranberry butternut delicata quince persimmon maple pecan brussels "
+        "grapes autumn harvest"
+    ),
+    Season.winter: words(
+        "citrus parsnip parsnips celery root turnip cabbage kale beet beets pomegranate "
+        "chestnut chestnuts cranberry peppermint gingerbread truffle venison juniper "
+        "mulled winter"
+    ),
+}
+
+
 def _capital_share(name: str) -> float:
     tokens = re.findall(r"[A-Za-z]+", name)
     return sum(t[0].isupper() for t in tokens) / len(tokens) if tokens else 0.0
@@ -81,6 +115,10 @@ class Context:
     has_desc: float
     has_tags: float
     capitals: float
+    season_words: set[str]
+    shown: list[frozenset[str]]
+    held_out: frozenset[str]
+    caterer: str | None
 
 
 def context(q: ClozeQuestion) -> Context:
@@ -105,6 +143,10 @@ def context(q: ClozeQuestion) -> Context:
         has_desc=sum(bool(i.description) for i in items) / n,
         has_tags=sum(bool(i.dietary) for i in items) / n,
         capitals=sum(_capital_share(i.name) for i in items) / n,
+        season_words=SEASON_WORDS.get(q.menu.event.season, set()),
+        shown=[dish_tokens(i.name) for i in items],
+        held_out=frozenset(q.related_menu_ids or (q.menu.menu_id,)),
+        caterer=q.menu.caterer,
     )
 
 
@@ -118,6 +160,49 @@ def dish_popularity(menus: list[Menu]) -> Callable[[Item], float]:
     return lambda item: math.log1p(counts.get(dish_tokens(item.name), 0))
 
 
+def dish_cooccurrence(menus: list[Menu]) -> Callable[[Item, Context], list[float]]:
+    """How often the caterer serves a dish on menus with the dishes shown, counting
+    only menus outside the question's own family (the target menu and its versions).
+    In a pooled corpus only the question's own caterer counts, since its options
+    come from that caterer alone.
+
+    Returns [log of the number of (menu, shown dish) pairs, share of the shown dishes
+    found on the dish's other menus]. Models never see the corpus; this checks whether
+    the corpus's own pairing habits give the answer away."""
+    eligible = [m for m in menus if m.kind in ELIGIBLE_KINDS]
+    index = {m.menu_id: i for i, m in enumerate(eligible)}
+    exact: defaultdict[frozenset[str], set[int]] = defaultdict(set)
+    by_word: defaultdict[str, set[frozenset[str]]] = defaultdict(set)
+    for i, menu in enumerate(eligible):
+        for tokens in {dish_tokens(it.name) for it in menu.items()}:
+            exact[tokens].add(i)
+            for w in tokens:
+                by_word[w].add(tokens)
+    cache: dict[frozenset[str], set[int]] = {}
+
+    def serving(tokens: frozenset[str]) -> set[int]:
+        """Menus serving this dish or one the question builder counts as the same."""
+        if tokens not in cache:
+            similar = set().union(*(by_word[w] for w in tokens)) if tokens else set()
+            cache[tokens] = set().union(
+                *(exact[u] for u in similar if same_dish(tokens, u))
+            )
+        return cache[tokens]
+
+    def score(item: Item, ctx: Context) -> list[float]:
+        held = {index[m] for m in ctx.held_out if m in index}
+        mine = {
+            i
+            for i in serving(dish_tokens(item.name)) - held
+            if eligible[i].caterer == ctx.caterer
+        }
+        hits = sum(len(mine & serving(t)) for t in ctx.shown)
+        share = hits / (len(mine) * len(ctx.shown)) if mine and ctx.shown else 0.0
+        return [math.log1p(hits), share]
+
+    return score
+
+
 FEATURES = [
     "menu_overlap",
     "menu_overlap_share",
@@ -128,13 +213,23 @@ FEATURES = [
     "tag_style_match",
     "capitals_gap",
     "popularity",
+    "season_words",
+    "tag_set_shared",
+    "cooccurrence",
+    "cooccurrence_share",
 ]
 
 
 def features(
-    item: Item, ctx: Context, popularity: Callable[[Item], float]
+    item: Item,
+    options: tuple[Item, ...],
+    ctx: Context,
+    popularity: Callable[[Item], float],
+    cooccurrence: Callable[[Item, Context], list[float]],
 ) -> list[float]:
     w = item_words(item)
+    tags = frozenset(item.dietary)
+    same_tags = sum(frozenset(o.dietary) == tags for o in options) - 1
     overlap = len(w & ctx.words)
     return [
         overlap,
@@ -146,15 +241,18 @@ def features(
         1 - abs(bool(item.dietary) - ctx.has_tags),
         abs(_capital_share(item.name) - ctx.capitals),
         popularity(item),
+        len(w & ctx.season_words),
+        same_tags / max(len(options) - 1, 1),
+        *cooccurrence(item, ctx),
     ]
 
 
 def feature_tensor(questions: list[ClozeQuestion], menus: list[Menu]) -> np.ndarray:
-    pop = dish_popularity(menus)
+    pop, cooc = dish_popularity(menus), dish_cooccurrence(menus)
     out = []
     for q in questions:
         ctx = context(q)
-        out.append([features(item, ctx, pop) for item in q.options])
+        out.append([features(item, q.options, ctx, pop, cooc) for item in q.options])
     return np.asarray(out, dtype=float)
 
 
@@ -169,7 +267,31 @@ RULES = [
     ("capitalization closest to the menu's", "capitals_gap", min),
     ("most common dish in the corpus", "popularity", max),
     ("least common dish in the corpus", "popularity", min),
+    ("most words tied to the menu's stated season", "season_words", max),
+    ("only option whose dietary tags differ", "tag_set_shared", min),
+    ("most often served with the shown dishes", "cooccurrence", max),
+    ("largest share of the shown dishes on its other menus", "cooccurrence_share", max),
 ]
+
+
+def applicable(questions: list[ClozeQuestion], X: np.ndarray) -> dict[str, np.ndarray]:
+    """Rules that only make sense on some questions; the rest are left unanswered."""
+    shared = X[:, :, FEATURES.index("tag_set_shared")]
+    return {
+        "most words tied to the menu's stated season": np.array(
+            [q.menu.event.season is not Season.unknown for q in questions], dtype=bool
+        ),
+        # Three wrong options share one tag set and the fourth option has another.
+        "only option whose dietary tags differ": np.array(
+            [
+                X.shape[1] > 2
+                and sorted(row)[0] == 0
+                and np.allclose(sorted(row)[1:], (X.shape[1] - 2) / (X.shape[1] - 1))
+                for row in shared
+            ],
+            dtype=bool,
+        ),
+    }
 
 
 def _pick(values: np.ndarray, best, rng: random.Random) -> int:
@@ -178,8 +300,12 @@ def _pick(values: np.ndarray, best, rng: random.Random) -> int:
     return rng.choice(ties)
 
 
-def rule_predictions(X: np.ndarray, seed: int = 0) -> dict[str, np.ndarray]:
+def rule_predictions(
+    X: np.ndarray, seed: int = 0, only: dict[str, np.ndarray] | None = None
+) -> dict[str, np.ndarray]:
+    """The option each rule picks, or -1 where ``only`` says the rule does not apply."""
     rng = random.Random(seed)
+    only = only or {}
     idx = {f: i for i, f in enumerate(FEATURES)}
     preds = {
         "random guess": np.array([rng.randrange(X.shape[1]) for _ in range(len(X))])
@@ -191,42 +317,87 @@ def rule_predictions(X: np.ndarray, seed: int = 0) -> dict[str, np.ndarray]:
         else:
             col = X[:, :, idx[feat]]
         preds[name] = np.array([_pick(row, best, rng) for row in col])
+        if name in only:
+            preds[name][~only[name]] = -1
     return preds
 
 
-def fit_choice_model(X: np.ndarray, y: np.ndarray, l2: float = 1e-2, steps: int = 400):
-    """Conditional logit: softmax over each question's options of a linear score."""
+L2_GRID = (0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0)
+"""Ridge penalties (on standardized features) the combination chooses from. The cues
+are weak and a few hundred questions are few, so a fixed small penalty overfits: on
+the 93-question sample, l2=0.01 scored 36% on its training menus, 25% on held-out ones,
+with a held-out log loss worse than guessing uniformly."""
+
+
+def _log_softmax(logits: np.ndarray) -> np.ndarray:
+    logits = logits - logits.max(1, keepdims=True)
+    return logits - np.log(np.exp(logits).sum(1, keepdims=True))
+
+
+def fit_choice_model(X: np.ndarray, y: np.ndarray, l2: float = 0.1):
+    """Conditional logit: softmax over each question's options of a linear score.
+
+    The penalized log likelihood is concave with a handful of weights, so Newton's
+    method solves it exactly in a few steps, with no learning rate or step count to
+    tune (a fixed-rate gradient descent diverges once ``l2`` is large)."""
     mean = X.reshape(-1, X.shape[-1]).mean(0)
     std = X.reshape(-1, X.shape[-1]).std(0) + 1e-9
     Z = (X - mean) / std
+    rows = np.arange(len(y))
     w = np.zeros(X.shape[-1])
-    for _ in range(steps):
-        logits = Z @ w
-        logits -= logits.max(1, keepdims=True)
-        p = np.exp(logits)
-        p /= p.sum(1, keepdims=True)
-        chosen = Z[np.arange(len(y)), y]
-        expected = (p[..., None] * Z).sum(1)
-        grad = -(chosen - expected).mean(0) + l2 * w
-        w -= 0.5 * grad
+    for _ in range(50):
+        p = np.exp(_log_softmax(Z @ w))
+        expected = np.einsum("qk,qkf->qf", p, Z)
+        grad = -(Z[rows, y] - expected).mean(0) + l2 * w
+        second = np.einsum("qk,qkf,qkg->fg", p, Z, Z) / len(y)
+        hessian = second - expected.T @ expected / len(y) + l2 * np.eye(len(w))
+        step = np.linalg.solve(hessian, grad)
+        w -= step
+        if np.abs(step).max() < 1e-8:
+            break
     return lambda Xn: ((Xn - mean) / std) @ w, w / std
+
+
+def _menu_folds(groups: list[str], folds: int, seed: int) -> list[np.ndarray]:
+    """Test masks that hold out whole menus."""
+    unique = sorted(set(groups))
+    random.Random(seed).shuffle(unique)
+    fold_of = {g: i % folds for i, g in enumerate(unique)}
+    masks = [np.array([fold_of[g] == k for g in groups]) for k in range(folds)]
+    return [m for m in masks if m.any() and not m.all()]
+
+
+def choose_l2(
+    X: np.ndarray, y: np.ndarray, groups: list[str], folds: int = 4, seed: int = 0
+) -> float:
+    """The penalty in ``L2_GRID`` with the best held-out-menu log likelihood."""
+    masks = _menu_folds(groups, folds, seed)
+    if not masks:
+        return max(L2_GRID)
+
+    def held_out_loss(l2: float) -> float:
+        loss = 0.0
+        for test in masks:
+            score, _ = fit_choice_model(X[~test], y[~test], l2)
+            lp = _log_softmax(score(X[test]))
+            loss -= lp[np.arange(test.sum()), y[test]].sum()
+        return loss
+
+    return min(L2_GRID, key=held_out_loss)
 
 
 def cross_validated_choice_model(
     X: np.ndarray, y: np.ndarray, groups: list[str], folds: int = 5, seed: int = 0
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Predictions where every question's menu was held out of training."""
-    unique = sorted(set(groups))
-    random.Random(seed).shuffle(unique)
-    fold_of = {g: i % folds for i, g in enumerate(unique)}
+    """Predictions where every question's menu was held out of training, including
+    out of the choice of penalty (chosen again inside each training split)."""
     pred = np.zeros(len(y), dtype=int)
-    for k in range(folds):
-        test = np.array([fold_of[g] == k for g in groups])
-        if test.all() or not test.any():
-            continue
-        score, _ = fit_choice_model(X[~test], y[~test])
+    for test in _menu_folds(groups, folds, seed):
+        train_groups = [g for g, t in zip(groups, test) if not t]
+        l2 = choose_l2(X[~test], y[~test], train_groups, seed=seed)
+        score, _ = fit_choice_model(X[~test], y[~test], l2)
         pred[test] = score(X[test]).argmax(1)
-    _, weights = fit_choice_model(X, y)
+    _, weights = fit_choice_model(X, y, choose_l2(X, y, groups, seed=seed))
     return pred, weights
 
 
@@ -240,10 +411,15 @@ def interval(correct: np.ndarray) -> tuple[float, float, float]:
     return p, centre - half, centre + half
 
 
+def _scored(pred: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Hits on the questions a baseline answered."""
+    return (pred == y)[pred >= 0]
+
+
 def _all_predictions(questions, menus, seed):
     X = feature_tensor(questions, menus)
     y = np.array([q.answer_index for q in questions])
-    preds = rule_predictions(X, seed)
+    preds = rule_predictions(X, seed, applicable(questions, X))
     groups = [q.menu.menu_id for q in questions]
     if len(set(groups)) > 1:
         preds[BEST], weights = cross_validated_choice_model(X, y, groups, seed=seed)
@@ -262,29 +438,72 @@ def report_numbers(
     if not questions:
         return {}
     _, y, preds, _ = _all_predictions(questions, menus, seed)
+    return _numbers(y, preds)
+
+
+def _numbers(
+    y: np.ndarray, preds: dict[str, np.ndarray]
+) -> dict[str, dict[str, float]]:
     out = {}
     for name, pred in preds.items():
-        p, lo, hi = interval(pred == y)
+        hits = _scored(pred, y)
+        if not len(hits):
+            continue
+        p, lo, hi = interval(hits)
         out[name] = {"accuracy": round(p, 4), "low": round(lo, 4), "high": round(hi, 4)}
+        if len(hits) < len(y):
+            out[name]["questions"] = len(hits)
     return out
+
+
+def bar(numbers: dict[str, dict[str, float]]) -> list[str]:
+    """The baselines a model has to beat, highest first: the best single cue and the
+    held-out combination. Neither alone is the bar. With few questions the combination
+    can't learn its weights and lands below the best cue (on the bundled sample, 26% vs
+    31%); with many it can find what single cues miss. The best cue is picked after
+    scoring every cue on these same questions, so it leans high, which is the safe
+    direction for a bar."""
+    singles = [  # a cue scored on a subset of the questions can't be the bar
+        name
+        for name, _, _ in RULES
+        if name in numbers and "questions" not in numbers[name]
+    ]
+    rows = [max(singles, key=lambda n: numbers[n]["accuracy"])] if singles else []
+    rows += [BEST] if BEST in numbers else []
+    return sorted(rows, key=lambda n: -numbers[n]["accuracy"])
 
 
 def report(questions: list[ClozeQuestion], menus: list[Menu], seed: int = 0) -> str:
     X, y, preds, weights = _all_predictions(questions, menus, seed)
     combo = preds.get(BEST)
     k = X.shape[1]
+    numbers = _numbers(y, preds)
+    top = bar(numbers)[0]
     lines = [
         (
             f"{len(questions)} questions from {len({q.menu.menu_id for q in questions})} "
             f"menus, {k} options each (chance = {1 / k:.0%})"
         ),
         "",
+        (
+            f"Bar to clear: {numbers[top]['accuracy']:.1%} ({top}), the higher of the "
+            "best single cue and the held-out combination. The best cue is picked "
+            "after scoring all of them on these questions, so it leans high."
+        ),
+        "",
         "| Baseline | Accuracy | 95% interval |",
         "| --- | --- | --- |",
     ]
-    for name, pred in preds.items():
-        p, lo, hi = interval(pred == y)
-        lines.append(f"| {name} | {p:.1%} | {lo:.1%}–{hi:.1%} |")
+    for name in preds:
+        if name not in numbers:  # the cue applied to no question
+            lines.append(f"| {name} | – | – |")
+            continue
+        n = numbers[name]
+        if "questions" in n:
+            name = f"{name} (on the {n['questions']} questions it applies to)"
+        lines.append(
+            f"| {name} | {n['accuracy']:.1%} | {n['low']:.1%}–{n['high']:.1%} |"
+        )
     if combo is None:
         lines.append(f"| {BEST} | unavailable: needs at least two menus | |")
     else:

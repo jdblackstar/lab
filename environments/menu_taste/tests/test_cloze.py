@@ -1,6 +1,12 @@
-from menu_taste.cloze import LETTERS, build_cloze_items, dish_tokens, same_dish
+from menu_taste.cloze import LETTERS, cloze_questions, dish_tokens, same_dish
 from menu_taste.corpus import load_menus, sample_corpus_path
+from menu_taste.questions import record, to_row
 from menu_taste.schema import Menu
+
+
+def build_cloze_items(menus, **kwargs):
+    """Questions as the env serves them: (``question``, ``answer``, ``info``) rows."""
+    return [to_row(record(q)) for q in cloze_questions(menus, **kwargs)]
 
 
 def _sample():
@@ -213,3 +219,101 @@ def test_wrong_options_match_whether_the_answer_has_a_description():
 
     assert distractors(True) == {"Fig galette", "Pear crisp", "Quince cake"}
     assert any(d in bare for d in distractors(False))
+
+
+def test_wrong_options_share_the_answers_dietary_tags_and_none_stands_alone():
+    target = _menu(
+        "t",
+        {
+            "main": ["Roast duck", "Seared scallops", "Hanger steak"],
+            "dessert": [{"name": "Plum tart", "dietary": ["vegetarian"]}],
+        },
+    )
+
+    def options(pool_tags):
+        names = ["Lemon posset", "Rice pudding", "Baklava", "Sorbet", "Flan", "Mochi"]
+        pool = [
+            _menu(f"d{i}", {"dessert": [{"name": n, "dietary": tags}]})
+            for i, (n, tags) in enumerate(zip(names, pool_tags))
+        ]
+        rows = build_cloze_items(
+            [target, *pool], courses=frozenset({"dessert"}), seed=3
+        )
+        (row,) = [r for r in rows if r["info"]["menu_id"] == "t"]
+        tags = {n: t for n, t in zip(names, pool_tags)}
+        return [tuple(tags[o]) for o in row["info"]["options"] if o != "Plum tart"]
+
+    v, vg, gf = ["vegetarian"], ["vegan"], ["gluten_free"]
+    assert options([vg, vg, vg, v, v, v]) == [("vegetarian",)] * 3
+    # No other vegetarian dessert: three vegan ones would leave the answer alone.
+    picked = options([vg, vg, vg, vg, gf, gf])
+    assert len(set(picked)) > 1
+
+
+def test_tag_balancing_never_costs_a_formatting_match():
+    target = _menu(
+        "t",
+        {
+            "main": ["Roast duck", "Seared scallops", "Hanger steak"],
+            "dessert": [
+                {
+                    "name": "Plum tart",
+                    "description": "brown butter",
+                    "dietary": ["vegetarian"],
+                }
+            ],
+        },
+    )
+    described_vegan = [
+        {"name": n, "description": "cream", "dietary": ["vegan"]}
+        for n in ["Sorbet", "Mochi", "Flan"]
+    ]
+    bare_vegetarian = [
+        {"name": n, "dietary": ["vegetarian"]}
+        for n in ["Baklava", "Rice pudding", "Lemon posset"]
+    ]
+    pool = [
+        _menu(f"d{i}", {"dessert": [d]})
+        for i, d in enumerate(described_vegan + bare_vegetarian)
+    ]
+    rows = build_cloze_items([target, *pool], courses=frozenset({"dessert"}), seed=3)
+    (row,) = [r for r in rows if r["info"]["menu_id"] == "t"]
+    assert set(row["info"]["options"]) - {"Plum tart"} == {"Sorbet", "Mochi", "Flan"}
+
+
+def test_wrong_options_come_only_from_the_menus_own_caterer():
+    # Caterer "a" has just enough desserts for a question with three options; "b" has
+    # plenty. Without the restriction, b's desserts would fill a's questions.
+    def menus(caterer, dishes):
+        out = []
+        for i, (main, dessert) in enumerate(dishes):
+            m = _menu(f"{caterer}{i}", {"main": [main], "dessert": [dessert]})
+            out.append(m.model_copy(update={"caterer": caterer}))
+        return out
+
+    a = menus("a", [("Roast duck", "Plum tart"), ("Trout", "Fig galette")])
+    a += menus("a", [("Ribeye", "Lemon posset")])
+    b = menus(
+        "b",
+        [
+            ("Pork chop", "Baklava"),
+            ("Quail", "Sorbet"),
+            ("Halibut", "Flan"),
+            ("Short rib", "Panna cotta"),
+        ],
+    )
+    caterer = {m.menu_id: m.caterer for m in a + b}
+    rows = build_cloze_items(a + b, num_options=3, min_menu_items=2)
+    assert {r["info"]["caterer"] for r in rows} == {"a", "b"}
+    for row in rows:
+        info = row["info"]
+        assert {caterer[m] for m in info["distractor_menu_ids"]} == {info["caterer"]}
+        assert "other menus by this menu's caterer." in row["question"]
+    # Unlabeled menus are one caterer: the same corpus without labels mixes them.
+    unlabeled = [m.model_copy(update={"caterer": None}) for m in a + b]
+    mixed = build_cloze_items(unlabeled, num_options=3, min_menu_items=2)
+    assert all("other menus by the same caterer." in r["question"] for r in mixed)
+    assert any(
+        {caterer[m] for m in r["info"]["distractor_menu_ids"]} == {"a", "b"}
+        for r in mixed
+    )

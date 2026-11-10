@@ -126,6 +126,7 @@ _ITEM_COURSE = [
         Course.pasta,
     ),
 ]
+_BOARD = re.compile(r"\b(boards?|platters?|grazing table)\b", re.IGNORECASE)
 _STATION_ITEM = re.compile(r"\bstation\b", re.IGNORECASE)
 _ALLERGY_HEADER = re.compile(
     r"^allergy[- ]friendly (meal|entr[eé]e|option)\b", re.IGNORECASE
@@ -422,6 +423,27 @@ def parse_row(
                         "course": Course.side,
                         "heading": None,
                         "items": sides,
+                        "selection": SelectionMode.all,
+                    }
+                ),
+            )
+
+    # Boards and platters listed under a passed header ("PASSED CANAPES ... Cheese
+    # Board") sit on a table, not a tray: they are a display.
+    for section in list(sections):
+        if section.service is not ServiceStyle.passed:
+            continue
+        boards = [it for it in section.items if _BOARD.search(it.name)]
+        if boards:
+            section.items = [it for it in section.items if it not in boards]
+            sections.insert(
+                sections.index(section) + 1,
+                section.model_copy(
+                    update={
+                        "course": Course.display,
+                        "service": ServiceStyle.display,
+                        "heading": None,
+                        "items": boards,
                         "selection": SelectionMode.all,
                     }
                 ),
