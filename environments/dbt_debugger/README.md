@@ -39,7 +39,8 @@ This environment is intentionally opinionated about what a good agentic eval sho
 
 - `dbt_debugger/taskset.py`: `DbtDebuggerTaskset` (one task per gold scenario), the task's stop condition, deterministic reward/metrics, the `vf-validate` gold check, and `DbtDebuggerEnv`, which pins the run defaults.
 - `dbt_debugger/toolset.py`: `DbtDebuggerToolset`, the per-rollout MCP tool server that materializes the dbt workspace and implements the scoped filesystem/dbt tools and interactive evidence collection, plus the shared `DbtDebuggerState`.
-- `dbt_debugger/scoring.py`: deterministic root-cause/fix/model/evidence scoring and no-bug guardrails.
+- `dbt_debugger/scoring.py`: deterministic root-cause/fix/model/evidence scoring and no-bug guardrails, producing an `Audit`.
+- `dbt_debugger/rubric.py` and `dbt_debugger/evidence.py`: the typed `rubric_hints` contract (`Rubric`, `DiagnosisVariant`, `ClaimPattern`) and the one `evidence_matches` resolver that the tool server, scoring, and the validator all share.
 - `validation/validate_scenarios.py`: schema validation plus custom checks that catch impossible evidence and gold/rubric drift.
 - `dbt_debugger/scenarios/gold/*.json`: compact incident corpus spanning joins, incremental drift, source schema issues, macros/config, business-definition gaps, and no-bug cases.
 
@@ -62,7 +63,8 @@ Local execution uses **`dbt-duckdb`** and bundled `sample_data` loaded into Duck
 | `dbt_debugger/__init__.py`            | Exports `DbtDebuggerTaskset` and `DbtDebuggerEnv` via `__all__`            |
 | `dbt_debugger/taskset.py`             | Task data, task (stop, scoring, gold check), taskset, env defaults         |
 | `dbt_debugger/toolset.py`             | Per-rollout MCP tool server: the tools and shared rollout state            |
-| `dbt_debugger/paths.py`, `workspace.py`, `scoring.py` | Manifest glob matching, workspace materialization, scoring |
+| `dbt_debugger/scoring.py`, `rubric.py`, `evidence.py` | Audit of a submission; typed rubric; shared evidence resolver |
+| `dbt_debugger/paths.py`, `workspace.py` | Manifest glob matching, workspace materialization                   |
 | `dbt_debugger/scenarios/gold/*.json`  | Reviewed scenarios (shipped in the wheel)                                  |
 | `spec/scenario_schema.md`             | Canonical JSON field definitions                                           |
 | `spec/authoring_guide.md`             | How to write new scenarios                                                 |

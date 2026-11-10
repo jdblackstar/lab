@@ -17,6 +17,7 @@ import pytest
 import verifiers.v1 as vf
 from mcp.server.mcpserver import MCPServer
 
+from dbt_debugger.evidence import evidence_matches
 from dbt_debugger.paths import (
     globs_for_list_and_search,
     normalize_rel_path,
@@ -250,6 +251,37 @@ def test_materialize_scenario_and_dbt_compile(scenario_id: str) -> None:
         cleanup_workspace(workspace.workspace_root)
 
 
+def test_run_history_evidence_matches_model_test_and_warning_records() -> None:
+    """No gold scenario requires model/test/warning run-history evidence, so pin the
+    matching rules for those record types here: the ref and the requirement must
+    select a common record; names are exact, statuses case-insensitive, and
+    ``contains`` is checked against the record text."""
+    spec = _spec("join_fanout_exec_revenue")
+
+    def matches(ref: dict[str, Any], requirement: dict[str, Any]) -> bool:
+        return evidence_matches(
+            {"kind": "run_history", **ref}, {"kind": "run_history", **requirement}, spec
+        )
+
+    model_ref = {"record_type": "model", "model": "int_order_lines", "status": "success"}
+    assert matches(model_ref, {"record_type": "model", "model": "int_order_lines", "status": "SUCCESS"})
+    assert not matches(model_ref, {"record_type": "model", "model": "int_order_lines", "status": "error"})
+    assert not matches(
+        {"record_type": "model", "model": "stg_orders"},
+        {"record_type": "model", "model": "int_order_lines"},
+    )
+    assert not matches({"record_type": "model"}, {"record_type": "model", "status": "error"})
+
+    test_ref = {"record_type": "test", "name": "unique_stg_orders_order_id"}
+    assert matches(test_ref, {**test_ref, "contains": "passed"})
+    assert not matches(test_ref, {**test_ref, "contains": "failed"})
+
+    warning_ref = {"record_type": "warning", "contains": "increased 85%"}
+    assert matches(warning_ref, {"record_type": "warning", "contains": "no alert fired"})
+    assert not matches(warning_ref, {"record_type": "warning", "contains": "alert fired loudly"})
+    assert not matches({"record_type": "summary"}, {"record_type": "warning"})
+
+
 def test_score_join_paraphrase_submission_strict_pass() -> None:
     spec = _spec("join_fanout_exec_revenue")
     submission = {
@@ -269,7 +301,7 @@ def test_score_join_paraphrase_submission_strict_pass() -> None:
         ],
     }
     audit = score_diagnosis(submission, spec)
-    assert audit["strict_pass"] == 1.0
+    assert audit.strict_pass == 1.0
 
 
 def test_missing_allowed_models_defaults_to_required_models_for_scoring() -> None:
@@ -298,9 +330,9 @@ def test_missing_allowed_models_defaults_to_required_models_for_scoring() -> Non
 
     base_audit = score_diagnosis(base_submission, spec)
 
-    assert base_audit["buggy_models_match"] is True
-    assert base_audit["diagnosis_variant_ok"] is True
-    assert base_audit["strict_pass"] == 1.0
+    assert base_audit.buggy_models_match is True
+    assert base_audit.diagnosis_variant_ok is True
+    assert base_audit.strict_pass == 1.0
 
     expanded_submission = deepcopy(base_submission)
     expanded_submission["buggy_models"] = [
@@ -310,9 +342,9 @@ def test_missing_allowed_models_defaults_to_required_models_for_scoring() -> Non
 
     expanded_audit = score_diagnosis(expanded_submission, spec)
 
-    assert expanded_audit["buggy_models_match"] is False
-    assert expanded_audit["diagnosis_variant_ok"] is False
-    assert expanded_audit["strict_pass"] == 0.0
+    assert expanded_audit.buggy_models_match is False
+    assert expanded_audit.diagnosis_variant_ok is False
+    assert expanded_audit.strict_pass == 0.0
 
 
 def test_wrong_mechanism_with_right_models_fails() -> None:
@@ -328,9 +360,9 @@ def test_wrong_mechanism_with_right_models_fails() -> None:
         ],
     }
     audit = score_diagnosis(submission, spec)
-    assert audit["buggy_models_match"] is True
-    assert audit["root_cause_ok"] is False
-    assert audit["strict_pass"] == 0.0
+    assert audit.buggy_models_match is True
+    assert audit.root_cause_ok is False
+    assert audit.strict_pass == 0.0
 
 
 def test_no_bug_submission_with_non_empty_buggy_models_fails_strict() -> None:
@@ -345,8 +377,8 @@ def test_no_bug_submission_with_non_empty_buggy_models_fails_strict() -> None:
         buggy_models=["fct_revenue_daily"],
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["buggy_models_match"] is False
-    assert audit["strict_pass"] == 0.0
+    assert audit.buggy_models_match is False
+    assert audit.strict_pass == 0.0
 
 
 def test_wrong_sample_table_fails_required_evidence() -> None:
@@ -375,8 +407,8 @@ def test_wrong_sample_table_fails_required_evidence() -> None:
         ],
     }
     audit = score_diagnosis(submission, spec)
-    assert audit["required_evidence_ok"] is False
-    assert audit["strict_pass"] == 0.0
+    assert audit.required_evidence_ok is False
+    assert audit.strict_pass == 0.0
 
 
 def test_no_bug_semantic_partial_metric_when_strict_fails() -> None:
@@ -387,10 +419,10 @@ def test_no_bug_semantic_partial_metric_when_strict_fails() -> None:
         "Document fiscal vs calendar QTD in BI.",
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["has_bug_match"] is True
-    assert audit["forbidden_ok"] is True
-    assert audit["strict_pass"] == 0.0
-    assert 0.0 < audit["no_bug_semantic_partial"] < 1.0
+    assert audit.has_bug_match is True
+    assert audit.forbidden_ok is True
+    assert audit.strict_pass == 0.0
+    assert 0.0 < audit.no_bug_semantic_partial < 1.0
 
 
 def test_no_bug_semantic_answer_passes_without_magic_phrase() -> None:
@@ -406,7 +438,7 @@ def test_no_bug_semantic_answer_passes_without_magic_phrase() -> None:
         ),
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["strict_pass"] == 1.0
+    assert audit.strict_pass == 1.0
 
 
 def test_forbidden_claim_pattern_still_fails_on_rewording() -> None:
@@ -416,8 +448,8 @@ def test_forbidden_claim_pattern_still_fails_on_rewording() -> None:
         "Rewrite fct_revenue_daily to fix the regression.",
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["forbidden_ok"] is False
-    assert audit["strict_pass"] == 0.0
+    assert audit.forbidden_ok is False
+    assert audit.strict_pass == 0.0
 
 
 def test_negated_forbidden_root_cause_does_not_fail_strict_pass() -> None:
@@ -435,9 +467,9 @@ def test_negated_forbidden_root_cause_does_not_fail_strict_pass() -> None:
         ),
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["diagnosis_variant_ok"] is True
-    assert audit["forbidden_ok"] is True
-    assert audit["strict_pass"] == 1.0
+    assert audit.diagnosis_variant_ok is True
+    assert audit.forbidden_ok is True
+    assert audit.strict_pass == 1.0
 
 
 def test_negated_forbidden_fix_does_not_fail_strict_pass() -> None:
@@ -455,10 +487,10 @@ def test_negated_forbidden_fix_does_not_fail_strict_pass() -> None:
         ),
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["diagnosis_variant_ok"] is True
-    assert audit["fix_ok"] is True
-    assert audit["forbidden_ok"] is True
-    assert audit["strict_pass"] == 1.0
+    assert audit.diagnosis_variant_ok is True
+    assert audit.fix_ok is True
+    assert audit.forbidden_ok is True
+    assert audit.strict_pass == 1.0
 
 
 def test_finalized_bookings_no_bug_passes_without_dashboard_naming() -> None:
@@ -476,8 +508,8 @@ def test_finalized_bookings_no_bug_passes_without_dashboard_naming() -> None:
         ),
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["root_cause_ok"] is True
-    assert audit["strict_pass"] == 1.0
+    assert audit.root_cause_ok is True
+    assert audit.strict_pass == 1.0
 
 
 def test_negated_accepted_root_cause_phrase_does_not_fail_strict_pass() -> None:
@@ -498,9 +530,9 @@ def test_negated_accepted_root_cause_phrase_does_not_fail_strict_pass() -> None:
         "No fix needed; communicate the replay restatement to stakeholders.",
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["root_cause_ok"] is True
-    assert audit["forbidden_ok"] is True
-    assert audit["strict_pass"] == 1.0
+    assert audit.root_cause_ok is True
+    assert audit.forbidden_ok is True
+    assert audit.strict_pass == 1.0
 
 
 def test_campaign_replay_no_bug_passes_without_refresh_mechanics_phrase() -> None:
@@ -514,8 +546,8 @@ def test_campaign_replay_no_bug_passes_without_refresh_mechanics_phrase() -> Non
         "Communicate the replay-driven restatement to stakeholders and annotate dashboards.",
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["root_cause_ok"] is True
-    assert audit["strict_pass"] == 1.0
+    assert audit.root_cause_ok is True
+    assert audit.strict_pass == 1.0
 
 
 def test_negated_accepted_fix_phrase_does_not_fail_strict_pass() -> None:
@@ -533,9 +565,9 @@ def test_negated_accepted_fix_phrase_does_not_fail_strict_pass() -> None:
         ),
     )
     audit = score_diagnosis(submission, spec)
-    assert audit["fix_ok"] is True
-    assert audit["forbidden_ok"] is True
-    assert audit["strict_pass"] == 1.0
+    assert audit.fix_ok is True
+    assert audit.forbidden_ok is True
+    assert audit.strict_pass == 1.0
 
 
 def test_add_file_evidence_rejects_debug_context_path_with_guidance() -> None:

@@ -124,14 +124,9 @@ def text_contains_option(text: str, option: str) -> bool:
     return bool(stem_variants(normalized_option) & tokens(text))
 
 
-def claim_group_matches(text: str, alternatives: list[str]) -> bool:
+def claim_group_matches(text: str, alternatives: Sequence[str]) -> bool:
     """Return whether *text* satisfies at least one alternative in a claim group."""
     return any(text_contains_option(text, option) for option in alternatives if option)
-
-
-def iter_claim_pattern_options(pattern: Sequence[Sequence[str]]) -> list[str]:
-    """Return all non-empty options declared across a claim pattern."""
-    return [option for group in pattern for option in group if option]
 
 
 def option_is_negated_phrase(option: str) -> bool:
