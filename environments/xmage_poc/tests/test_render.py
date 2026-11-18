@@ -16,6 +16,7 @@ E = "eeeeeeee-0000-0000-0000-000000000003"
 F = "ffffffff-0000-0000-0000-000000000004"
 G = "99999999-0000-0000-0000-000000000005"
 H = "88888888-0000-0000-0000-000000000006"
+K = "77777777-0000-0000-0000-000000000007"
 
 
 def observation():
@@ -72,6 +73,19 @@ def observation():
             "players": players,
             "myHand": {E: {"id": E, "name": "Own secret", "rules": ["Lifelink"]}},
             "exiles": [{F: {"id": F, "name": "Exiled"}}],
+            # Engine bookkeeping, shaped as XMage sends it; its count changes per spell.
+            "myHelperEmblems": {
+                K: {
+                    "id": K,
+                    "name": "Helper Emblem",
+                    "manaValue": 0,
+                    "rules": [
+                        "Storm counter.",
+                        "<br/><hintstart/>",
+                        "Spells cast this turn: 2",
+                    ],
+                }
+            },
             "stack": {
                 H: {
                     "id": H,
@@ -132,6 +146,12 @@ def test_render_preserves_asymmetric_game_state_and_distinct_same_name_objects()
     glossary = glossary_text(public_card_rules(obs))
     assert "Twin: Flying" in glossary and "Twin: Vigilance" in glossary
     assert "Deal 3 damage." in glossary
+    for text in (rendered, glossary):
+        assert (
+            "Helper" not in text
+            and "Spells cast" not in text
+            and "#77777777" not in text
+        )
     assert obs == original
     assert rendered == render_observation(
         copy.deepcopy(obs), pilot_play_order="draw", starting_player=B

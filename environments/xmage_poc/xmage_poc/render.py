@@ -3,6 +3,8 @@
 Rules live once per distinct public definition in the persistent system glossary,
 not once per instance per historical observation. Changed rules get a new key.
 Object references use collision-free UUID prefixes within each observation.
+XMage's helper emblems (storm count, day/night, radiation) are engine bookkeeping
+the pilot cannot act on with these fixtures; they are neither rendered nor glossed.
 """
 
 from __future__ import annotations
@@ -59,7 +61,7 @@ def public_card_rules(observation: dict) -> dict[str, str]:
             for item in value:
                 visit(item)
 
-    visit(observation["view"])
+    visit({k: v for k, v in observation["view"].items() if k != "myHelperEmblems"})
     return entries
 
 
@@ -278,7 +280,7 @@ def _combat(groups: list, refs: _Refs) -> list[str]:
 
 
 def _card_groups(view: dict, refs: _Refs, stack: dict) -> list[str]:
-    """Revealed, looked-at, and companion cards; exile groups; helper emblems."""
+    """Revealed, looked-at, and companion cards; exile groups."""
     lines = []
     for field in ("revealed", "lookedAt", "companion"):
         for group in view.get(field, []):
@@ -287,8 +289,6 @@ def _card_groups(view: dict, refs: _Refs, stack: dict) -> list[str]:
     for index, group in enumerate(view.get("exiles", []), start=1):
         if group:
             lines.append(f"Exile group {index}: " + refs.refs(group))
-    if view.get("myHelperEmblems"):
-        lines += _zone("Helper emblems", view["myHelperEmblems"], refs, stack)
     return lines
 
 

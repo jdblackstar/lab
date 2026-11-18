@@ -38,6 +38,8 @@ env.taskset.pilot_play_order = "balanced"
 env.opponent = "scripted"
 env.history_decisions = 1
 env.auto_pass_priority = true
+# Answer every other one-option prompt (mostly mana payments) without a model call.
+env.auto_forced = true
 # Privacy projections are still audited; choose full_audit for restoration checks.
 env.recording_mode = "benchmark"
 # Bound spend even if a model never advances the game. Truncation is not a loss.
