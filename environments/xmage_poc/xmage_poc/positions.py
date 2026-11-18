@@ -15,6 +15,7 @@ import json
 import math
 import subprocess
 from pathlib import Path
+from statistics import NormalDist
 
 from .environment import resolve_java
 from .render import glossary_text, public_card_rules, render_observation
@@ -70,8 +71,16 @@ def paired(best: str, other: str) -> tuple[float, float]:
 
 
 def label(result: dict, z: float) -> dict:
-    """Best candidate and its weakest paired margin; answer is None unless it clears z."""
+    """Best candidate and its weakest paired margin; answer is None unless it clears z.
+
+    z is the one-sided cutoff for a single alternative. The best is picked from
+    the same playouts it is tested on, so with k alternatives each comparison
+    must clear the Bonferroni cutoff for k tests, which bounds the chance that
+    any alternative's noise yields an answer at the single-test rate.
+    """
     candidates = result["candidates"]
+    normal = NormalDist()
+    cutoff = normal.inv_cdf(1 - (1 - normal.cdf(z)) / (len(candidates) - 1))
     best = max(
         candidates, key=lambda c: c["win_rate"] if c["win_rate"] is not None else -1
     )
@@ -80,13 +89,14 @@ def label(result: dict, z: float) -> dict:
         for c in candidates
         if c is not best
     ]
-    mean, se, runner_up = min(margins, key=lambda m: m[0] - z * m[1])
+    mean, se, runner_up = min(margins, key=lambda m: m[0] - cutoff * m[1])
     return {
-        "answer": best["candidate"] if mean - z * se > 0 else None,
+        "answer": best["candidate"] if mean - cutoff * se > 0 else None,
         "best": best["candidate"],
         "runner_up": runner_up,
         "margin": mean,
         "margin_se": se,
+        "margin_cutoff": cutoff,
     }
 
 
@@ -169,7 +179,11 @@ def main():
     )
     parser.add_argument("--turn-cap", type=int, default=20)
     parser.add_argument(
-        "--z", type=float, default=2.0, help="Paired margin, in standard errors"
+        "--z",
+        type=float,
+        default=2.0,
+        help="Paired margin, in standard errors, for one alternative; "
+        "more alternatives raise it (Bonferroni)",
     )
     parser.add_argument(
         "--boundary",

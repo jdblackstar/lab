@@ -41,6 +41,14 @@ def test_label_needs_a_paired_margin_over_every_alternative():
     # 62 errors must not beat 64 losses.
     errors = {"candidates": [candidate(0, "WW" + "E" * 62), candidate(1, "L" * 64)]}
     assert label(errors, z=2)["answer"] is None
+    # A margin of about 2.6 standard errors clears z=2 against one alternative,
+    # but not against nine, where selection noise needs about 2.8.
+    one = [candidate(0, "W" * 16), candidate(1, "L" * 5 + "W" * 11)]
+    nine = one + [
+        candidate(i, "W" * (i - 1) + "L" * 5 + "W" * (12 - i)) for i in range(2, 10)
+    ]
+    assert label({"candidates": one}, z=2)["answer"] == 0
+    assert label({"candidates": nine}, z=2)["answer"] is None
 
 
 def test_empty_stack_boundary_skips_responses_and_unresumable_prompts():
