@@ -28,6 +28,7 @@ from dbt_debugger.evidence import (
     project_files,
     run_history_entries,
 )
+from dbt_debugger.paths import normalize_rel_path
 from dbt_debugger.rubric import ClaimPattern, DiagnosisVariant, Rubric
 from dbt_debugger.sample_rows import matching_sample_rows
 from dbt_debugger.scenarios import GOLD_DIR
@@ -277,6 +278,20 @@ def _validate_one(path: Path, data: dict[str, Any]) -> list[str]:
             )
 
     file_paths = set(project_files(data))
+    # The tools store project-relative paths in this form, and every other spec path must
+    # name one of these files, so a non-canonical entry makes its citations unmatchable.
+    for path in sorted(file_paths):
+        try:
+            canonical = normalize_rel_path(path)
+        except ValueError:
+            canonical = None
+        if path != canonical:
+            errors.append(
+                f"dbt_project.files path must be normalized the way the tools store it "
+                f"(expected {canonical!r}): {path!r}"
+                if canonical
+                else f"dbt_project.files path is not a project-relative path: {path!r}"
+            )
     model_names = {model["name"] for model in data["dag"]["models"]}
     for model in data["dag"]["models"]:
         if model["path"] not in file_paths:

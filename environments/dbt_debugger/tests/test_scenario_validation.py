@@ -104,6 +104,33 @@ def test_validator_rejects_negated_accepted_phrase_overlap() -> None:
     assert any("no dbt bug" in error and "not duplicated" in error for error in errors)
 
 
+def test_validator_rejects_project_file_path_the_tools_would_normalize() -> None:
+    """A file listed as ``./models/x.sql`` (and cited that way) is self-consistent in the
+    spec, but the tools store ``models/x.sql``, so its citations could never match."""
+    spec = deepcopy(_spec("join_fanout_exec_revenue"))
+    requirement = spec["rubric_hints"]["required_evidence"][0]
+    old = requirement["path"]
+    new = "./" + old
+    for entry in spec["dbt_project"]["files"]:
+        if entry["path"] == old:
+            entry["path"] = new
+    for model in spec["dag"]["models"]:
+        if model["path"] == old:
+            model["path"] = new
+    immutable = spec["artifact_manifest"]["immutable_paths"]
+    spec["artifact_manifest"]["immutable_paths"] = [
+        new if path == old else path for path in immutable
+    ]
+    requirement["path"] = new
+
+    errors = _validation_errors("join_fanout_exec_revenue", spec)
+
+    assert errors == [
+        "dbt_project.files path must be normalized the way the tools store it "
+        f"(expected {old!r}): {new!r}"
+    ]
+
+
 def test_validator_rejects_unsatisfiable_required_evidence_anchor() -> None:
     """Required evidence should point at text that actually exists in artifacts."""
     spec = deepcopy(_spec("join_fanout_exec_revenue"))
