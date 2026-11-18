@@ -31,6 +31,8 @@ import static lab.xmage.Json.GSON;
 
 /** HumanPlayer's existing rule/choice handling with a synchronous pipe transport. */
 final class BridgePlayer extends HumanPlayer {
+    // Checkpoints serialize this class; the pin keeps xmage-runtime-v3 recordings loadable.
+    private static final long serialVersionUID = -1540562916300668524L;
     final transient PlayerResponse reply;
     final transient Channel channel;
     final long seed;
@@ -62,6 +64,23 @@ final class BridgePlayer extends HumanPlayer {
         deckSeed = p.deckSeed;
         shuffles = p.shuffles;
         cardOrder.putAll(p.cardOrder);
+    }
+
+    /** Reattach a deserialized seat, whose transport fields are transient, to a new channel. */
+    BridgePlayer(BridgePlayer saved, Channel channel) {
+        this(saved, channel, new PlayerResponse());
+    }
+
+    private BridgePlayer(BridgePlayer saved, Channel channel, PlayerResponse reply) {
+        // HumanPlayer(PlayerImpl, PlayerResponse) runs PlayerImpl's full copy constructor, ID included.
+        super(saved, reply);
+        this.reply = reply;
+        this.channel = channel;
+        seed = saved.seed;
+        deckSeed = saved.deckSeed;
+        shuffles = saved.shuffles;
+        cardOrder.putAll(saved.cardOrder);
+        setUserData(saved.getUserData());
     }
 
     // Despite the "Skip" name, true enables a stop: HumanPlayer.checkPassStep

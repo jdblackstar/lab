@@ -35,6 +35,8 @@ import static lab.xmage.Json.object;
  * cards &lt;name&gt;...                       resolve names against the pinned card catalog
  * verify &lt;output&gt;                       restore and audit a full_audit recording
  * inspect &lt;checkpoint.game.gz&gt;          print one checkpoint's engine summary
+ * replay &lt;output&gt; &lt;decision&gt;...|all|resumable   resume decisions with the recorded answers
+ * rollout &lt;output&gt; &lt;decision&gt; [--playouts=N ...]  play out every candidate action
  * &lt;output&gt; &lt;seed&gt; &lt;deck_a&gt; &lt;deck_b&gt; [--recording-mode=full_audit|benchmark]
  *     [--starting-player=player_a|player_b] [--engine-ai-seat=none|player_a|player_b]
  * </pre>
@@ -55,6 +57,10 @@ public final class PocMain {
                 return;
             case "inspect":
                 System.out.println(GSON.toJson(GameJson.summary(Checkpoints.read(Paths.get(args[1])))));
+                return;
+            case "replay":
+            case "rollout":
+                Resume.main(args);
                 return;
             default:
                 playGame(args);

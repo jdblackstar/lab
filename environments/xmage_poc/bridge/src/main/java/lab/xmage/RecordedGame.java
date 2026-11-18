@@ -11,11 +11,19 @@ import static lab.xmage.Json.object;
 
 /** A two-player duel that reports every event and player update to the recorder. */
 final class RecordedGame extends TwoPlayerDuel {
+    // Checkpoints serialize this class; the pin keeps xmage-runtime-v3 recordings loadable.
+    private static final long serialVersionUID = 7174559268060181630L;
     transient Recorder recorder;
     String technicalFailure;
 
     RecordedGame() {
         super(MultiplayerAttackOption.LEFT, RangeOfInfluence.ALL, MulliganType.GAME_DEFAULT.getMulligan(0), 60, 20, 7);
+    }
+
+    /** Copy a restored checkpoint, keeping the recording hooks that copy() drops. */
+    RecordedGame(RecordedGame saved) {
+        super(saved);
+        technicalFailure = saved.technicalFailure;
     }
 
     @Override

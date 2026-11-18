@@ -20,6 +20,7 @@ import java.io.BufferedReader;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.PrintStream;
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -49,8 +50,19 @@ final class Channel {
     Recorder recorder;
     /** Registration order of players and deck cards; breaks ties between equally named UUID actions. */
     final Map<UUID, Integer> objectOrder = new HashMap<>();
-    final BufferedReader input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
+    final BufferedReader input;
+    final PrintStream out;
     int decision;
+
+    Channel() {
+        this(new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8)), System.out);
+    }
+
+    /** A channel over other streams, such as recorded answers when resuming a checkpoint. */
+    Channel(BufferedReader input, PrintStream out) {
+        this.input = input;
+        this.out = out;
+    }
 
     /** Gives {@code id} the next registration position. */
     void register(UUID id) {
@@ -162,9 +174,9 @@ final class Channel {
         return message;
     }
 
-    private static void send(JsonObject observation) {
-        System.out.println(GSON.toJson(object("type", "decision", "observation", observation)));
-        System.out.flush();
+    private void send(JsonObject observation) {
+        out.println(GSON.toJson(object("type", "decision", "observation", observation)));
+        out.flush();
     }
 
     private JsonObject readResponse() throws IOException {

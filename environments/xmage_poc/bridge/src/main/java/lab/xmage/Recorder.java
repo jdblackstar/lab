@@ -29,6 +29,7 @@ final class Recorder implements Closeable {
     final BufferedWriter events;
     final Map<UUID, BufferedWriter> views = new LinkedHashMap<>();
     long sequence = 0;
+    long eventCount = 0;
     boolean capturing;
 
     Recorder(Path root, Game game, String mode) throws IOException {
@@ -57,6 +58,7 @@ final class Recorder implements Closeable {
         try {
             if (reason.equals("event")) {
                 writeLine(events, event);
+                eventCount++;
             }
             // Benchmark privacy audits retain every decision's engine projection,
             // not event/update projections or restorable engine graphs.
