@@ -1,11 +1,15 @@
 """Read answers and score a run against a frozen question set.
 
     menu-taste-score private/questions-v1.jsonl private/runs/haiku-r0.jsonl [more runs]
+    menu-taste-score private/questions-v1.jsonl run-a.jsonl run-b.jsonl \\
+        --agreed-wrong private/adjudicate.md
 
 A run is the episode JSONL of a verifiers v1 eval on the question set (``traces.jsonl``,
 or prime-rl's ``monitors/file/traces/stream/*.jsonl.zst`` once decompressed), or a
-JSONL of ``{id, rotation, completion}`` (what ``menu-taste-questions collect`` writes). Intervals are bootstrapped
-by menu, since questions from one menu aren't independent.
+JSONL of ``{id, rotation, completion}`` (what ``menu-taste-batches collect`` writes).
+A run may answer each question several times (``-r``). Intervals are bootstrapped by
+menu, since questions from one menu aren't independent. Rollouts that errored (the
+model call failed) are counted, not scored.
 """
 
 from __future__ import annotations
@@ -18,8 +22,10 @@ from pathlib import Path
 
 import numpy as np
 
+from .baselines import bar, words
 from .cloze import LETTERS
 from .questions import load_meta, load_question_set, rotate
+from .render import MISSING_MARKER
 
 _ANSWER = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTALL)
 _LETTER = re.compile(
@@ -48,8 +54,10 @@ def completion_text(completion) -> str:
 
 
 def load_run(path: str | Path) -> list[dict]:
-    """[{id, rotation, completion}] from a verifiers v1 traces.jsonl (one episode per
-    line) or from a JSONL of ``{id, rotation, completion}``."""
+    """[{id, rotation, completion, error}] from a verifiers v1 traces.jsonl (one
+    episode per line) or from a JSONL of ``{id, rotation, completion}``. ``error`` is
+    true for a rollout that failed (e.g. the provider refused the request); evals exit
+    0 even then."""
     if str(path).endswith(".zst"):
         raise ValueError(
             f"{path} is compressed; prime-rl writes its traces as zstd. Run "
@@ -65,7 +73,13 @@ def load_run(path: str | Path) -> list[dict]:
             if "traces" in r and "task" in r:  # verifiers v1 episode
                 rows.extend(_episode_rows(r))
             else:
-                rows.append({**r, "completion": completion_text(r["completion"])})
+                rows.append(
+                    {
+                        **r,
+                        "completion": completion_text(r["completion"]),
+                        "error": False,
+                    }
+                )
     return rows
 
 
@@ -73,13 +87,22 @@ def _episode_rows(episode: dict) -> list[dict]:
     import verifiers.v1 as vf
 
     data = episode["task"]["data"]
+    failed = episode.get("ok") is False or bool(episode.get("errors"))
     return [
         {
             "id": data["id"],
             "rotation": data.get("rotation", 0),
             "completion": vf.Trace.model_validate(trace).last_reply,
+            "error": failed or trace.get("ok") is False or bool(trace.get("errors")),
         }
         for trace in episode["traces"]
+    ] or [
+        {
+            "id": data["id"],
+            "rotation": data.get("rotation", 0),
+            "completion": "",
+            "error": True,
+        }
     ]
 
 
@@ -126,7 +149,101 @@ def _by_menu(graded, value) -> dict[str, list[float]]:
     return out
 
 
-def report(questions: str, runs: list[str], labels: list[str] | None = None) -> str:
+RULE = "most words shared with the menu"
+CUTS = [
+    "answer shares the most words with the menu (rule right)",
+    "another option shares more words (rule wrong)",
+    "answer tied for the most shared words",
+    "answer shares no words with the menu",
+]
+
+
+def word_cuts(rec: dict) -> list[str]:
+    """The sensitivity cuts a question falls in, by the no-taste cue "most words shared
+    with the menu", computed on the dish lines and options the model is shown."""
+    menu = set().union(
+        *(
+            words(line[2:])
+            for line in rec["menu_text"].splitlines()
+            if line.startswith("- ") and line[2:] != MISSING_MARKER
+        )
+    )
+    shared = [len(words(o) & menu) for o in rec["options"]]
+    answer, best = shared[rec["answer_index"]], max(shared)
+    if answer < best:
+        cuts = [CUTS[1]]
+    elif shared.count(best) == 1:
+        cuts = [CUTS[0]]
+    else:
+        cuts = [CUTS[2]]
+    return cuts + [CUTS[3]] * (answer == 0)
+
+
+def _accuracy(graded: list[dict]) -> str:
+    if not graded:
+        return "–"
+    acc, lo, hi = bootstrap(_by_menu(graded, lambda x: float(x["correct"])))
+    return f"{acc:.1%} ({lo:.1%}–{hi:.1%})"
+
+
+def agreed_wrong(graded: dict[str, list[dict]]) -> dict[str, int]:
+    """Questions every run answered where every answer, across all of each run's
+    rollouts, chose the same wrong dish: {id: the option (stored order) chosen}."""
+    by_run = []
+    for g in graded.values():
+        picks = defaultdict(set)
+        for x in g:
+            picks[x["id"]].add((x["chosen"], x["correct"]))
+        by_run.append(picks)
+    shared = set.intersection(*(set(r) for r in by_run)) if by_run else set()
+    out = {}
+    for qid in sorted(shared):
+        picks = set().union(*(r[qid] for r in by_run))
+        if len(picks) == 1:
+            ((chosen, correct),) = picks
+            if chosen is not None and not correct:
+                out[qid] = chosen
+    return out
+
+
+ADJUDICATION_HEADER = """# Questions every run got wrong the same way
+
+Runs: {runs}.
+
+The key is the dish this caterer actually served; the prompt asks for the dish that
+fits the menu best. For each question, judge whether the key is clearly
+the better fit (`key`), both fit about equally (`either`), or the runs' choice fits
+better (`chosen`), and write it after "Verdict:".
+"""
+
+
+def adjudication_sheet(records: dict[str, dict], wrong: dict[str, int], runs) -> str:
+    parts = [ADJUDICATION_HEADER.format(runs=", ".join(runs))]
+    for qid, chosen in wrong.items():
+        rec = records[qid]
+        options = []
+        for i, option in enumerate(rec["options"]):
+            mark = (
+                " (key: served)"
+                if i == rec["answer_index"]
+                else " (all runs chose)"
+                if i == chosen
+                else ""
+            )
+            options.append(f"{LETTERS[i]}. {option}{mark}")
+        parts.append(
+            f"\n---\n\n### {qid} ({rec['info']['course']})\n\n"
+            f"{rec['menu_text']}\n\nOptions:\n" + "\n".join(options) + "\n\nVerdict:\n"
+        )
+    return "".join(parts)
+
+
+def report(
+    questions: str,
+    runs: list[str],
+    labels: list[str] | None = None,
+    agreed_wrong_out: str | None = None,
+) -> str:
     records = {r["id"]: r for r in load_question_set(questions)}
     meta = load_meta(questions)
     k = meta.get("num_options") or len(next(iter(records.values()))["options"])
@@ -135,8 +252,11 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
         raise ValueError(
             f"need one unique label per run: {len(runs)} run(s), labels {labels}"
         )
+    loaded = {label: load_run(path) for label, path in zip(labels, runs)}
+    errored = {label: sum(r["error"] for r in run) for label, run in loaded.items()}
     graded = {
-        label: grade(records, load_run(path)) for label, path in zip(labels, runs)
+        label: grade(records, [r for r in run if not r["error"]])
+        for label, run in loaded.items()
     }
 
     lines = [
@@ -145,30 +265,30 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
             f"{k} options (chance {1 / k:.0%})"
         ),
         "",
-        "| Run | Answered | Accuracy | 95% interval (by menu) | Unparsed |",
-        "| --- | --- | --- | --- | --- |",
+        "| Run | Answered | Accuracy | 95% interval (by menu) | Unparsed | Errored |",
+        "| --- | --- | --- | --- | --- | --- |",
     ]
     for label, g in graded.items():
         unparsed = sum(x["letter"] is None for x in g)
+        asked = len({x["id"] for x in g})
+        answered = f"{asked} of {len(records)}"
+        if len(g) != asked:
+            answered += f" ({len(g)} answers)"
         if g:
             acc, lo, hi = bootstrap(_by_menu(g, lambda x: float(x["correct"])))
             scores = f"{acc:.1%} | {lo:.1%}–{hi:.1%}"
         else:  # an empty collected run has no accuracy to report
             scores = "– | –"
         lines.append(
-            f"| {label} | {len(g)} of {len(records)} | {scores} | {unparsed} |"
+            f"| {label} | {answered} | {scores} | {unparsed} | {errored[label]} |"
         )
     base = meta.get("baselines", {})
-    for name in (
-        "best combination of all cues (held-out menus)",
-        "most words shared with the menu",
-    ):
-        if name in base:
-            b = base[name]
-            lines.append(
-                f"| baseline: {name} | all | {b['accuracy']:.1%} "
-                f"| {b['low']:.1%}–{b['high']:.1%} | |"
-            )
+    for i, name in enumerate(bar(base)):  # the first, higher row is the bar to clear
+        b = base[name]
+        lines.append(
+            f"| baseline{' (bar)' if i == 0 else ''}: {name} | all | "
+            f"{b['accuracy']:.1%} | {b['low']:.1%}–{b['high']:.1%} | | |"
+        )
 
     lines += ["", "By course:", ""]
     courses = Counter(r["info"]["course"] for r in records.values())
@@ -180,6 +300,22 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
             hits = [x["correct"] for x in g if x["course"] == course]
             cells.append(f"{np.mean(hits):.0%} ({len(hits)})" if hits else "–")
         lines.append(f"| {course} | {n} | " + " | ".join(cells) + " |")
+
+    cuts = {qid: word_cuts(rec) for qid, rec in records.items()}
+    lines += [
+        "",
+        f'Sensitivity: accuracy (95% interval) by whether the no-taste rule "{RULE}" '
+        "picks the answer:",
+        "",
+        "| Questions where | Questions | " + " | ".join(graded) + " |",
+        "| --- | --- |" + " --- |" * len(graded),
+    ]
+    for cut in CUTS:
+        n = sum(cut in c for c in cuts.values())
+        cells = [
+            _accuracy([x for x in g if cut in cuts[x["id"]]]) for g in graded.values()
+        ]
+        lines.append(f"| {cut} | {n} | " + " | ".join(cells) + " |")
 
     lines += ["", "Letters chosen (position bias) vs. right answers:", ""]
     for label, g in graded.items():
@@ -195,30 +331,54 @@ def report(questions: str, runs: list[str], labels: list[str] | None = None) -> 
     names = list(graded)
     pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1 :]]
     if pairs:
-        lines += ["", "Pairs (questions both answered):", ""]
-        lines.append("| A | B | Shared | Same dish chosen | A − B accuracy (95%) |")
-        lines.append("| --- | --- | --- | --- | --- |")
+        lines += [
+            "",
+            "Pairs (questions both answered; repeats matched in order):",
+            "",
+            "| A | B | Shared | Same dish chosen | A − B accuracy (95%) |",
+            "| --- | --- | --- | --- | --- |",
+        ]
     for a, b in pairs:
-        ga = {x["id"]: x for x in graded[a]}
-        gb = {x["id"]: x for x in graded[b]}
+        ga, gb = defaultdict(list), defaultdict(list)
+        for x in graded[a]:
+            ga[x["id"]].append(x)
+        for x in graded[b]:
+            gb[x["id"]].append(x)
         shared = sorted(set(ga) & set(gb))
         if not shared:
             continue
         same = np.mean(
             [
-                ga[i]["chosen"] is not None and ga[i]["chosen"] == gb[i]["chosen"]
+                xa["chosen"] is not None and xa["chosen"] == xb["chosen"]
                 for i in shared
+                for xa, xb in zip(ga[i], gb[i])
             ]
         )
         diff = defaultdict(list)
         for i in shared:
-            diff[ga[i]["menu_id"]].append(
-                float(ga[i]["correct"]) - float(gb[i]["correct"])
+            diff[records[i]["info"]["menu_id"]].append(
+                np.mean([x["correct"] for x in ga[i]])
+                - np.mean([x["correct"] for x in gb[i]])
             )
         d, lo, hi = bootstrap(diff)
         lines.append(
             f"| {a} | {b} | {len(shared)} | {same:.0%} | {d:+.1%} ({lo:+.1%} to {hi:+.1%}) |"
         )
+    if len(graded) > 1:
+        wrong = agreed_wrong(graded)
+        n_shared = len(
+            set.intersection(*({x["id"] for x in g} for g in graded.values()))
+        )
+        lines += [
+            "",
+            f"All {len(graded)} runs chose the same wrong dish on {len(wrong)} of the "
+            f"{n_shared} questions they all answered.",
+        ]
+        if agreed_wrong_out:
+            Path(agreed_wrong_out).write_text(
+                adjudication_sheet(records, wrong, list(graded))
+            )
+            lines.append(f"Wrote them for adjudication to {agreed_wrong_out}.")
     return "\n".join(lines)
 
 
@@ -231,8 +391,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("questions")
     parser.add_argument("runs", nargs="+")
     parser.add_argument("--labels", nargs="+", default=None)
+    parser.add_argument(
+        "--agreed-wrong",
+        metavar="PATH",
+        help="Write the questions every run got wrong with the same dish, with the "
+        "key shown, for a person to adjudicate (needs two or more runs)",
+    )
     args = parser.parse_args(argv)
-    print(report(args.questions, args.runs, args.labels))
+    if args.agreed_wrong and len(args.runs) < 2:
+        parser.error("--agreed-wrong needs two or more runs")
+    print(report(args.questions, args.runs, args.labels, args.agreed_wrong))
     return 0
 
 

@@ -24,6 +24,9 @@ run_step "Install pinned Python $(cat .python-version)" uv python install "$(cat
 run_step "Sync root workspace from uv.lock" uv sync --locked --all-groups
 run_step "Sync dbt-debugger environment from uv.lock" bash -c 'cd environments/dbt_debugger && uv sync --locked --extra dev'
 run_step "Sync menu-taste environment from uv.lock" bash -c 'cd environments/menu_taste && uv sync --locked --extra dev'
+# Orbs have no Java, so skip the 83 MB runtime download, as the pytest workflow does:
+# unit tests stub the runtime. `prime env install xmage-poc` fetches the real one.
+run_step "Sync xmage-poc environment from uv.lock" bash -c 'cd environments/xmage_poc && XMAGE_POC_SKIP_DOWNLOAD=1 uv sync --locked --extra dev'
 
 # Bash reads only the first existing login profile. Update that file rather than
 # creating a .bash_profile that would hide the user's existing .profile.

@@ -1,7 +1,9 @@
 """Missing-course task: hide one dish, offer it among dishes from other menus.
 
-Distractors come from the same corpus and the same course (a missing dessert competes
-with other desserts), so every option reads like it was written by the same kitchen.
+Distractors come from the same caterer and the same course (a missing dessert competes
+with that caterer's other desserts), so every option reads like it was written by the
+same kitchen. A corpus may pool several caterers (``Menu.caterer``); options never
+cross between them.
 What separates the real dish from the rest is how well it fits the menu around it.
 """
 
@@ -16,7 +18,7 @@ from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
 
-from .render import render_item, render_menu
+from .render import render_menu
 from .schema import (
     DRINK_COURSES,
     Course,
@@ -50,6 +52,9 @@ ELIGIBLE_KINDS = frozenset({MenuKind.event, MenuKind.sample})
 SAME_DISH_THRESHOLD = 0.5
 # Two menus sharing this fraction of dishes count as versions of one menu.
 SAME_MENU_THRESHOLD = 0.5
+# With surface matching, how many next-best wrong options may replace the best ones to
+# avoid leaving one option alone with its dietary tags.
+_SPARE_CANDIDATES = 6
 
 _STOPWORDS = frozenset(
     [
@@ -125,7 +130,7 @@ SYSTEM_PROMPT = (
 
 INSTRUCTIONS = """One dish has been removed from this catered menu and replaced with {marker}. \
 The options below are the removed dish plus dishes of the same course taken from other menus \
-by the same caterer. Pick the dish that was removed: the one that fits this menu's balance, \
+by {source}. Pick the dish that was removed: the one that fits this menu's balance, \
 flavors, season, and service best.
 
 <menu>
@@ -162,18 +167,11 @@ class ClozeQuestion:
     def menu_text(self) -> str:
         return render_menu(self.menu, missing=(self.section_idx, self.item_idx))
 
-    def to_row(self) -> dict:
-        options = [render_item(item) for item in self.options]
-        return {
-            "question": format_question(self.menu_text(), options),
-            "answer": LETTERS[self.answer_index],
-            "info": self.info(),
-        }
-
     def info(self) -> dict:
         menu = self.menu
         return {
             "menu_id": menu.menu_id,
+            "caterer": menu.caterer,
             "course": self.course.value,
             "service": menu.service.value,
             "section_service": (
@@ -187,20 +185,18 @@ class ClozeQuestion:
         }
 
 
-def format_question(menu_text: str, options: list[str]) -> str:
+def format_question(
+    menu_text: str, options: list[str], caterer: str | None = None
+) -> str:
+    """``caterer`` is the menu's label (``Menu.caterer``). Unlabeled menus count as
+    one caterer and keep the original wording, so frozen v1 prompts don't change; in a
+    labeled corpus, every option comes from this menu's own caterer."""
     return INSTRUCTIONS.format(
         marker="[MISSING DISH]",
+        source="the same caterer" if caterer is None else "this menu's caterer",
         menu=menu_text,
         options="\n".join(f"{LETTERS[i]}. {o}" for i, o in enumerate(options)),
     )
-
-
-def build_cloze_items(menus: list[Menu], **kwargs) -> list[dict]:
-    """Build multiple-choice rows (``question``, ``answer``, ``info``).
-
-    Takes the same arguments as ``cloze_questions``.
-    """
-    return [q.to_row() for q in cloze_questions(menus, **kwargs)]
 
 
 def cloze_questions(
@@ -295,31 +291,67 @@ def cloze_questions(
             s
             for s in by_course[target.course]
             if s.menu_idx not in families[target.menu_idx]
+            # A corpus can pool several caterers; the prompt says the options come
+            # from the same caterer, so they must.
+            and eligible[s.menu_idx].caterer == menu.caterer
             and not any(same_dish(s.tokens, t) for t in menu_tokens[target.menu_idx])
         ]
         rng.shuffle(pool)
         if match_surface:
-            # Same formatting as the answer first, then as close in popularity as
-            # possible; the shuffle above breaks ties.
+            # Same formatting as the answer first, then the same dietary tags (one
+            # "(vegetarian)" among three "(vegan)" stands out), then as close in
+            # popularity as possible; the shuffle above breaks ties.
             want = surface(target)
+            want_tags = set(item_of(target).dietary)
             pool.sort(
                 key=lambda c: (
                     surface(c) != want,
+                    set(item_of(c).dietary) != want_tags,
                     abs(
                         math.log(menus_serving[c.tokens])
                         - math.log(menus_serving[target.tokens])
                     ),
                 )
             )
-        distractors: list[_Slot] = []
+        need = num_options - 1
+        head: list[_Slot] = []
         for cand in pool:
-            if len(distractors) == num_options - 1:
+            if len(head) == need + (_SPARE_CANDIDATES if match_surface else 0):
                 break
-            if any(same_dish(cand.tokens, d.tokens) for d in distractors):
+            if any(same_dish(cand.tokens, d.tokens) for d in head):
                 continue
-            distractors.append(cand)
-        if len(distractors) < num_options - 1:
+            head.append(cand)
+        if len(head) < need:
             continue
+        distractors = head[:need]
+        if match_surface:
+            # The best-ranked set of wrong options that leaves no option alone with its
+            # dietary tags: an answer that stands out gives itself away, and a wrong
+            # option that stands out can be ruled out. Formatting still comes first.
+            def cost(picked: tuple[int, ...]) -> tuple:
+                chosen = [head[i] for i in picked]
+                tags = [frozenset(item_of(s).dietary) for s in (target, *chosen)]
+                counts = Counter(tags)
+                odd = len(tags) > 2 and len(counts) == 2 and 1 in counts.values()
+                return (
+                    sum(surface(s) != want for s in chosen),
+                    odd and counts[tags[0]] == 1,
+                    odd,
+                    sum(picked),
+                )
+
+            # Try the best-ranked set and its single swaps, not every combination
+            # (which grows combinatorially with num_options). One swap always keeps
+            # the answer from standing alone when any set can; a lone wrong option
+            # occasionally needs two and then stays.
+            base = tuple(range(need))
+            swaps = [
+                tuple(sorted(set(base) - {out} | {spare}))
+                for out in base
+                for spare in range(need, len(head))
+            ]
+            best = min([base, *swaps], key=cost)
+            distractors = [head[i] for i in best]
 
         options = [target, *distractors]
         rng.shuffle(options)

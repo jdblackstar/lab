@@ -1,0 +1,78 @@
+# RL on menu-taste: train on some menu families, evaluate on families held out from
+# training. Written in prime-rl's own schema (prime-rl d61df56, examples/basic/*/rl.toml).
+# The other configs/rl/*.toml use the retired shared-LoRA shape (a top-level `model`
+# and `[[env]]`), which `prime train` 0.17 rejects.
+#
+# Build the split first (environments/menu_taste/README.md, "Training on this"):
+#
+#   cd environments/menu_taste
+#   uv run menu-taste-questions build private/menus.jsonl -o private/questions-v2.jsonl \
+#     --eval-fraction 0.2
+#
+# Check this config without GPUs from the pinned prime-rl checkout that
+# scripts/prime_rl_eval.sh sets up, with menu-taste installed into its venv:
+#
+#   uv run --project ~/.cache/prime-rl/<ref> --no-sync rl @ configs/rl/menu-taste.toml --dry-run
+#
+# Run locally with prime-rl's `uv run rl @ configs/rl/menu-taste.toml` from the repo
+# root (the questions paths are relative to it; make them absolute if you launch from
+# elsewhere). For Hosted Training (`prime train configs/rl/menu-taste.toml`), first push
+# the environment to the Hub as PRIVATE with the two question files bundled into the
+# package, set both `env.taskset.id`s to "<owner>/menu-taste", and point the
+# `questions_path`s at the bundled files. Pushing them sends the menus to Prime; check
+# that the agreement covering the menus allows it.
+#
+# The eval runs before step 0 as well (`skip_first_step` is false), so the first eval
+# point is the untrained model on the held-out families: the baseline to beat.
+
+max_steps = 200
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[trainer.optim]
+lr = 1e-5
+weight_decay = 0.0
+
+[trainer.model.lora]
+rank = 8
+dropout = 0.0
+target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+[orchestrator]
+batch_size = 256
+
+[orchestrator.train]
+group_size = 16
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+
+[[orchestrator.train.source]]
+name = "menu-taste-train"
+# A binary reward gives a group no signal when every rollout agrees; skip those groups.
+curriculum = { gates = { zero_advantage = { type = "advantage_range" } } }
+env.taskset.id = "menu-taste"
+env.taskset.questions_path = "environments/menu_taste/private/questions-v2-train.jsonl"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[orchestrator.eval]
+interval = 25
+
+[orchestrator.eval.sampling]
+max_completion_tokens = 512
+temperature = 0.0
+
+[[orchestrator.eval.source]]
+# Families none of whose menus, and none of whose options, the model trained on.
+name = "menu-taste-heldout"
+env.taskset.id = "menu-taste"
+env.taskset.questions_path = "environments/menu_taste/private/questions-v2-eval.jsonl"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "subprocess"
+
+[ckpt] # Checkpoint at the end of training
+
+# Traces contain whole menus: keep monitors local (no [monitors.prime]).

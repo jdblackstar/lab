@@ -301,3 +301,27 @@ def test_import_reads_every_sheet_and_names_only_later_ones(tmp_path):
     menus, _ = import_grid(path, pair_columns=2)
     assert [m.menu_id.split("-", 1)[1] for m in menus] == ["r1", "s2-r1"]
     assert [next(m.items()).name for m in menus] == ["Deviled Eggs", "Lemon Tart"]
+
+
+def test_boards_and_platters_under_a_passed_header_are_a_display():
+    menu, _ = parse_row(
+        _row(
+            "PASSED CANAPES",
+            ("Seared Scallop", "romesco"),
+            ("Local Cheese Board (V)", "honeycomb, crackers"),
+            "Gougeres",
+            "Crudités Platter (VG/GF)",
+            "PLATED DINNER",
+            "Roast Chicken",
+        ),
+        menu_id="m",
+    )
+    assert _sections(menu) == [
+        (Course.hors_doeuvres, ["Seared Scallop", "Gougeres"]),
+        (Course.display, ["Local Cheese Board", "Crudités Platter"]),
+        (Course.main, ["Roast Chicken"]),
+    ]
+    passed, display, _ = menu.sections
+    assert passed.service is ServiceStyle.passed
+    assert display.service is ServiceStyle.display
+    assert display.items[0].dietary == [Dietary.vegetarian]

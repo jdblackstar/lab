@@ -59,22 +59,34 @@ smoke_artifact() {
     PYTHONPATH="" "$venv_dir/bin/vf-validate" "$env_id" "$@" \
       --output-dir "$work_dir/outputs" --run.dir validate
     # vf-validate exits 0 even when checks fail; require the tasks to validate.
-    PYTHONPATH="" "$venv_dir/bin/python" - "$work_dir/outputs/validate/summary.json" <<'PY'
+    # SMOKE_ALLOW_UNCHECKED=1 accepts tasks that have no gold or noop checks.
+    PYTHONPATH="" SMOKE_ALLOW_UNCHECKED="${SMOKE_ALLOW_UNCHECKED:-0}" \
+      "$venv_dir/bin/python" - "$work_dir/outputs/validate/summary.json" <<'PY'
 import json
+import os
 import sys
 
 summary = json.load(open(sys.argv[1]))
-if summary["valid_rate"] != 1.0:
+unchecked = summary["total"] > 0 and summary["outcomes"]["unchecked"] == summary["total"]
+if summary["valid_rate"] != 1.0 and not (os.environ["SMOKE_ALLOW_UNCHECKED"] == "1" and unchecked):
     sys.exit(f"vf-validate: not every task is valid: {summary['checks']}")
 PY
   )
 }
 
 smoke_artifact dbt_debugger dbt_debugger dbt-debugger --runtime.type subprocess -n 1
-# The bundled synthetic sample, even if these point at a private corpus.
+# The bundled synthetic sample, even if MENU_TASTE_QUESTIONS points at a private set.
 (
-  unset MENU_TASTE_QUESTIONS MENU_TASTE_MENUS
+  unset MENU_TASTE_QUESTIONS
   smoke_artifact menu_taste menu_taste menu-taste --runtime.type subprocess -n 5
 )
+# xmage-poc needs Python 3.12+. Building its wheel downloads the pinned runtime; this
+# checks that the installed wheel resolves (it has no gold or noop checks). The
+# xmage-smoke CI job checks the wheel's contents and starts its engine with Java.
+if "$SMOKE_PYTHON_BIN" -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+  SMOKE_ALLOW_UNCHECKED=1 smoke_artifact xmage_poc xmage_poc xmage-poc --runtime.type subprocess
+else
+  echo "==> skip xmage-poc: it needs Python 3.12+, but $SMOKE_PYTHON_BIN is $("$SMOKE_PYTHON_BIN" -V)"
+fi
 
 echo "==> OK"

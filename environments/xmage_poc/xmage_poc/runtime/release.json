@@ -1,8 +1,8 @@
 {
-  "tag": "xmage-runtime-v2",
-  "url": "https://github.com/jdblackstar/lab/releases/download/xmage-runtime-v2",
+  "tag": "xmage-runtime-v3",
+  "url": "https://github.com/jdblackstar/lab/releases/download/xmage-runtime-v3",
   "sha256": {
-    "xmage-poc.jar": "521428ffb3a8820c0d7bc2109675c75fb642af19172bd34c591a8aa37e2f2823",
-    "build.json": "1d52ba05240810620a817d5e7c550f4654116db4e015bcf1ed6a05dd6ee1a896"
+    "xmage-poc.jar": "5db19f56b142b1e3faafab8f78a7dc935cf93698621f7762f8b74f678463d25f",
+    "build.json": "643352f57b1500f49127ba7f169b5570f5afff25ef61837f723adf3364a0cfe9"
   }
 }

@@ -28,7 +28,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
-import static lab.xmage.PocMain.*;
+import static lab.xmage.GameJson.playerView;
+import static lab.xmage.GameJson.stripClock;
+import static lab.xmage.Json.GSON;
+import static lab.xmage.Json.object;
 
 /**
  * Continue a recorded game from a full_audit decision checkpoint.
@@ -62,7 +65,7 @@ final class Resume {
             return d;
         }
         RecordedGame saved(JsonObject decision) throws Exception {
-            return (RecordedGame) readGame(internal.resolve(String.format("checkpoints/%06d.game.gz", decision.get("state_sequence").getAsInt())));
+            return (RecordedGame) Checkpoints.read(internal.resolve(Checkpoints.fileName(decision.get("state_sequence").getAsInt())));
         }
         /**
          * GameImpl.readObject leaves some transient final fields (stackObjectsCheck)
@@ -178,7 +181,7 @@ final class Resume {
         // Keep the RecordedGame type so the replay logs engine events too.
         RecordedGame game = new RecordedGame(rec.saved(start));
         StringBuilder answers = new StringBuilder();
-        for (JsonObject d : rec.decisions.subList(number - 1, rec.decisions.size())) answers.append(JSON.toJson(d.get("response"))).append('\n');
+        for (JsonObject d : rec.decisions.subList(number - 1, rec.decisions.size())) answers.append(GSON.toJson(d.get("response"))).append('\n');
         Channel channel = new Channel(new BufferedReader(new StringReader(answers.toString())),
             new PrintStream(new ByteArrayOutputStream()));
         channel.decision = number - 1;
@@ -246,7 +249,7 @@ final class Resume {
             JsonObject w = JsonParser.parseString(originalEvents.get(offset + eventsMatched)).getAsJsonObject();
             JsonObject g = renameFresh(w, JsonParser.parseString(replayedEvents.get(eventsMatched)).getAsJsonObject(), fresh);
             if (g == null || !g.equals(w)) {
-                firstEventMismatch = "event " + eventsMatched + ": expected " + w + ", got " + JSON.toJson(replayedEvents.get(eventsMatched));
+                firstEventMismatch = "event " + eventsMatched + ": expected " + w + ", got " + GSON.toJson(replayedEvents.get(eventsMatched));
                 break;
             }
         }
@@ -293,7 +296,7 @@ final class Resume {
      * so renaming them is unsafe. Blank them; the full IDs are still compared.
      */
     static JsonObject blankShortIds(JsonObject o) {
-        return JsonParser.parseString(JSON.toJson(o).replaceAll("\\[[0-9a-f]{3}\\]", "[id]")).getAsJsonObject();
+        return JsonParser.parseString(GSON.toJson(o).replaceAll("\\[[0-9a-f]{3}\\]", "[id]")).getAsJsonObject();
     }
 
     /**
@@ -303,7 +306,7 @@ final class Resume {
      * returns null if it cannot.
      */
     static JsonObject renameFresh(JsonObject want, JsonObject got, Map<String, String> fresh) {
-        String w = JSON.toJson(canonical(want)), g = JSON.toJson(canonical(got));
+        String w = GSON.toJson(canonical(want)), g = GSON.toJson(canonical(got));
         List<String> wantIds = new ArrayList<>(), gotIds = new ArrayList<>();
         for (java.util.regex.Matcher m = UUID_TEXT.matcher(w); m.find(); ) wantIds.add(m.group());
         for (java.util.regex.Matcher m = UUID_TEXT.matcher(g); m.find(); ) gotIds.add(m.group());
@@ -318,7 +321,7 @@ final class Resume {
                 } else if (!known.equals(to)) return null;
             }
         }
-        g = JSON.toJson(got);
+        g = GSON.toJson(got);
         for (Map.Entry<String, String> e : fresh.entrySet()) g = g.replace(e.getKey(), e.getValue());
         return JsonParser.parseString(g).getAsJsonObject();
     }
@@ -337,7 +340,7 @@ final class Resume {
         if (!e.isJsonObject()) return e;
         List<Map.Entry<String, JsonElement>> entries = new ArrayList<>();
         for (Map.Entry<String, JsonElement> m : e.getAsJsonObject().entrySet()) entries.add(new AbstractMap.SimpleEntry<>(m.getKey(), canonical(m.getValue())));
-        entries.sort(Comparator.comparing(m -> UUID_TEXT.matcher(m.getKey() + JSON.toJson(m.getValue())).replaceAll("U")));
+        entries.sort(Comparator.comparing(m -> UUID_TEXT.matcher(m.getKey() + GSON.toJson(m.getValue())).replaceAll("U")));
         JsonObject out = new JsonObject();
         for (Map.Entry<String, JsonElement> m : entries) out.add(m.getKey(), m.getValue());
         return out;
@@ -760,12 +763,12 @@ final class Resume {
                 // Keep the replayed recording only when it disagrees, for inspection.
                 if (report.get("faithful").getAsBoolean()) deleteTree(out);
                 else report.addProperty("replay_output", out.toString());
-                System.out.println(JSON.toJson(report));
+                System.out.println(GSON.toJson(report));
                 System.out.flush();
             }
         } else {
-            Map<String, String> opt = options(args, 3, "playouts", "seed", "policy", "skill", "turn-cap", "determinize", "candidates");
-            System.out.println(JSON.toJson(rollout(rec, Integer.parseInt(args[2]), opt)));
+            Map<String, String> opt = PocMain.options(args, 3, "playouts", "seed", "policy", "skill", "turn-cap", "determinize", "candidates");
+            System.out.println(GSON.toJson(rollout(rec, Integer.parseInt(args[2]), opt)));
         }
     }
 }
