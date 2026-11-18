@@ -4,6 +4,7 @@ import numpy as np
 from menu_taste.baselines import (
     BEST,
     FEATURES,
+    bar,
     cross_validated_choice_model,
     report,
     report_numbers,
@@ -46,17 +47,33 @@ def test_one_menu_has_no_held_out_combination_score():
     assert f"| {BEST} | unavailable" in report(questions, menus)
 
 
+def test_the_bar_is_the_higher_of_the_best_cue_and_the_combination():
+    def row(accuracy):
+        return {"accuracy": accuracy, "low": 0.0, "high": 1.0}
+
+    numbers = {
+        "random guess": row(0.40),  # luck, not a cue
+        "most words shared with the menu": row(0.30),
+        "most common dish in the corpus": row(0.33),
+        BEST: row(0.26),
+    }
+    assert bar(numbers) == ["most common dish in the corpus", BEST]
+    numbers[BEST] = row(0.45)
+    assert bar(numbers) == [BEST, "most common dish in the corpus"]
+
+
 def test_cooccurrence_ignores_the_menus_own_versions():
     from menu_taste.baselines import context, dish_cooccurrence
     from menu_taste.cloze import ClozeQuestion
     from menu_taste.schema import Menu
 
-    def menu(menu_id, dishes):
+    def menu(menu_id, dishes, caterer=None):
         return Menu.model_validate(
             {
                 "menu_id": menu_id,
                 "kind": "event",
                 "service": "plated",
+                "caterer": caterer,
                 "sections": [
                     {"course": "main", "items": [{"name": d} for d in dishes]}
                 ],
@@ -69,7 +86,7 @@ def test_cooccurrence_ignores_the_menus_own_versions():
     answer, wrong = target.sections[0].items[0], other.sections[0].items[0]
     cooc = dish_cooccurrence([target, version, other])
 
-    def scores(related):
+    def scores(related, cooc=cooc, target=target):
         q = ClozeQuestion(
             menu=target,
             section_idx=0,
@@ -86,6 +103,17 @@ def test_cooccurrence_ignores_the_menus_own_versions():
     assert answer_hits == 0 and wrong_hits > 0  # duck with scallops only in a version
     (answer_hits, _), _ = scores(("t",))
     assert answer_hits > 0
+
+    # In a pooled corpus, another caterer's pairings don't count: the question's
+    # options come from its own caterer, so only that caterer's habits can leak.
+    a = [menu("t", ["Roast duck", "Seared scallops", "Braised lamb"], "a")]
+    b = [
+        menu("b1", ["Grilled trout", "Seared scallops", "Short rib"], "b"),
+        menu("b2", ["Grilled trout", "Braised lamb", "Quail"], "b"),
+    ]
+    pooled = dish_cooccurrence(a + b)
+    _, (wrong_hits, wrong_share) = scores(("t",), cooc=pooled, target=a[0])
+    assert wrong_hits == 0 and wrong_share == 0.0
 
 
 def test_season_is_inferred_only_when_the_dishes_clearly_point_to_one():

@@ -9,15 +9,15 @@ import static org.junit.Assert.*;
 
 public class ShuffleTest {
     static final class Fixture {
-        final PocMain.RecordedGame game = new PocMain.RecordedGame();
-        final PocMain.BridgePlayer player;
+        final RecordedGame game = new RecordedGame();
+        final BridgePlayer player;
         final List<UUID> registered = new ArrayList<>();
 
         Fixture(String seat, long seed) throws Exception {
-            player = new PocMain.BridgePlayer(seat, new PocMain.Channel(), seed);
+            player = new BridgePlayer(seat, new Channel(), seed);
             Deck deck = new Deck();
             for (int i = 0; i < 60; i++) {
-                Card card = PocMain.createCard(i < 40 ? "Plains" : "Youthful Knight", player.getId());
+                Card card = CardCatalog.createCard(i < 40 ? "Plains" : "Youthful Knight", player.getId());
                 deck.getCards().add(card);
                 registered.add(card.getId());
             }
@@ -54,7 +54,7 @@ public class ShuffleTest {
         assertNotEquals(first, second);
 
         // Engine bookmark/restore must restore the shuffle position too.
-        PocMain.BridgePlayer saved = a.player.copy();
+        BridgePlayer saved = a.player.copy();
         List<Integer> third = a.shuffle();
         a.player.restore(saved);
         assertEquals(third, a.shuffle());

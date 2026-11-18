@@ -3,6 +3,7 @@
 import asyncio
 import json
 import shutil
+import subprocess
 import sys
 
 import pytest
@@ -149,6 +150,14 @@ def test_every_task_validates_and_the_key_names_the_hidden_dish():
         assert f"{task.data.answer}. {task.data.target}" in task.data.prompt
 
 
+def test_rotation_applies_to_questions_built_from_a_corpus():
+    plain, rotated = _tasks(), _tasks(rotation=1)
+    assert [t.data.target for t in plain] == [t.data.target for t in rotated]
+    for p, r in zip(plain, rotated):
+        assert r.data.options == p.data.options[1:] + p.data.options[:1]
+        assert asyncio.run(r.validate(None))
+
+
 def test_env_pins_a_plain_chat_and_refuses_code_running_harnesses():
     config = MenuTasteEnvConfig(taskset={"id": "menu-taste"})
     assert config.agent.harness.id == "null"
@@ -162,11 +171,30 @@ def test_env_pins_a_plain_chat_and_refuses_code_running_harnesses():
         )
 
 
-def test_missing_corpus_is_a_clear_error(tmp_path):
-    empty = tmp_path / "menus.jsonl"
+def test_validate_runs_locally_and_refuses_hosted_runtimes(tmp_path):
+    from menu_taste.validate import main
+
+    with pytest.raises(SystemExit, match="subprocess runtime only, not 'prime'"):
+        main(["--runtime.type", "prime", "-o", str(tmp_path)])
+    assert not any(tmp_path.iterdir())  # refused before anything ran
+
+    # A config file can't switch it to hosted sandboxes either.
+    toml = tmp_path / "hosted.toml"
+    toml.write_text('[runtime]\ntype = "prime"\n')
+    args = ["@", str(toml), "-n", "2", "-o", str(tmp_path), "--run.dir", "v"]
+    code = f"from menu_taste.validate import main; main({[*args, '--rich', 'false']!r})"
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True)
+    run = tmp_path / "v"
+    resolved = json.loads((run / "configs" / "resolved" / "validate.json").read_text())
+    assert resolved["runtime"]["type"] == "subprocess"
+    assert json.loads((run / "summary.json").read_text())["valid_rate"] == 1.0
+
+
+def test_empty_question_set_is_a_clear_error(tmp_path):
+    empty = tmp_path / "questions.jsonl"
     empty.write_text("")
     with pytest.raises(ValueError, match="No questions"):
-        _tasks(menus_path=str(empty))
+        _tasks(questions_path=str(empty))
 
 
 def test_trace_data_round_trips(tmp_path):
@@ -234,7 +262,8 @@ def test_results_command_scores_each_model_and_fails_on_errored_rollouts(
     n = len(records)
     assert f"| good | 4 of {n} | 100.0% | 100.0%–100.0% | 0 | 0 |" in text
     assert f"| flaky | 3 of {n} | 100.0% | 100.0%–100.0% | 0 | 1 |" in text
-    assert "| baseline: most words shared with the menu | all |" in text
+    assert "| baseline (bar): " in text  # which cue sets the bar depends on the data
+    assert text.count("| baseline") == 2
     assert "| answer shares no words with the menu |" in text
 
     # A complete run is reused; only the run with an error is evaluated again.
