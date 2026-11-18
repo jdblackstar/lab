@@ -26,6 +26,64 @@ scripts/prime_rl_eval.sh environments/xmage_poc @ configs/eval/xmage-real-model-
 
 `configs/eval/xmage-pilot-smoke.toml` and `scripts/smoke_xmage_poc_eval.py` drive the same path with a scripted local endpoint and make no paid model calls.
 
+## Results: Claude vs `scripted_v1`, 100 games each
+
+Run on 2026-11-16. Claude Haiku 4.5 and Claude Sonnet 4.5 each piloted the same 100 games against the `scripted_v1` opponent. Every game finished and passed the recording audit. [`examples/scripted-v1-100-game-results.csv`](examples/scripted-v1-100-game-results.csv) has one row per game and model, and every number below can be recomputed from it.
+
+| | Haiku 4.5 | Sonnet 4.5 |
+| --- | --- | --- |
+| Win rate (95% Wilson CI) | 73% (64–81%) | 80% (71–87%) |
+| Wins / losses / draws | 73 / 27 / 0 | 80 / 20 / 0 |
+| Truncated by `max_turns` / errored | 0 / 0 | 0 / 0 |
+| Invalid replies / fallback actions | 10 / 0 | 0 / 0 |
+| Model calls per game (including retries) | 52.8 | 58.9 |
+| One-option prompts answered without the model, per game (`auto_forced`) | 19.4 | 17.0 |
+| Pass-only priority prompts answered without the model, per game | 167.1 | 146.5 |
+| Tokens per game (input / output) | 124.7k / 23.0k | 132.4k / 23.6k |
+| Cost per game / total | $0.24 / $23.96 | $0.75 / $75.18 |
+
+**Sonnet's lead over Haiku is not statistically significant.** On the 100 shared games, both won 62, only Sonnet won 18, only Haiku won 11, and neither won 9 (exact McNemar p = 0.26).
+
+| Win rate by condition (95% CI) | Haiku 4.5 | Sonnet 4.5 |
+| --- | --- | --- |
+| Pilot plays White (`deck_a`) | 80% (67–89%) | 88% (76–94%) |
+| Pilot plays Red (`deck_b`) | 66% (52–78%) | 72% (58–83%) |
+| On the play | 72% (58–83%) | 76% (63–86%) |
+| On the draw | 74% (60–84%) | 84% (71–92%) |
+
+Notes:
+
+- 9 of Haiku's 10 invalid replies contained two `<answer>` blocks, because the model changed its mind mid-reply. The other chose an index that was not offered. Every one was corrected on retry.
+- Cost is computed from token counts at list prices: $1 / $5 per million input / output tokens for Haiku and $3 / $15 for Sonnet. prime-rl reports no cost, and the figures assume no prompt-cache discounts.
+- `scripted_v1` is a simple baseline, not a strong player. These numbers describe these two fixture decks and this opponent only.
+
+### Reproducing the results
+
+Each model ran once with `scripts/prime_rl_eval.sh`, at prime-rl `d61df569` and runtime `xmage-runtime-v3` (XMage `afab346e`), on Java 21. Inference went straight to Anthropic's API with `ANTHROPIC_API_KEY` set:
+
+```bash
+scripts/prime_rl_eval.sh environments/xmage_poc xmage-poc \
+  -m claude-sonnet-4-5 -n 100 -r 1 -c 6 \
+  --client.base-url https://api.anthropic.com/v1 \
+  --client.api-key-var ANTHROPIC_API_KEY --client.skip-model-check \
+  --sampling.max-tokens 4096 --sampling.temperature 0.0 \
+  --env.taskset.num-games 100 --env.taskset.seed 7 \
+  --env.taskset.pilot-seat player_a --env.taskset.pilot-deck balanced \
+  --env.taskset.pilot-play-order balanced \
+  --env.opponent scripted --env.history-decisions 1 \
+  --env.auto-pass-priority true --env.auto-forced true \
+  --env.recording-mode benchmark --env.pilot.max-turns 256 \
+  --env.timeout.episode 7200 \
+  --output-dir environments/xmage_poc/outputs/evals --run.name sonnet45-100 --no-dashboard
+```
+
+For Haiku, use `-m claude-haiku-4-5` and another `--run.name`. Six games ran at a time (`-c 6`), and each game's JVM was capped with `JAVA_TOOL_OPTIONS=-Xmx1g` so they fit in 8 GB of memory.
+
+- **Games:** seeds 7 to 31. Each seed is played four times: the pilot plays White and then Red, each on the play and on the draw. The pilot always sits in `player_a`. Each deck's shuffle is keyed by the seed and its card list, so swapping seats on one seed would replay the same shuffles.
+- **Prompts:** text observations, a history of 1 decision, and up to 3 replies per decision before the fallback action.
+- **Not deterministic:** engine internals and the models themselves vary between runs, even with the same seed and temperature 0, so a rerun will give close but not identical results.
+- The Sonnet run was stopped after 78 games and finished with prime-rl's `--resume`, which kept the finished games and replayed only the 22 still owed. The 6 games that were interrupted mid-play were replayed from the start, and only finished games are counted.
+
 ## Architecture
 
 ### Vocabulary
