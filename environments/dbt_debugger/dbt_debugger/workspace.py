@@ -175,34 +175,18 @@ def _write_context_files(context_root: Path, spec: dict[str, Any]) -> None:
     )
 
 
-def _write_project_entries(
-    project_root: Path, entries: list[Any], *, source_name: str
-) -> None:
-    """Write one list of dbt project entries under *project_root*."""
-    for entry in entries:
+def _write_project_files(project_root: Path, spec: dict[str, Any]) -> None:
+    """Write ``dbt_project.files`` (models, macros, seeds, and config) under *project_root*."""
+    for entry in spec.get("dbt_project", {}).get("files", []):
         if not isinstance(entry, dict):
             continue
         rel = str(entry.get("path", "")).strip().replace("\\", "/")
         if not rel or rel.startswith("/") or ".." in rel.split("/"):
-            raise ValueError(f"Invalid {source_name} path: {rel!r}")
+            raise ValueError(f"Invalid dbt_project.files path: {rel!r}")
         content = entry.get("content", "")
         dest = project_root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(str(content), encoding="utf-8")
-
-
-def _write_project_files(project_root: Path, spec: dict[str, Any]) -> None:
-    """Write ``dbt_project.files`` (+ seeds/macros) under *project_root*."""
-    dbt = spec.get("dbt_project", {})
-    _write_project_entries(
-        project_root, dbt.get("files", []), source_name="dbt_project.files"
-    )
-    for key in ("macros", "seeds"):
-        _write_project_entries(
-            project_root,
-            dbt.get(key, []) or [],
-            source_name=f"dbt_project.{key}",
-        )
 
 
 def _read_profile_name(project_root: Path) -> str:
