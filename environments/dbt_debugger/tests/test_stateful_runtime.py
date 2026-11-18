@@ -180,8 +180,7 @@ async def _materialized_toolset(
 ) -> AsyncIterator[DbtDebuggerToolset]:
     """Run one toolset against a fresh scenario workspace, removed on exit."""
     toolset = DbtDebuggerToolset(vf.ToolsetConfig())
-    async with toolset._exit_stack:
-        await toolset.setup_task(_task_data(scenario_id))
+    async with toolset.in_process(_task_data(scenario_id)):
         yield toolset
 
 

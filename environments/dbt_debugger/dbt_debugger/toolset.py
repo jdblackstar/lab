@@ -12,12 +12,14 @@ parameters become the schemas, so this module must not use
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import shutil
 import sys
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
@@ -174,6 +176,20 @@ class DbtDebuggerToolset(vf.Toolset[vf.ToolsetConfig, DbtDebuggerState]):
             immutable_paths=list(manifest["immutable_paths"]),
             valid_model_names=model_names(spec),
         )
+
+    @contextlib.asynccontextmanager
+    async def in_process(
+        self, task: "DbtDebuggerData"
+    ) -> AsyncIterator["DbtDebuggerToolset"]:
+        """Set up *task* in this process and remove its workspace on exit.
+
+        verifiers enters the same exit stack around ``setup_task`` when it serves this
+        toolset over MCP; the gold check and tests call the tools directly instead.
+        Outside an MCP call, ``self.state`` is this server's own in-memory state.
+        """
+        async with self._exit_stack:
+            await self.setup_task(task)
+            yield self
 
     @property
     def workspace(self) -> Workspace:
