@@ -84,10 +84,10 @@ PY
 }
 
 smoke_env dbt-debugger dbt_debugger --runtime.type subprocess
-# Traces hold whole menus: run the bundled synthetic sample even if these point at a
-# private corpus, and don't upload anything.
+# Traces hold whole menus: run the bundled synthetic sample even if MENU_TASTE_QUESTIONS
+# points at a private set, and don't upload anything.
 (
-  unset MENU_TASTE_QUESTIONS MENU_TASTE_MENUS
+  unset MENU_TASTE_QUESTIONS
   SMOKE_PRIME_MONITOR=0 smoke_env menu-taste menu_taste --runtime.type subprocess
 )
 # xmage-poc needs Python 3.12+ and, to play, Java 21. Here it only installs (downloading

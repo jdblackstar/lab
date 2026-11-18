@@ -21,7 +21,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from ..cloze import build_cloze_items
+from ..cloze import cloze_questions
 from ..corpus import load_menus, write_menus
 from ..render import render_menu
 from ..schema import Menu, MenuKind, SourceRef
@@ -251,15 +251,15 @@ def cmd_stats(args) -> int:
     service = Counter(m.service.value for m in menus)
     courses = Counter(s.course.value for m in menus for s in m.sections)
     items = sum(len(s.items) for m in menus for s in m.sections)
-    rows = build_cloze_items(menus, num_options=args.num_options)
-    by_course = Counter(r["info"]["course"] for r in rows)
+    questions = cloze_questions(menus, num_options=args.num_options)
+    by_course = Counter(q.course.value for q in questions)
     report = {
         "menus": len(menus),
         "items": items,
         "kind": dict(kinds),
         "service": dict(service),
         "sections_by_course": dict(courses.most_common()),
-        "cloze_questions": len(rows),
+        "cloze_questions": len(questions),
         "cloze_by_course": dict(by_course.most_common()),
         "cloze_eligible_menus": sum(
             1 for m in menus if m.kind in (MenuKind.event, MenuKind.sample)
