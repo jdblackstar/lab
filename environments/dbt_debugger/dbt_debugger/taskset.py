@@ -101,9 +101,9 @@ class DbtDebuggerTask(
         """Gold check: collect the required evidence and submit the documented ground
         truth through the real tools; the stored diagnosis must strictly pass."""
         spec = self.spec
-        toolset = DbtDebuggerToolset(vf.ToolsetConfig())
-        async with toolset._exit_stack:
-            await toolset.setup_task(self.data)
+        async with DbtDebuggerToolset(vf.ToolsetConfig()).in_process(
+            self.data
+        ) as toolset:
             for requirement in spec["rubric_hints"]["required_evidence"]:
                 result = await _collect_gold_evidence(toolset, requirement)
                 if result.startswith("Error:"):
