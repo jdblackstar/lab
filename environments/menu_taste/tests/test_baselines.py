@@ -114,3 +114,25 @@ def test_cooccurrence_ignores_the_menus_own_versions():
     pooled = dish_cooccurrence(a + b)
     _, (wrong_hits, wrong_share) = scores(("t",), cooc=pooled, target=a[0])
     assert wrong_hits == 0 and wrong_share == 0.0
+
+
+def test_season_is_inferred_only_when_the_dishes_clearly_point_to_one():
+    from menu_taste.baselines import infer_season, words
+    from menu_taste.schema import Season
+
+    assert infer_season(words("ramp pesto, morels, roast chicken")) is Season.spring
+    assert infer_season(words("ramp pesto, roast chicken")) is Season.unknown
+    assert infer_season(words("ramp pesto, morels, squash, apple")) is Season.unknown
+
+
+def test_season_pick_takes_the_option_with_the_most_season_words():
+    from menu_taste.baselines import season_pick, words
+    from menu_taste.schema import Season
+
+    options = ["Asparagus and morel tart", "Pea soup", "Chocolate cake", "Rice pudding"]
+    assert season_pick(Season.spring, [words(o) for o in options]) == 0
+    assert (
+        season_pick(Season.spring, [words(o) for o in ["Pea soup", "Ramp tart"]])
+        is None
+    )
+    assert season_pick(Season.unknown, [words(o) for o in options]) is None
