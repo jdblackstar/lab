@@ -8,8 +8,9 @@ from xmage_poc.environment import DECK_CONTEXT_MARKER, XMageEnvConfig
 
 @pytest.mark.parametrize("opponent", ["self_play", "scripted"])
 @pytest.mark.parametrize("auto_pass_priority", [True, False])
-def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
-    play, opponent, auto_pass_priority
+@pytest.mark.parametrize("auto_forced", [True, False])
+def test_automatic_answers_bypass_model_but_keep_real_choices_and_history(
+    play, opponent, auto_pass_priority, auto_forced
 ):
     def prompt(number, player, message, actions, query_type="SELECT", stack=None):
         return {
@@ -43,11 +44,13 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
                 ["cast", "pass"],
                 stack={"spell": {"name": "Shock"}},
             ),
-            # One-option mana and combat prompts are not priority passes.
+            # One-option mana and combat prompts are forced, not priority passes.
             prompt(4, "player_a", "Pay {W}", ["mana"], query_type="PLAY_MANA"),
             prompt(5, "player_a", "Select attackers", ["pass"]),
+            # Two options: a real choice whatever the settings.
+            prompt(6, "player_a", "Pay {1}", ["mana", "mana"], query_type="PLAY_MANA"),
             prompt(
-                6,
+                7,
                 "player_a",
                 "Play instants and activated abilities",
                 ["pass"],
@@ -99,10 +102,14 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
         # The other seat and bypassed prompts must never enter model history.
         observed = [json.loads(m["content"]) for m in history if m["role"] == "user"]
         assert all(o["player"] == observation["player"] for o in observed)
-        if auto_pass_priority:
-            assert all(o["decision"] in {3, 4, 5} for o in observed)
+        assert all(o["decision"] in expected for o in observed)
         model_decisions.append(observation["decision"])
         return '{"action": 0}'
+
+    priority = {1, 2, 7} if auto_pass_priority else set()
+    forced = {4, 5} if auto_forced else set()
+    original_decisions = [m["observation"]["decision"] for m in messages[:-1]]
+    expected = [n for n in original_decisions if n not in priority | forced]
 
     episode, _ = play(
         Session,
@@ -110,28 +117,29 @@ def test_priority_passes_bypass_model_but_keep_real_choices_and_history(
         taskset={"pilot_seat": "player_a", "pilot_play_order": "play"},
         opponent=opponent,
         auto_pass_priority=auto_pass_priority,
+        auto_forced=auto_forced,
         history_decisions=1,
         observation_format="json",
     )
     assert episode.ok, episode.errors
-    original_decisions = [m["observation"]["decision"] for m in messages[:-1]]
-    assert model_decisions == ([3, 4, 5] if auto_pass_priority else original_decisions)
+    assert model_decisions == expected
     assert responses == [(n, 0) for n in original_decisions]
-    skipped = (
-        [n for n in original_decisions if n not in {3, 4, 5}]
-        if auto_pass_priority
-        else []
-    )
     for trace in episode.traces:
-        assert trace.info["auto_passed_priority"] == len(skipped)
+        assert trace.info["auto_passed_priority"] == len(
+            priority & set(original_decisions)
+        )
+        assert trace.info["auto_forced_decisions"] == len(forced)
         assert trace.info["recording_audit"]["privacy_passed"]
-    log = Path(episode.traces[0].info["recording_path"]) / "automatic-priority.jsonl"
-    assert (
-        [json.loads(line)["decision"] for line in log.read_text().splitlines()]
-        if log.exists()
-        else []
-    ) == skipped
+    recording = Path(episode.traces[0].info["recording_path"])
+    for reason, numbers in (("priority", priority), ("forced", forced)):
+        log = recording / f"automatic-{reason}.jsonl"
+        assert (
+            [json.loads(line)["decision"] for line in log.read_text().splitlines()]
+            if log.exists()
+            else []
+        ) == [n for n in original_decisions if n in numbers]
 
 
-def test_environment_enables_automatic_priority_by_default():
+def test_environment_automates_one_option_prompts_by_default():
     assert XMageEnvConfig().auto_pass_priority
+    assert XMageEnvConfig().auto_forced

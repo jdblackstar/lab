@@ -113,7 +113,7 @@ def correction(content: str) -> dict | None:
 
 def model_decisions(decisions: list[dict], controller: dict) -> list[dict]:
     """Return the decisions a model controller was asked to answer."""
-    from .transport import is_pass_only_priority
+    from .transport import automatic_answer
 
     return [
         d
@@ -122,9 +122,13 @@ def model_decisions(decisions: list[dict], controller: dict) -> list[dict]:
             controller["opponent"] == "self_play"
             or d["observation"]["player"] == controller["pilot_seat"]
         )
-        and not (
-            controller["auto_pass_priority"] and is_pass_only_priority(d["observation"])
+        and automatic_answer(
+            d["observation"],
+            auto_pass_priority=controller["auto_pass_priority"],
+            # Recordings from before the setting sent every forced prompt to the model.
+            auto_forced=controller.get("auto_forced", False),
         )
+        is None
     ]
 
 

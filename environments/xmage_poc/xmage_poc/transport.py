@@ -136,6 +136,18 @@ def is_pass_only_priority(observation: dict) -> bool:
     )
 
 
+def automatic_answer(
+    observation: dict, *, auto_pass_priority: bool, auto_forced: bool
+) -> str | None:
+    """Why the host answers this prompt without a model ("priority" or "forced"),
+    or None when a model must decide. Pass-only priority is its own setting."""
+    if is_pass_only_priority(observation):
+        return "priority" if auto_pass_priority else None
+    if len(observation["actions"]) == 1 and auto_forced:
+        return "forced"
+    return None
+
+
 def advance_action(observation: dict) -> int:
     """Simple local controller that uses ONLY the delivered observation."""
     actions = observation["actions"]

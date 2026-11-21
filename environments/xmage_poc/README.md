@@ -26,6 +26,64 @@ scripts/prime_rl_eval.sh environments/xmage_poc @ configs/eval/xmage-real-model-
 
 `configs/eval/xmage-pilot-smoke.toml` and `scripts/smoke_xmage_poc_eval.py` drive the same path with a scripted local endpoint and make no paid model calls.
 
+## Results: Claude vs `scripted_v1`, 100 games each
+
+Run on 2026-11-16. Claude Haiku 4.5 and Claude Sonnet 4.5 each piloted the same 100 games against the `scripted_v1` opponent. Every game finished and passed the recording audit. [`examples/scripted-v1-100-game-results.csv`](examples/scripted-v1-100-game-results.csv) has one row per game and model, and every number below can be recomputed from it.
+
+| | Haiku 4.5 | Sonnet 4.5 |
+| --- | --- | --- |
+| Win rate (95% Wilson CI) | 73% (64–81%) | 80% (71–87%) |
+| Wins / losses / draws | 73 / 27 / 0 | 80 / 20 / 0 |
+| Truncated by `max_turns` / errored | 0 / 0 | 0 / 0 |
+| Invalid replies / fallback actions | 10 / 0 | 0 / 0 |
+| Model calls per game (including retries) | 52.8 | 58.9 |
+| One-option prompts answered without the model, per game (`auto_forced`) | 19.4 | 17.0 |
+| Pass-only priority prompts answered without the model, per game | 167.1 | 146.5 |
+| Tokens per game (input / output) | 124.7k / 23.0k | 132.4k / 23.6k |
+| Cost per game / total | $0.24 / $23.96 | $0.75 / $75.18 |
+
+**Sonnet's lead over Haiku is not statistically significant.** On the 100 shared games, both won 62, only Sonnet won 18, only Haiku won 11, and neither won 9 (exact McNemar p = 0.26).
+
+| Win rate by condition (95% CI) | Haiku 4.5 | Sonnet 4.5 |
+| --- | --- | --- |
+| Pilot plays White (`deck_a`) | 80% (67–89%) | 88% (76–94%) |
+| Pilot plays Red (`deck_b`) | 66% (52–78%) | 72% (58–83%) |
+| On the play | 72% (58–83%) | 76% (63–86%) |
+| On the draw | 74% (60–84%) | 84% (71–92%) |
+
+Notes:
+
+- 9 of Haiku's 10 invalid replies contained two `<answer>` blocks, because the model changed its mind mid-reply. The other chose an index that was not offered. Every one was corrected on retry.
+- Cost is computed from token counts at list prices: $1 / $5 per million input / output tokens for Haiku and $3 / $15 for Sonnet. prime-rl reports no cost, and the figures assume no prompt-cache discounts.
+- `scripted_v1` is a simple baseline, not a strong player. These numbers describe these two fixture decks and this opponent only.
+
+### Reproducing the results
+
+Each model ran once with `scripts/prime_rl_eval.sh`, at prime-rl `d61df569` and runtime `xmage-runtime-v3` (XMage `afab346e`), on Java 21. Inference went straight to Anthropic's API with `ANTHROPIC_API_KEY` set:
+
+```bash
+scripts/prime_rl_eval.sh environments/xmage_poc xmage-poc \
+  -m claude-sonnet-4-5 -n 100 -r 1 -c 6 \
+  --client.base-url https://api.anthropic.com/v1 \
+  --client.api-key-var ANTHROPIC_API_KEY --client.skip-model-check \
+  --sampling.max-tokens 4096 --sampling.temperature 0.0 \
+  --env.taskset.num-games 100 --env.taskset.seed 7 \
+  --env.taskset.pilot-seat player_a --env.taskset.pilot-deck balanced \
+  --env.taskset.pilot-play-order balanced \
+  --env.opponent scripted --env.history-decisions 1 \
+  --env.auto-pass-priority true --env.auto-forced true \
+  --env.recording-mode benchmark --env.pilot.max-turns 256 \
+  --env.timeout.episode 7200 \
+  --output-dir environments/xmage_poc/outputs/evals --run.name sonnet45-100 --no-dashboard
+```
+
+For Haiku, use `-m claude-haiku-4-5` and another `--run.name`. Six games ran at a time (`-c 6`), and each game's JVM was capped with `JAVA_TOOL_OPTIONS=-Xmx1g` so they fit in 8 GB of memory.
+
+- **Games:** seeds 7 to 31. Each seed is played four times: the pilot plays White and then Red, each on the play and on the draw. The pilot always sits in `player_a`. Each deck's shuffle is keyed by the seed and its card list, so swapping seats on one seed would replay the same shuffles.
+- **Prompts:** text observations, a history of 1 decision, and up to 3 replies per decision before the fallback action.
+- **Not deterministic:** engine internals and the models themselves vary between runs, even with the same seed and temperature 0, so a rerun will give close but not identical results.
+- The Sonnet run was stopped after 78 games and finished with prime-rl's `--resume`, which kept the finished games and replayed only the 22 still owed. The 6 games that were interrupted mid-play were replayed from the start, and only finished games are counted.
+
 ## Architecture
 
 ### Vocabulary
@@ -57,7 +115,7 @@ A rollout runs one game. `XMageEnv.run` opens an agent interaction for each mode
 │ XMage rules + Recorder     │  stdin: {"decision":n,"action":i} │   (transport.py)             │   reply     │  self_play)          │
 └────────────────────────────┘                                   └──────────────────────────────┘             └──────────────────────┘
        writes internal/,                                           writes model-*.jsonl/json,
-       players/<seat>.jsonl                                        automatic-priority.jsonl,
+       players/<seat>.jsonl                                        automatic-*.jsonl,
                                                                    context files, stderr log
 ```
 
@@ -65,7 +123,7 @@ The bridge is one class per responsibility in `lab.xmage`: `PocMain` dispatches 
 
 - The **bridge** runs the game with XMage's rules. Each time a bridge player must decide, it builds the observation, snapshots the state, writes the observation to `players/<seat>.jsonl`, prints it, and blocks on stdin for the response.
 - **`GameSession`** launches the JVM and validates each response index locally. **`PilotSession`** wraps it for single-seat games: it answers the other seat with the `random`/`scripted_v1` policy (or fails if an `xmage_mad` seat ever asks) and returns only the pilot's decisions.
-- **`XMageGame`** drains pass-only priority prompts when `auto_pass_priority` is on, renders each remaining observation into the acting seat's history, builds that seat's prompt, sends it through the seat's agent interaction, and parses the `<answer>` reply. After the result arrives it runs `verify` on the recording.
+- **`XMageGame`** answers pass-only priority prompts (`auto_pass_priority`) and other one-option prompts (`auto_forced`) itself, renders each remaining observation into the acting seat's history, builds that seat's prompt, sends it through the seat's agent interaction, and parses the `<answer>` reply. After the result arrives it runs `verify` on the recording.
 - **`XMageHarness`** makes one streamed chat completion per prompt against the rollout's endpoint.
 
 ### Recording directory
@@ -82,10 +140,11 @@ Each game writes a new directory under `output_dir`:
 | `internal/checkpoints/NNNNNN.game.gz` | bridge `Recorder`, `full_audit` only | The gzipped, Java-serialized XMage `Game` for that snapshot |
 | `players/<seat>.jsonl` | bridge `Channel.request` | Every observation delivered to that seat. An `xmage_mad` seat's file is empty |
 | `players/<seat>.context.json` | `GameSession`, before the JVM starts | That seat's registered decklist (names and counts, no IDs or order). It is appended to the seat's system message |
-| `model-controller.json` | `XMageEnv.run` | Task factors and controller settings: seat, decks, play/draw, opponent, `auto_pass_priority`, `observation_format`, `history_decisions`, `max_action_attempts`, fallback rule |
+| `model-controller.json` | `XMageEnv.run` | Task factors and controller settings: seat, decks, play/draw, opponent, `auto_pass_priority`, `auto_forced`, `observation_format`, `history_decisions`, `max_action_attempts`, fallback rule |
 | `model-prompts.jsonl` | `XMageGame.prompt` | Every message list sent to a model, including retries, with its `decision`, `player`, and play/draw factors. It is written before the call |
 | `automatic-priority.jsonl` | `XMageGame.receive_for_model` | `decision`, `player`, and `action` of each pass-only priority prompt answered without a model call |
-| `controllers.json` | `PilotSession`; absent under `self_play` | Pilot seat, opponent policy, and `auto_forced` |
+| `automatic-forced.jsonl` | `XMageGame.receive_for_model` | The same fields for every other one-option prompt answered without a model call |
+| `controllers.json` | `PilotSession`; absent under `self_play` | Pilot seat, opponent policy, and the CLI's `--auto-forced`. Evals leave that off and answer one-option prompts in `XMageGame` instead, as `model-controller.json` records |
 | `engine.stderr.log` | `GameSession` (the JVM's stderr) | Diagnostics |
 | `runtime-build.json` | `GameSession` | Copy of the installed runtime's `build.json`, if present |
 
@@ -123,8 +182,9 @@ Rollout labels are only as good as the rollout policy: `greedy` and `random` are
 
 - **Cards and decks**: the runtime contains XMage's full card module, and `deck_a`/`deck_b` accept custom decklists, one `<count> <exact XMage card name>` per line with blank lines and `#` comments. Each deck must have exactly 60 cards, and unknown names fail. Format legality and copy limits are not checked. That a card loads does not mean the bridge can handle all of its decisions. The bundled White and Red decks are simple 24-land fixtures with no search, look, or reveal effects.
 - **Decisions the bridge exposes**: yes/no, priority (play a land, cast, activate, or pass), mana payment, ability and mode choices, choice lists, targets, amounts and X (ranges up to 100), individual attackers and blockers, removing a combat selection, and an attack-all shortcut when XMage offers it. Multi-amount prompts list every allocation within XMage's per-field and total bounds, with XMage's default allocation first. Enumeration stops at 16 fields, a range of 100 per field, and 4,096 choices. Any other query type raises an error, and so does a target or playable object in a hidden zone. A hidden option is never turned into a named one.
+- **What text prompts omit**: XMage's helper emblems (`myHelperEmblems`: the storm count, day/night, and radiation) are engine bookkeeping that no bundled card uses, so text observations neither list them nor add their rules to the glossary. The storm emblem's text changed with every spell, which added one glossary entry per count. They remain in `players/<seat>.jsonl` and in `json` observations. A custom deck with storm, daybound, or rad-counter cards would need them rendered again. Recordings whose model prompts include the old emblem block no longer pass the prompt audit, which re-renders with the current renderer.
 - **Audit scope**: the privacy audit fits these duel fixtures. It assumes 120 cards in hand, library, graveyard, and battlefield, an empty sideboard, and no revealed library top. Tokens, exile or other extra zones, and search or reveal effects would need audit changes as well as adapter changes. Sideboarding and multiplayer are not supported.
-- **Automatic priority**: with `auto_pass_priority = true` (the default), a `SELECT` priority prompt that offers only pass is answered without a model call. This applies to both model seats under `self_play`, at every priority stop the bridge keeps, including when the stack is not empty. Any prompt with a play to make still reaches the model, as do combat, targeting, mana, and other non-priority prompts, even when they offer one option. Automatic passes still appear in `decisions.jsonl` and `players/<seat>.jsonl`, and `automatic-priority.jsonl` lists them. They are left out of model history, use no model turns, and are counted in the trace's `auto_passed_priority`. `scripts/smoke_xmage_poc_eval.py --no-auto-pass-priority` exercises the opt-out. The CLI's `--auto-forced` is separate: it advances every one-option pilot prompt.
+- **Automatic answers**: a prompt that offers exactly one action is answered without a model call, because the bridge rejects every other index. Two settings, both on by default, cover this, for both model seats under `self_play`. `auto_pass_priority` covers `SELECT` priority prompts that offer only pass, at every priority stop the bridge keeps, including when the stack is not empty. `auto_forced` covers every other one-option prompt: mana payments (with the bundled decks, XMage offers one mana source per payment step), attack or block prompts whose only action is to finish, and required targets with one legal choice. Any prompt with two or more actions reaches the model. Automatic answers still appear in `decisions.jsonl` and `players/<seat>.jsonl`, and `automatic-priority.jsonl` and `automatic-forced.jsonl` list them. They are left out of model history, use no model turns, and are counted in the trace's `auto_passed_priority` and `auto_forced_decisions`. The prompt audit reads both settings from `model-controller.json`; recordings made before `auto_forced` existed are audited as if it were off. `scripts/smoke_xmage_poc_eval.py --no-auto-pass-priority` and `--no-auto-forced` exercise the opt-outs.
 - **Scoring**: under `self_play`, the reward is `recording_validity`, which is 1 when the recording passes the audit. Against an in-engine opponent, the reward is `pilot_win`, XMage's `won` flag for the pilot's seat, counted only after the audit passes, and `recording_validity` is reported with weight 0. A loss, draw, rollout stopped by `max_turns` or a model error, or failed recording earns no win. An invalid reply alone does not: it gets a correction and, after `max_action_attempts`, the fallback action. `max_turns` counts model attempts per seat, including retries. Deck, seat, play/draw, history window, and opponent all affect results, so compare models only on controlled, balanced runs.
 - **Opponents**: `scripted_v1` is a simple, readable baseline, not a strong player. `xmage_mad` (`ComputerPlayer7`, skill 4) searches a full copy of the game, including the pilot's real hand and library order, on a 12-second wall-clock budget shared across a 5-thread pool. Its strength depends on hardware and load, and its play is not deterministic. Pilot observations stay private either way.
 - **Determinism and checkpoints**: decks are read in order, and each bridge player's shuffles come from a stream keyed by the seed and the deck's card list. Action order is stable for known cards. XMage's global `RandomUtil` generator is seeded too. UUIDs, clocks, and other engine internals are not deterministic, so the same seed can produce different traces. Checkpoints are the serializable `Game` graph with transport fields left out. Static state such as the global generator is outside that graph. They are for inspection (`xmage-poc.jar inspect <checkpoint>`), restoration audits, and resuming the decisions described in [Resuming checkpoints and labeling positions](#resuming-checkpoints-and-labeling-positions).

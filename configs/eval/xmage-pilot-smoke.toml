@@ -30,6 +30,8 @@ env.taskset.pilot_play_order = "balanced"
 env.opponent = "scripted"
 env.history_decisions = 4
 env.auto_pass_priority = true
+# Answer every other one-option prompt (mostly mana payments) without a model call.
+env.auto_forced = true
 # Audit every decision projection; choose full_audit for restoration/counterfactual checks.
 env.recording_mode = "benchmark"
 # Model attempts for the pilot seat, including invalid-reply retries.

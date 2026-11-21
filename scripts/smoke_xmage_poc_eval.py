@@ -15,7 +15,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 from xmage_poc.environment import DECK_CONTEXT_MARKER, XMageEnv, XMageEnvConfig
 from xmage_poc.render import render_observation
-from xmage_poc.transport import advance_action, is_pass_only_priority
+from xmage_poc.transport import advance_action, automatic_answer
 from xmage_poc.verify import read_lines, verify
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +73,11 @@ def main():
         help="Send pass-only priority prompts to the endpoint too",
     )
     parser.add_argument(
+        "--no-auto-forced",
+        action="store_true",
+        help="Send other one-option prompts to the endpoint too",
+    )
+    parser.add_argument(
         "--protocol-only",
         action="store_true",
         help="Run one episode in-process instead of through prime-rl's eval",
@@ -91,6 +96,13 @@ def main():
     http_messages = []
     request_contexts = []
     attempts = {}
+
+    def automatic(obs):
+        return automatic_answer(
+            obs,
+            auto_pass_priority=not args.no_auto_pass_priority,
+            auto_forced=not args.no_auto_forced,
+        )
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -168,10 +180,9 @@ def main():
                 )
                 assert context["player"] == observations[-1]["player"]
                 request_contexts.append(context)
-                if not args.no_auto_pass_priority:
-                    assert not any(
-                        is_pass_only_priority(obs) for obs in observations
-                    ), "Automatic priority pass leaked into model history"
+                assert not any(automatic(obs) for obs in observations), (
+                    "Automatically answered prompt leaked into model history"
+                )
                 assert all(obs["player_id"] == actor for obs in observations), (
                     "Other seat leaked into model history"
                 )
@@ -253,6 +264,7 @@ def main():
         "output_dir": str(output / "games"),
         "opponent": args.opponent,
         "auto_pass_priority": not args.no_auto_pass_priority,
+        "auto_forced": not args.no_auto_forced,
         "observation_format": args.observation_format,
         "recording_mode": args.recording_mode,
     }
@@ -372,25 +384,21 @@ def main():
         decisions = [
             d for d in decisions if d["observation"]["player"] == args.pilot_seat
         ]
-    automatic = (
-        [d for d in decisions if is_pass_only_priority(d["observation"])]
-        if not args.no_auto_pass_priority
-        else []
-    )
-    automatic_path = games[0] / "automatic-priority.jsonl"
-    automatic_log = read_lines(automatic_path) if automatic_path.exists() else []
-    assert automatic_log == [
-        {
-            "decision": d["decision"],
-            "player": d["observation"]["player"],
-            "action": d["selected"]["index"],
-        }
-        for d in automatic
-    ], "Automatic passes differ from recorded engine decisions"
-    if not args.no_auto_pass_priority:
-        decisions = [
-            d for d in decisions if not is_pass_only_priority(d["observation"])
+    answered = {}
+    for reason in ("priority", "forced"):
+        answered[reason] = [
+            d for d in decisions if automatic(d["observation"]) == reason
         ]
+        path = games[0] / f"automatic-{reason}.jsonl"
+        assert (read_lines(path) if path.exists() else []) == [
+            {
+                "decision": d["decision"],
+                "player": d["observation"]["player"],
+                "action": d["selected"]["index"],
+            }
+            for d in answered[reason]
+        ], f"Automatic {reason} answers differ from recorded engine decisions"
+    decisions = [d for d in decisions if not automatic(d["observation"])]
     assert len(requests) == len(decisions) + (4 if args.inject_invalid_replies else 0)
     by_decision = {}
     for request, context in zip(requests, request_contexts, strict=True):
@@ -425,7 +433,8 @@ def main():
                 (games[0] / "players" / f"{seat}.context.json").read_text()
             ), "Endpoint received a different seat's deck or a modified deck context"
     audit["endpoint_requests"] = len(requests)
-    audit["auto_passed_priority"] = len(automatic)
+    audit["auto_passed_priority"] = len(answered["priority"])
+    audit["auto_forced_decisions"] = len(answered["forced"])
     audit["model_history_isolation_passed"] = True
     audit["own_deck_context_passed"] = True
     if args.inject_invalid_replies:

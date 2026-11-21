@@ -20,7 +20,7 @@ from .render import (
     public_card_rules,
     render_observation,
 )
-from .transport import ROOT, GameSession, PilotSession, is_pass_only_priority
+from .transport import ROOT, GameSession, PilotSession, automatic_answer
 from .verify import verify
 
 SYSTEM = (
@@ -36,7 +36,8 @@ SYSTEM = (
     "Counts describe the starting deck, not its current library contents or draw order. "
     "You can select individual attackers and blockers, remove combat selections, or finish a selection. "
     "The engine may ask separately for targets, modes, and mana payment. "
-    "Priority prompts with only a pass option are advanced automatically between your decisions. "
+    "Prompts that offer only one action, such as a pass-only priority stop or a mana payment "
+    "with one usable source, are answered automatically between your decisions. "
     "Choose actions to win the game."
 )
 
@@ -242,6 +243,8 @@ class XMageEnvConfig(vf.EnvConfig):
     """Most recent own decisions kept in each seat's prompt."""
     auto_pass_priority: bool = True
     """Submit pass-only priority prompts without a model call."""
+    auto_forced: bool = True
+    """Submit every other prompt that offers exactly one action without a model call."""
     observation_format: Literal["json", "text"] = "text"
     recording_mode: Literal["full_audit", "benchmark"] = "full_audit"
     max_action_attempts: int = Field(3, ge=1)
@@ -335,8 +338,8 @@ class SeatPrompt:
 class XMageGame:
     """One game's host-side controller: the engine plays the user of every seat.
 
-    `play` drives the engine: `receive_for_model` auto-passes forced priority and
-    returns the next decision that needs a model, the seat's `SeatPrompt` builds
+    `play` drives the engine: `receive_for_model` answers pass-only priority and
+    other one-option prompts (per config) and returns the next decision that needs a model, the seat's `SeatPrompt` builds
     its prompt, `prompt` records it, and `reply` parses the answer, then submits
     it, appends a correction for a retry, or submits the fallback action.
     """
@@ -346,31 +349,38 @@ class XMageGame:
         self.data = data
         self.session = session
         self.auto_passed_priority = 0
+        self.auto_forced_decisions = 0
         self.stats = {seat: SeatStats() for seat in SEATS}  # by obs["player"]
         self.seats: dict[str, SeatPrompt] = {}  # by obs["player_id"]
         self.result: dict | None = None  # the engine's final message
         self.audit: dict | None = None  # verify() of the finished recording
 
     async def receive_for_model(self) -> dict:
-        """Drain forced priority passes before spending a model turn."""
+        """Answer one-option prompts the config automates before spending a model turn."""
         session = self.session
 
         def receive():
             while True:
                 message = session.receive()
-                if (
-                    message["type"] == "result"
-                    or not self.config.auto_pass_priority
-                    or not is_pass_only_priority(message["observation"])
-                ):
+                if message["type"] == "result":
                     return message
                 obs = message["observation"]
+                reason = automatic_answer(
+                    obs,
+                    auto_pass_priority=self.config.auto_pass_priority,
+                    auto_forced=self.config.auto_forced,
+                )
+                if reason is None:
+                    return message
                 # The Java bridge records this prompt and response as usual.
                 action = obs["actions"][0]["index"]
                 session.send(obs, action)
-                self.auto_passed_priority += 1
+                if reason == "priority":
+                    self.auto_passed_priority += 1
+                else:
+                    self.auto_forced_decisions += 1
                 append_jsonl(
-                    session.output / "automatic-priority.jsonl",
+                    session.output / f"automatic-{reason}.jsonl",
                     {
                         "decision": obs["decision"],
                         "player": obs["player"],
@@ -520,6 +530,7 @@ class XMageEnv(vf.Env[XMageEnvConfig]):
             "starting_player": data.starting_player,
             "opponent": config.opponent,
             "auto_pass_priority": config.auto_pass_priority,
+            "auto_forced": config.auto_forced,
             "observation_format": config.observation_format,
             "history_decisions": config.history_decisions,
             "max_action_attempts": config.max_action_attempts,
@@ -564,6 +575,7 @@ class XMageEnv(vf.Env[XMageEnvConfig]):
             "opponent": config.opponent,
             "recording_path": str(path),
             "auto_passed_priority": game.auto_passed_priority,
+            "auto_forced_decisions": game.auto_forced_decisions,
         }
         if game.result is not None:
             info["game_result"] = game.result
